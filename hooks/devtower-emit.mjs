@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Fleet state emitter for Claude Code hooks.
+ * DevTower state emitter for Claude Code hooks.
  *
  * Reads a hook payload (JSON) on stdin, derives the agent's identity from its
- * git worktree, maps the hook event to a Fleet state, and appends one JSON
+ * git worktree, maps the hook event to a DevTower state, and appends one JSON
  * event line to the state feed that the VS Code extension watches.
  *
  * Wire it from .claude/settings.json (see hooks/claude-settings.sample.json).
  * One script handles every event — it switches on `hook_event_name`.
  *
  * State file resolution:
- *   $FLEET_STATE_FILE  (absolute), else  <git toplevel>/.fleet/state.jsonl
+ *   $DEVTOWER_STATE_FILE  (absolute), else  <git toplevel>/.devtower/state.jsonl
  */
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
@@ -89,7 +89,7 @@ function main() {
   };
 
   const target =
-    process.env.FLEET_STATE_FILE || join(top, ".fleet", "state.jsonl");
+    process.env.DEVTOWER_STATE_FILE || join(top, ".devtower", "state.jsonl");
   mkdirSync(dirname(target), { recursive: true });
   appendFileSync(target, JSON.stringify(ev) + "\n");
 }

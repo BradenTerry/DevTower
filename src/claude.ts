@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFile } from "child_process";
 import * as vscode from "vscode";
-import { FleetStore, AgentState } from "./fleet";
+import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo } from "./git";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -39,7 +39,7 @@ export class ClaudeDiscovery {
   private cdPending = new Map<string, { dir: string; at: number }>();
   private static readonly CD_HOLD_MS = 120_000;
 
-  constructor(private store: FleetStore) {}
+  constructor(private store: DevTowerStore) {}
 
   /** Record that an agent was sent `/cd <dir>`; relocate it optimistically and
    *  re-scan so the move shows immediately rather than on the next poll. */
@@ -48,7 +48,7 @@ export class ClaudeDiscovery {
     void this.refresh();
   }
 
-  start(intervalMs = 30_000): void {
+  start(intervalMs = 8_000): void {
     this.timer = setInterval(() => void this.refresh(), intervalMs);
   }
 
@@ -102,7 +102,7 @@ export class ClaudeDiscovery {
   async refresh(): Promise<number> {
     const root = path.join(os.homedir(), ".claude", "projects");
     const showRecent = vscode.workspace
-      .getConfiguration("fleet")
+      .getConfiguration("devtower")
       .get<boolean>("showRecentSessions", false);
     let found: Found[];
     try {
@@ -188,7 +188,7 @@ export class ClaudeDiscovery {
   }
 
   private async scan(root: string): Promise<Found[]> {
-    const cfg = vscode.workspace.getConfiguration("fleet");
+    const cfg = vscode.workspace.getConfiguration("devtower");
     const maxAge = cfg.get<number>("sessionMaxAgeHours", 24) * 3_600_000;
     const now = Date.now();
     const out: Found[] = [];
@@ -265,22 +265,13 @@ async function readMeta(
     // prefer the most recent cwd record so /cd mid-session relocates the agent
     const cwd = lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g) ?? headCwd;
     const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g);
-    // context usage = the last turn's full input window + output
+
+    // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
+    // Mirrors Claude Code's own `/context`: input + the two cache buckets (all
+    // tokens occupying the window), NOT output. We read it from the parsed
+    // records below so sub-agent (sidechain) turns — which carry their own,
+    // smaller usage — never masquerade as the session's real context.
     let contextTokens: number | undefined;
-    // capture up to the first closing brace — the four token counts all come
-    // before nested objects like server_tool_use:{...}
-    const usageStr = lastMatch(tail, /"usage"\s*:\s*\{([^}]*)/g);
-    if (usageStr) {
-      const num = (k: string) => {
-        const m = new RegExp(`"${k}"\\s*:\\s*(\\d+)`).exec(usageStr);
-        return m ? Number(m[1]) : 0;
-      };
-      contextTokens =
-        num("input_tokens") +
-        num("cache_read_input_tokens") +
-        num("cache_creation_input_tokens") +
-        num("output_tokens");
-    }
 
     let lastRole: string | undefined;
     let task: string | undefined;
@@ -294,6 +285,17 @@ async function readMeta(
         const role = rec.type ?? rec.message?.role;
         if (role === "user" || role === "assistant") {
           if (!lastRole) lastRole = role;
+          // first (= newest, scanning backwards) real assistant turn wins;
+          // skip sidechain sub-agent turns and the streaming partial at the tail
+          if (contextTokens === undefined && role === "assistant" && !rec.isSidechain) {
+            const u = rec.message?.usage;
+            if (u) {
+              contextTokens =
+                (u.input_tokens ?? 0) +
+                (u.cache_creation_input_tokens ?? 0) +
+                (u.cache_read_input_tokens ?? 0);
+            }
+          }
           if (!lastAssistantText && role === "assistant") {
             const text = flatten(rec.message?.content ?? rec.content);
             if (text) lastAssistantText = text;

@@ -1,4 +1,4 @@
-/* Fleet Crew — pixel office tower / mine renderer (Canvas2D, no WebGL).
+/* DevTower Crew — pixel office tower / mine renderer (Canvas2D, no WebGL).
  *
  * Mining-game layout: rooms stack vertically as floors. Above ground it's an
  * office tower; reserve floors below ground and you're digging a basement.
@@ -9,7 +9,7 @@
  * - 2+ active agents in one room huddle at the whiteboard.
  *
  * Power model: ~10fps animation tick (6fps eco); renders only on ticks or
- * camera motion; hard-stop when hidden. Same window.FleetCrew API as before,
+ * camera motion; hard-stop when hidden. Same window.DevTowerCrew API as before,
  * plus setRooms / onReserve / onAddAgent. */
 
 interface CrewAgent {
@@ -18,6 +18,8 @@ interface CrewAgent {
   state: string;
   repo: string;
   model: string;
+  worktree?: string; // git worktree path; groups desks within a room
+  branch?: string; // branch name, shown on the cluster sign
 }
 
 interface ReservedRoom {
@@ -63,14 +65,61 @@ function persona(id: string) {
 }
 
 /* ---- layout constants (art pixels) ---- */
-const ROOM_H = 52;
+const ROOM_H = 84; // taller walls leave a mid-band for the per-room task board
 const SLAB = 8; // concrete between floors
 const FLOOR_STEP = ROOM_H + SLAB;
-const WB_W = 30;
+const WB_W = 42; // left inset before the first desk
 const DESK_W = 26;
 const DOOR_W = 18;
-const MAX_DESKS = 4;
-const ROOM_W = WB_W + MAX_DESKS * DESK_W + DOOR_W; // uniform room width
+// Room depth: the interior is a shallow one-point-perspective box. The far wall
+// is inset by DEPTH_X on each side and its floor line sits DEPTH_Y above the
+// near floor; the floor, ceiling and side walls are drawn as trapezoids between
+// the front opening and that back wall. All wall furniture (whiteboard, task
+// board, window) hangs on the back wall.
+const DEPTH_X = 24; // far-wall horizontal inset per side
+const DEPTH_Y = 22; // far-wall floor sits this far above the near floor
+// Two desk rows form a center aisle: a front row at the near floor and a back
+// row standing on the far-wall floor line. Devs always walk the aisle on the
+// near floor, then "lift" up to the back row when they settle. The lift is
+// render-only: a dev's true baseline (tn.base) never moves, so floor-detection
+// and the fire-escape exit math stay correct.
+const ROWS_OF_DESKS = 2;
+const ROW_DY = DEPTH_Y; // back row stands on the far-wall floor line
+const ROW_DX = DESK_W / 2; // and is staggered toward room center
+const ROOM_W = 260; // room interior width (door to door); the board is on the back wall
+// Desks are laid out per worktree by seatPlan(): each worktree block fills
+// columns left to right, two rows (front + back) per column, so every agent
+// gets a seat and the blocks span the floor between the left inset and the door.
+
+/** Far (back) wall rectangle in world space: the inset panel the whiteboard,
+ *  task board and window hang on, and the line the back desk row stands at. */
+const backWall = (x0: number, base: number) => ({
+  x0: x0 + DEPTH_X,
+  x1: x0 + ROOM_W - DEPTH_X,
+  yTop: base - ROOM_H + 10, // just below the receded ceiling
+  yBot: base - DEPTH_Y, // far-wall floor line
+});
+
+// Roller whiteboard: a freestanding board on castors that spawns once per
+// worktree group, standing to the left of that group's desks. ROLLER_DEPTH
+// pushes it back from the front floor so devs can gather around it.
+const ROLLER_W = 24;
+const ROLLER_H = 19;
+const ROLLER_DEPTH = 13;
+const rollerPanel = (cx: number, base: number) => ({
+  x: cx - ROLLER_W / 2,
+  y: base - ROLLER_DEPTH - 36,
+  w: ROLLER_W,
+  h: ROLLER_H,
+});
+
+/** Task board: the large kanban panel on the back wall (planned / active /
+ *  review). Placeholder art for now; agents will slide cards across it once it
+ *  is wired to git/PR data. Sits between the whiteboard and the window. */
+const boardRect = (x0: number, base: number) => {
+  const bw = backWall(x0, base);
+  return { x: bw.x0 + 44, y: bw.yTop + 6, w: bw.x1 - bw.x0 - 44 - 50, h: 26 };
+};
 // rooms share walls — one contiguous building, door to door
 const COL_STEP = ROOM_W;
 const cellX0 = (col: number) => col * COL_STEP - ROOM_W / 2;
@@ -95,7 +144,26 @@ interface Room {
   agents: CrewAgent[];
   scribbles: Stroke[];
   decor: number;
+  plan?: SeatPlan; // desks grouped by worktree (recomputed each layout)
 }
+
+/** One worktree's block of desks within a room. */
+interface DeskGroup {
+  label: string; // branch name (or "main" for the primary worktree)
+  isMain: boolean;
+  startCol: number; // first column index of this block
+  cols: number; // columns it spans
+  hue: number; // accent hue for the sign
+}
+
+interface SeatPlan {
+  seats: Map<string, { col: number; row: number }>; // agentId -> seat
+  groups: DeskGroup[];
+  totalCols: number;
+}
+
+const GROUP_GAP = 1; // empty columns (partition) between worktree blocks
+const DEFAULT_BRANCHES = new Set(["main", "master", "head", "develop", "trunk"]);
 
 interface Toon {
   agent: CrewAgent;
@@ -105,6 +173,8 @@ interface Toon {
   base: number; // floor baseline (world y)
   x0: number; // left edge of the toon's room (for lift entry/exit)
   deskIdx: number;
+  row: number; // 0 = front aisle, 1 = back row (drawn higher)
+  lift: number; // current render-only vertical offset toward the back row
   huddle: boolean;
   sitting: boolean;
   entering: boolean;
@@ -308,6 +378,7 @@ class PixelCrew {
       if (!tn) {
         tn = {
           agent: a, p: persona(a.id), x: 0, targetX: 0, base: 0, x0: 0, deskIdx: 0,
+          row: 0, lift: 0,
           huddle: false, sitting: false, entering: true, leaving: false,
           ph: (hash(a.id) % 628) / 100,
         };
@@ -318,6 +389,48 @@ class PixelCrew {
     }
     this.agents = agents;
     this.layout();
+  }
+
+  /** Group a room's agents into per-worktree desk blocks. The main worktree
+   *  (default branch, or a "." / root checkout) comes first and is labelled
+   *  "main"; each other worktree gets a contiguous block of columns after a
+   *  one-column partition gap, signed with its branch. */
+  private seatPlan(agents: CrewAgent[]): SeatPlan {
+    const byTree = new Map<string, CrewAgent[]>();
+    for (const a of agents) {
+      const key = a.worktree && a.worktree.trim() ? a.worktree : ".";
+      if (!byTree.has(key)) byTree.set(key, []);
+      byTree.get(key)!.push(a);
+    }
+    const isMain = (key: string, ags: CrewAgent[]) =>
+      key === "." || key === "" || DEFAULT_BRANCHES.has((ags[0].branch ?? "").toLowerCase());
+    const label = (key: string, ags: CrewAgent[]) =>
+      ags[0].branch || key.split(/[\\/]/).pop() || key;
+    const entries = [...byTree.entries()].sort((a, b) => {
+      const am = isMain(a[0], a[1]) ? 0 : 1;
+      const bm = isMain(b[0], b[1]) ? 0 : 1;
+      if (am !== bm) return am - bm;
+      return label(a[0], a[1]) < label(b[0], b[1]) ? -1 : 1;
+    });
+    const seats = new Map<string, { col: number; row: number }>();
+    const groups: DeskGroup[] = [];
+    let startCol = 0;
+    for (const [key, ags] of entries) {
+      const cols = Math.max(1, Math.ceil(ags.length / ROWS_OF_DESKS));
+      ags.forEach((a, i) => {
+        seats.set(a.id, { col: startCol + Math.floor(i / ROWS_OF_DESKS), row: i % ROWS_OF_DESKS });
+      });
+      const main = isMain(key, ags);
+      groups.push({
+        label: main ? "main" : label(key, ags),
+        isMain: main,
+        startCol,
+        cols,
+        hue: main ? 150 : hash(key) % 360,
+      });
+      startCol += cols + GROUP_GAP;
+    }
+    return { seats, groups, totalCols: Math.max(0, startCol - GROUP_GAP) };
   }
 
   /** Merge reserved rooms + live repos into grid cells; assign toon targets. */
@@ -422,13 +535,16 @@ class PixelCrew {
       const activeCount = room.agents.filter((a) => a.state === "active").length;
       const huddle = activeCount >= 2;
       let wbSlot = 0;
+      room.plan = this.seatPlan(room.agents); // desks grouped by worktree
       room.agents.forEach((a, di) => {
         const tn = this.toons.get(a.id);
         if (!tn) return;
         tn.base = base;
         tn.x0 = room.x0;
         tn.deskIdx = di;
-        const deskX = room.x0 + WB_W + (di % MAX_DESKS) * DESK_W;
+        const seat = room.plan!.seats.get(a.id) ?? { col: 0, row: 0 };
+        tn.row = seat.row;
+        const deskX = room.x0 + WB_W + seat.col * DESK_W + seat.row * ROW_DX;
         if (a.state === "active" && huddle) {
           tn.huddle = true;
           tn.targetX = room.x0 + 26 + wbSlot * 9;
@@ -657,6 +773,11 @@ class PixelCrew {
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
       tn.sitting = tn.agent.state === "active" && !tn.huddle && !tn.entering && Math.abs(dx) <= 1;
+      // settle up into the back row once parked at the desk; drop to the aisle
+      // (lift -> 0) whenever walking, entering, leaving, or huddling
+      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.huddle;
+      const targetLift = atDesk ? tn.row * ROW_DY : 0;
+      tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
     }
     for (let i = this.leaving.length - 1; i >= 0; i--) {
       const tn = this.leaving[i];
@@ -704,10 +825,10 @@ class PixelCrew {
       });
       if (huddlers.length >= 2 && r.scribbles.length < 16 && this.frame % 6 === 0) {
         const base = floorBase(r.floor);
-        const bx = r.x0 + 5, by = base - ROOM_H + 14;
+        const wb = rollerPanel(r.x0 + WB_W / 2, base); // the main group's roller board
         r.scribbles.push({
-          x1: bx + 2 + Math.random() * 16, y1: by + 2 + Math.random() * 8,
-          x2: bx + 2 + Math.random() * 16, y2: by + 2 + Math.random() * 8,
+          x1: wb.x + 3 + Math.random() * (wb.w - 6), y1: wb.y + 3 + Math.random() * (wb.h - 6),
+          x2: wb.x + 3 + Math.random() * (wb.w - 6), y2: wb.y + 3 + Math.random() * (wb.h - 6),
           color: Math.random() < 0.3 ? "#d9534f" : Math.random() < 0.5 ? "#2b6cb0" : "#2d3438",
         });
       }
@@ -718,7 +839,7 @@ class PixelCrew {
         if (tn.agent.state === "complete") {
           for (let i = 0; i < 7; i++) {
             this.particles.push({
-              x: tn.x, y: tn.base - 18, vx: (Math.random() - 0.5) * 28, vy: -22 - Math.random() * 16,
+              x: tn.x, y: tn.base - tn.lift - 18, vx: (Math.random() - 0.5) * 28, vy: -22 - Math.random() * 16,
               life: 1, color: ACCENTS[i % ACCENTS.length], size: 1.4, gravity: 60,
             });
           }
@@ -729,7 +850,7 @@ class PixelCrew {
       for (const tn of this.toons.values()) {
         if (tn.agent.state === "error") {
           this.particles.push({
-            x: tn.x + 6, y: tn.base - 13, vx: 2 + Math.random() * 3, vy: -6 - Math.random() * 4,
+            x: tn.x + 6, y: tn.base - tn.lift - 13, vx: 2 + Math.random() * 3, vy: -6 - Math.random() * 4,
             life: 1, color: "#7a8287", size: 1.2, gravity: -4,
           });
         }
@@ -799,7 +920,7 @@ class PixelCrew {
     }
     // toons
     for (const tn of this.toons.values()) {
-      const s = this.screenOf(tn.x, tn.base);
+      const s = this.screenOf(tn.x, tn.base - tn.lift);
       const w = 14 * this.cam.z, h = 22 * this.cam.z;
       if (mx > s.x - w / 2 && mx < s.x + w / 2 && my > s.y - h && my < s.y + 4 * this.cam.z) {
         return { agent: tn.agent.id };
@@ -897,29 +1018,11 @@ class PixelCrew {
     }
 
     // rooms back layer
-    const occupants = new Map<string, Map<number, Toon>>();
-    for (const tn of this.toons.values()) {
-      if (!occupants.has(tn.agent.repo)) occupants.set(tn.agent.repo, new Map());
-      if (tn.sitting) occupants.get(tn.agent.repo)!.set(tn.deskIdx, tn);
-    }
     for (const r of this.rooms.values()) this.drawRoomBack(ctx, r);
 
     // ghost slots (reserve a directory, any direction)
     for (const g of this.ghosts) this.drawGhost(ctx, g);
 
-    // chairs
-    for (const r of this.rooms.values()) {
-      if (r.built < 0.7) continue;
-      const base = floorBase(r.floor);
-      const slots = Math.min(MAX_DESKS, Math.max(1, r.agents.length || 1));
-      for (let i = 0; i < slots; i++) {
-        const dx = r.x0 + WB_W + i * DESK_W;
-        ctx.fillStyle = "#3a4046";
-        ctx.fillRect(dx + 10, base - 8, 7, 1.6);
-        ctx.fillRect(dx + 15.6, base - 14, 1.4, 7);
-        ctx.fillRect(dx + 13, base - 6.5, 1.4, 6.5);
-      }
-    }
     // fire-escape ladders under departing climbers
     for (const tn of this.leaving) {
       if (tn.ladderFrom === undefined || tn.ladderX === undefined) continue;
@@ -933,12 +1036,32 @@ class PixelCrew {
       }
     }
 
-    // toons
-    const allToons = [...this.toons.values(), ...this.leaving];
-    allToons.sort((a, b) => a.x - b.x);
-    for (const tn of allToons) this.drawToon(ctx, tn);
-    // desk fronts
-    for (const r of this.rooms.values()) this.drawDesks(ctx, r, occupants.get(r.name));
+    // crew + furniture, layered back row -> front row so the aisle reads with
+    // depth: for each row we paint its chairs, then its devs, then its desk
+    // fronts (which occlude that row's seated devs).
+    const chair = (dx: number, db: number) => {
+      ctx.fillStyle = "#3a4046";
+      ctx.fillRect(dx + 10, db - 8, 7, 1.6);
+      ctx.fillRect(dx + 15.6, db - 14, 1.4, 7);
+      ctx.fillRect(dx + 13, db - 6.5, 1.4, 6.5);
+    };
+    const displayRow = (tn: Toon) => (tn.lift > ROW_DY / 2 ? 1 : 0);
+    const seated = [...this.toons.values()];
+    for (let row = ROWS_OF_DESKS - 1; row >= 0; row--) {
+      for (const r of this.rooms.values()) {
+        if (r.built < 0.7 || !r.plan) continue;
+        const base = floorBase(r.floor);
+        for (const [, seat] of r.plan.seats) {
+          if (seat.row !== row) continue;
+          chair(r.x0 + WB_W + seat.col * DESK_W + row * ROW_DX, base - row * ROW_DY);
+        }
+      }
+      const rowToons = seated.filter((t) => displayRow(t) === row);
+      for (const tn of this.leaving) if (displayRow(tn) === row) rowToons.push(tn);
+      rowToons.sort((a, b) => a.x - b.x);
+      for (const tn of rowToons) this.drawToon(ctx, tn);
+      for (const r of this.rooms.values()) this.drawDesks(ctx, r, row);
+    }
     // particles
     for (const p of this.particles) {
       ctx.globalAlpha = clamp(p.life, 0, 1);
@@ -1002,7 +1125,7 @@ class PixelCrew {
     }
     // toon labels + bubbles
     for (const tn of this.toons.values()) {
-      const s = this.screenOf(tn.x, tn.base - 23);
+      const s = this.screenOf(tn.x, tn.base - tn.lift - 23);
       const st = tn.agent.state;
       ctx.font = "9px 'IBM Plex Mono', monospace";
       ctx.textAlign = "center";
@@ -1101,61 +1224,76 @@ class PixelCrew {
     ctx.fillRect(x, base - 1.5, w * eFloor, 1.2);
 
     if (eWall <= 0) return;
-    const wallH = H * eWall;
-    ctx.fillStyle = underground ? `hsl(${r.hue} 10% 16%)` : `hsl(${r.hue} 14% 20%)`;
-    ctx.fillRect(x + 1.5, base - wallH, w - 3, wallH);
-    ctx.fillStyle = underground ? `hsl(${r.hue} 12% 12%)` : `hsl(${r.hue} 16% 16%)`;
-    ctx.fillRect(x + 1.5, base - Math.min(10, wallH), w - 3, Math.min(10, wallH));
+    // shallow one-point-perspective box: near opening -> inset far wall
+    const grow = eWall; // 0..1 build reveal
+    const bw = backWall(x, base);
+    const topY = base - H * grow; // near ceiling rises as the room builds
+    const byT = base - (base - bw.yTop) * grow; // far-wall top rises with it
+    const byB = base - DEPTH_Y * grow; // ...and its floor line, so the box never inverts
+    const shade = (l: number) => `hsl(${r.hue} ${underground ? 10 : 15}% ${l}%)`;
+    // perspective floor (near edge -> far wall)
+    ctx.fillStyle = underground ? "#241c12" : "#2b2218";
+    ctx.beginPath();
+    ctx.moveTo(x, base); ctx.lineTo(x + w, base);
+    ctx.lineTo(bw.x1, byB); ctx.lineTo(bw.x0, byB); ctx.closePath(); ctx.fill();
+    // ceiling (darkest)
+    ctx.fillStyle = shade(underground ? 9 : 11);
+    ctx.beginPath();
+    ctx.moveTo(x, topY); ctx.lineTo(x + w, topY);
+    ctx.lineTo(bw.x1, byT); ctx.lineTo(bw.x0, byT); ctx.closePath(); ctx.fill();
+    // side walls (in shadow)
+    ctx.fillStyle = shade(underground ? 12 : 15);
+    ctx.beginPath();
+    ctx.moveTo(x, topY); ctx.lineTo(bw.x0, byT); ctx.lineTo(bw.x0, byB); ctx.lineTo(x, base); ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x + w, topY); ctx.lineTo(bw.x1, byT); ctx.lineTo(bw.x1, byB); ctx.lineTo(x + w, base); ctx.closePath(); ctx.fill();
+    // far wall (lit)
+    ctx.fillStyle = shade(underground ? 17 : 22);
+    ctx.fillRect(bw.x0, byT, bw.x1 - bw.x0, byB - byT);
+    ctx.fillStyle = shade(underground ? 12 : 16); // baseboard
+    ctx.fillRect(bw.x0, byB - 2, bw.x1 - bw.x0, 2);
+    // near-edge pillars
     ctx.fillStyle = "#1a2128";
-    ctx.fillRect(x, base - wallH, 1.5, wallH + 3);
-    ctx.fillRect(x + w - 1.5, base - wallH, 1.5, wallH + 3);
-    if (eWall >= 1) ctx.fillRect(x, base - H - 1.5, w, 1.5);
+    ctx.fillRect(x, topY, 1.5, base - topY + 3);
+    ctx.fillRect(x + w - 1.5, topY, 1.5, base - topY + 3);
+    if (grow >= 1) ctx.fillRect(x, base - H - 1.5, w, 1.5);
 
     if (eFurn <= 0) return;
     ctx.globalAlpha = eFurn;
 
-    // window above ground; framed rock face below
-    const winX = x + w - DOOR_W - 24, winY = base - H + 8;
+    // task board on the far wall (placeholder kanban: planned / active / review)
+    this.drawBoard(ctx, r, base);
+
+    // window: a large pane on the right of the far wall (rock face underground)
+    const win = { x: bw.x1 - 44, y: bw.yTop + 6, w: 38, h: 28 };
     ctx.fillStyle = "#10151c";
-    ctx.fillRect(winX - 1, winY - 1, 20, 15);
+    ctx.fillRect(win.x - 2, win.y - 2, win.w + 4, win.h + 4);
     if (underground) {
       ctx.fillStyle = "#241a12";
-      ctx.fillRect(winX, winY, 18, 13);
+      ctx.fillRect(win.x, win.y, win.w, win.h);
       ctx.fillStyle = "#3a2c1d";
-      ctx.fillRect(winX + 3, winY + 4, 4, 2);
-      ctx.fillRect(winX + 11, winY + 8, 5, 2);
+      ctx.fillRect(win.x + 6, win.y + 8, 8, 4);
+      ctx.fillRect(win.x + 22, win.y + 16, 10, 4);
       // a worm
       ctx.fillStyle = "#c98ab0";
-      if (this.frame % 16 < 8) ctx.fillRect(winX + 8, winY + 10, 2.4, 1);
+      if (this.frame % 16 < 8) ctx.fillRect(win.x + 16, win.y + 20, 4, 2);
     } else {
-      const sky = ctx.createLinearGradient(0, winY, 0, winY + 13);
+      const sky = ctx.createLinearGradient(0, win.y, 0, win.y + win.h);
       sky.addColorStop(0, "#2c4a6e");
       sky.addColorStop(1, "#b86a3a");
       ctx.fillStyle = sky;
-      ctx.fillRect(winX, winY, 18, 13);
+      ctx.fillRect(win.x, win.y, win.w, win.h);
       ctx.fillStyle = "rgba(255,255,255,0.7)";
-      ctx.fillRect(winX + 3, winY + 3, 3, 1);
-      ctx.fillRect(winX + 11, winY + 6, 4, 1);
+      ctx.fillRect(win.x + 6, win.y + 6, 6, 2);
+      ctx.fillRect(win.x + 22, win.y + 12, 8, 2);
     }
+    // muntins (cross bars)
     ctx.fillStyle = "#10151c";
-    ctx.fillRect(winX + 8.5, winY, 1, 13);
+    ctx.fillRect(win.x + win.w / 2 - 0.5, win.y, 1, win.h);
+    ctx.fillRect(win.x, win.y + win.h / 2 - 0.5, win.w, 1);
 
-    // whiteboard
-    const bx = x + 5, by = base - H + 14;
-    ctx.fillStyle = "#20262c";
-    ctx.fillRect(bx - 1, by - 1, 23, 15);
-    ctx.fillStyle = "#e8ecef";
-    ctx.fillRect(bx, by, 21, 13);
-    ctx.fillStyle = "#aab2b8";
-    ctx.fillRect(bx, by + 13, 21, 1.2);
-    ctx.lineWidth = 0.8;
-    for (const s of r.scribbles) {
-      ctx.strokeStyle = s.color;
-      ctx.beginPath();
-      ctx.moveTo(s.x1, s.y1);
-      ctx.lineTo(s.x2, s.y2);
-      ctx.stroke();
-    }
+    // worktree partitions + cluster signs (behind the desks/devs)
+    this.drawGroups(ctx, r, base);
 
     // plant + hash decor
     const px = x + w - DOOR_W - 6;
@@ -1188,30 +1326,51 @@ class PixelCrew {
       ctx.fillRect(x + WB_W + 3.2, base - H + 12, 4.6, 1);
     }
 
-    // ceiling lamp
-    const lx = x + w / 2;
-    ctx.fillStyle = "#20262c";
-    ctx.fillRect(lx - 0.6, base - H, 1.2, 4);
-    ctx.fillStyle = "#3a4046";
-    ctx.fillRect(lx - 3.5, base - H + 4, 7, 2);
+    // ceiling lamps: a row of pendants across the room
     const lit = r.agents.length > 0;
-    ctx.fillStyle = lit ? "rgba(255,200,110,0.07)" : "rgba(255,200,110,0.02)";
+    const LAMPS = 3;
+    for (let li = 0; li < LAMPS; li++) {
+      const lx = x + (w * (li + 1)) / (LAMPS + 1);
+      ctx.fillStyle = "#20262c";
+      ctx.fillRect(lx - 0.6, base - H, 1.2, 4);
+      ctx.fillStyle = "#3a4046";
+      ctx.fillRect(lx - 3.5, base - H + 4, 7, 2);
+      // a warm bulb that glows when the room is occupied
+      ctx.fillStyle = lit ? "#ffd27a" : "#4a4636";
+      ctx.fillRect(lx - 1.4, base - H + 5.4, 2.8, 1.6);
+      ctx.fillStyle = lit ? "rgba(255,200,110,0.07)" : "rgba(255,200,110,0.02)";
+      ctx.beginPath();
+      ctx.moveTo(lx - 3, base - H + 6);
+      ctx.lineTo(lx + 3, base - H + 6);
+      ctx.lineTo(lx + 11, base);
+      ctx.lineTo(lx - 11, base);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // door to the lift, set into the right side wall so it follows the
+    // perspective slant instead of floating on the floor
+    const sideAt = (t: number) => ({ x: x + w + (bw.x1 - (x + w)) * t, y: base + (bw.yBot - base) * t });
+    const dn = sideAt(0.14), df = sideAt(0.62); // near (front) + far (back) jambs
+    ctx.fillStyle = "#4a3520"; // frame
     ctx.beginPath();
-    ctx.moveTo(lx - 3, base - H + 6);
-    ctx.lineTo(lx + 3, base - H + 6);
-    ctx.lineTo(lx + 13, base);
-    ctx.lineTo(lx - 13, base);
+    ctx.moveTo(dn.x, dn.y);
+    ctx.lineTo(dn.x, dn.y - 22);
+    ctx.lineTo(df.x, df.y - 18);
+    ctx.lineTo(df.x, df.y);
     ctx.closePath();
     ctx.fill();
-
-    // door to the lift
-    const doorX = x + w - DOOR_W + 3;
-    ctx.fillStyle = "#5a4126";
-    ctx.fillRect(doorX, base - 21, 11, 21);
+    const pn = sideAt(0.2), pf = sideAt(0.56); // panel inset
     ctx.fillStyle = "#6e522f";
-    ctx.fillRect(doorX + 1.2, base - 19.5, 8.6, 18);
-    ctx.fillStyle = "#d9b34a";
-    ctx.fillRect(doorX + 8.2, base - 11, 1.4, 1.4);
+    ctx.beginPath();
+    ctx.moveTo(pn.x, pn.y - 1.5);
+    ctx.lineTo(pn.x, pn.y - 20);
+    ctx.lineTo(pf.x, pf.y - 16.5);
+    ctx.lineTo(pf.x, pf.y - 1.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = "#d9b34a"; // handle on the far (latch) jamb
+    ctx.fillRect(pf.x + 0.4, pf.y - 11, 1.4, 1.6);
 
     // vacant reserved rooms sit dark until a dev moves in
     if (!lit && r.path) {
@@ -1221,35 +1380,185 @@ class PixelCrew {
     ctx.globalAlpha = 1;
   }
 
-  private drawDesks(ctx: CanvasRenderingContext2D, r: Room, occ?: Map<number, Toon>) {
+  /** Placeholder task board on the far wall: a "TASKS" strip over three columns
+   *  (planned / active / review) with stub cards. Not wired to data yet — once
+   *  a room's directory has git configured, these columns will hold real tasks
+   *  / PRs that agents slide across as their state changes. */
+  private drawBoard(ctx: CanvasRenderingContext2D, r: Room, base: number) {
+    const b = boardRect(r.x0, base);
+    if (b.w < 24 || b.h < 14) return;
+    ctx.fillStyle = "#10151c"; // frame
+    ctx.fillRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+    ctx.fillStyle = "#161d24"; // panel
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = "#222d35"; // title strip
+    ctx.fillRect(b.x, b.y, b.w, 5);
+    ctx.fillStyle = "rgba(230,238,240,0.7)";
+    ctx.fillRect(b.x + 2, b.y + 2, 14, 1);
+
+    const tints = ["#5b6675", "#3a78c2", "#c89a3a"]; // planned, active, review
+    const pad = 3;
+    const top = b.y + 7;
+    const colH = b.h - 10;
+    const cw = (b.w - pad * 4) / 3;
+    for (let c = 0; c < 3; c++) {
+      const cx = b.x + pad + c * (cw + pad);
+      ctx.fillStyle = tints[c]; // column header
+      ctx.fillRect(cx, top, cw, 3);
+      ctx.fillStyle = "rgba(255,255,255,0.04)"; // well
+      ctx.fillRect(cx, top + 4, cw, colH - 4);
+      const n = 1 + (hash(r.name + "card" + c) % 3); // stub cards
+      for (let i = 0; i < n; i++) {
+        const cardY = top + 6 + i * 5;
+        if (cardY + 4 > top + colH) break;
+        ctx.fillStyle = "rgba(230,238,240,0.16)";
+        ctx.fillRect(cx + 1, cardY, cw - 2, 4);
+        ctx.fillStyle = tints[c]; // colored spine
+        ctx.fillRect(cx + 1, cardY, 1.4, 4);
+      }
+    }
+  }
+
+  /** Per-worktree furniture: a roller whiteboard spawns for every worktree
+   *  group (left of its desks; in the left inset for the main group, in the gap
+   *  before each other block so it doubles as the divider). When a room spans
+   *  more than one worktree, a hanging sign with the branch is added over each
+   *  block ("main" for the primary worktree, styled gold). Drawn in the back
+   *  layer so the devs and desks render in front. */
+  private drawGroups(ctx: CanvasRenderingContext2D, r: Room, base: number) {
+    const plan = r.plan;
+    if (!plan || plan.groups.length === 0) return;
+    const multi = plan.groups.length > 1;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    for (let gi = 0; gi < plan.groups.length; gi++) {
+      const g = plan.groups[gi];
+      const gx0 = r.x0 + WB_W + g.startCol * DESK_W;
+      const gx1 = gx0 + g.cols * DESK_W;
+      const cx = (gx0 + gx1) / 2;
+      // roller whiteboard for this worktree
+      const boardX = gi === 0 ? r.x0 + WB_W / 2 : gx0 - (GROUP_GAP * DESK_W) / 2;
+      this.drawRoller(ctx, boardX, base, g, gi === 0 ? r.scribbles : undefined);
+      if (!multi) continue;
+      // hanging sign above the block
+      let label = g.label;
+      if (label.length > 12) label = label.slice(0, 11) + "…";
+      ctx.font = "5px 'IBM Plex Mono', monospace";
+      const tw = Math.max(18, Math.round(ctx.measureText(label).width) + 8);
+      const sy = base - 50;
+      ctx.fillStyle = "#2a3138"; // mount tabs to "ceiling"
+      ctx.fillRect(cx - tw / 2 + 1, sy - 4, 1, 4);
+      ctx.fillRect(cx + tw / 2 - 2, sy - 4, 1, 4);
+      ctx.fillStyle = g.isMain ? "#caa64a" : `hsl(${g.hue} 45% 42%)`;
+      ctx.fillRect(cx - tw / 2, sy, tw, 8);
+      ctx.fillStyle = "rgba(0,0,0,0.28)";
+      ctx.fillRect(cx - tw / 2, sy + 7, tw, 1);
+      ctx.fillStyle = g.isMain ? "#2a2008" : "#0d1217";
+      ctx.fillText(label, cx, sy + 5.8);
+    }
+    ctx.restore();
+  }
+
+  /** A freestanding roller whiteboard on castors, standing at world x = cx on
+   *  the floor. The main group's board shows the live huddle scribbles; others
+   *  get a couple of deterministic doodles. */
+  private drawRoller(ctx: CanvasRenderingContext2D, cx: number, base: number, g: DeskGroup, scribbles?: Stroke[]) {
+    const panel = rollerPanel(cx, base);
+    const stand = base - ROLLER_DEPTH; // floor line it rolls on (pushed back)
+    // A-frame legs + castors
+    ctx.fillStyle = "#3a4046";
+    ctx.fillRect(cx - 7, stand - 13, 1.4, 13);
+    ctx.fillRect(cx + 5.6, stand - 13, 1.4, 13);
+    ctx.fillRect(cx - 7, stand - 13.4, 13.6, 1.4); // cross rail under the tray
+    ctx.fillStyle = "#171c21";
+    ctx.fillRect(cx - 8.4, stand - 1.8, 2.8, 1.8); // left castor
+    ctx.fillRect(cx + 5.4, stand - 1.8, 2.8, 1.8); // right castor
+    // frame + white surface
+    ctx.fillStyle = "#20262c";
+    ctx.fillRect(panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4);
+    ctx.fillStyle = "#e8ecef";
+    ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+    ctx.fillStyle = "#aab2b8"; // marker tray
+    ctx.fillRect(panel.x - 1, panel.y + panel.h, panel.w + 2, 1.6);
+    ctx.fillStyle = g.isMain ? "#caa64a" : `hsl(${g.hue} 45% 50%)`; // worktree accent
+    ctx.fillRect(panel.x, panel.y, panel.w, 1.4);
+    // marks
+    ctx.lineWidth = 0.8;
+    if (scribbles && scribbles.length) {
+      for (const s of scribbles) {
+        ctx.strokeStyle = s.color;
+        ctx.beginPath();
+        ctx.moveTo(s.x1, s.y1);
+        ctx.lineTo(s.x2, s.y2);
+        ctx.stroke();
+      }
+    } else {
+      const h = hash(g.label);
+      ctx.strokeStyle = "#2b6cb0";
+      ctx.beginPath();
+      ctx.moveTo(panel.x + 3, panel.y + 6 + (h % 3));
+      ctx.lineTo(panel.x + panel.w - 4, panel.y + 7 + (h % 4));
+      ctx.stroke();
+      ctx.strokeStyle = "#d9534f";
+      ctx.beginPath();
+      ctx.moveTo(panel.x + 4, panel.y + 12);
+      ctx.lineTo(panel.x + 9 + (h % 6), panel.y + 14);
+      ctx.stroke();
+      ctx.fillStyle = "#2d3438";
+      ctx.fillRect(panel.x + 4, panel.y + 4, 5 + (h % 5), 1);
+    }
+  }
+
+  private drawDesks(ctx: CanvasRenderingContext2D, r: Room, row: number) {
     const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
-    if (eFurn <= 0) return;
+    if (eFurn <= 0 || !r.plan) return;
     const base = floorBase(r.floor);
+    const db = base - row * ROW_DY; // this row's baseline (back row sits higher)
     ctx.globalAlpha = eFurn;
-    const slots = Math.min(MAX_DESKS, Math.max(1, r.agents.length || 1));
-    for (let i = 0; i < slots; i++) {
-      const dx = r.x0 + WB_W + i * DESK_W;
-      const tn = occ?.get(i);
-      const st = tn?.agent.state;
+    for (const [id, seat] of r.plan.seats) {
+      if (seat.row !== row) continue;
+      const dx = r.x0 + WB_W + seat.col * DESK_W + row * ROW_DX;
+      const tn = this.toons.get(id);
+      const occupied = !!tn?.sitting; // monitor lights only when the dev is seated
+      const st = occupied ? tn!.agent.state : undefined;
       ctx.fillStyle = "#6e522f";
-      ctx.fillRect(dx + 2, base - 11, 18, 2);
+      ctx.fillRect(dx + 2, db - 11, 18, 2);
       ctx.fillStyle = "#54401f";
-      ctx.fillRect(dx + 3, base - 9, 1.5, 9);
-      ctx.fillRect(dx + 17.5, base - 9, 1.5, 9);
-      const flicker = tn && st === "active" && this.frame % 4 < 2;
+      ctx.fillRect(dx + 3, db - 9, 1.5, 9);
+      ctx.fillRect(dx + 17.5, db - 9, 1.5, 9);
+      const flicker = occupied && st === "active" && this.frame % 4 < 2;
+      const screenCol = st === "error" ? "#8a2f28" : occupied ? (flicker ? "#9fd8ff" : "#7fc4ef") : "#222d35";
+      // monitor on a stand, screen turned to face the dev seated on the right
+      ctx.fillStyle = "#171c21"; // neck + foot
+      ctx.fillRect(dx + 6.4, db - 11.4, 1.6, 1.4);
+      ctx.fillRect(dx + 4.4, db - 10.2, 5, 1);
+      // bezel: trapezoid, taller/nearer on the right (toward the dev)
       ctx.fillStyle = "#171c21";
-      ctx.fillRect(dx + 4, base - 18, 9, 7);
-      ctx.fillStyle = st === "error" ? "#8a2f28" : tn ? (flicker ? "#9fd8ff" : "#7fc4ef") : "#222d35";
-      ctx.fillRect(dx + 4.8, base - 17.2, 7.4, 5.4);
-      ctx.fillStyle = "#171c21";
-      ctx.fillRect(dx + 8, base - 11, 1.4, 1);
+      ctx.beginPath();
+      ctx.moveTo(dx + 4, db - 16);
+      ctx.lineTo(dx + 11, db - 18);
+      ctx.lineTo(dx + 11, db - 11.4);
+      ctx.lineTo(dx + 4, db - 12.4);
+      ctx.closePath();
+      ctx.fill();
+      // lit screen inset, same slant so it reads as facing the dev
+      ctx.fillStyle = screenCol;
+      ctx.beginPath();
+      ctx.moveTo(dx + 4.9, db - 15.4);
+      ctx.lineTo(dx + 10.1, db - 16.9);
+      ctx.lineTo(dx + 10.1, db - 12.2);
+      ctx.lineTo(dx + 4.9, db - 13.1);
+      ctx.closePath();
+      ctx.fill();
+      // keyboard in front of the dev, between them and the screen
       ctx.fillStyle = "#2a3138";
-      ctx.fillRect(dx + 13.5, base - 11.8, 5, 1);
+      ctx.fillRect(dx + 8.5, db - 11.2, 5.5, 1);
       ctx.fillStyle = "#d9534f";
-      ctx.fillRect(dx + 0.5, base - 13, 2, 2);
-      if (tn && this.frame % 8 < 4) {
+      ctx.fillRect(dx + 0.5, db - 13, 2, 2);
+      if (occupied && this.frame % 8 < 4) {
         ctx.fillStyle = "rgba(255,255,255,0.25)";
-        ctx.fillRect(dx + 1, base - 15, 0.8, 1.4);
+        ctx.fillRect(dx + 1, db - 15, 0.8, 1.4);
       }
     }
     ctx.globalAlpha = 1;
@@ -1262,13 +1571,12 @@ class PixelCrew {
     const f = this.frame + Math.floor(tn.ph * 10);
     const x = Math.round(tn.x * 2) / 2;
     const sitting = tn.sitting;
-    const y0 = tn.base + (sitting ? -3.5 : 0);
+    const y0 = tn.base - tn.lift + (sitting ? -3.5 : 0);
     const hop =
-      st === "complete" && !walking ? -Math.abs(Math.sin(f * 0.55 + tn.ph)) * 2 :
       st === "waiting" && !walking ? -Math.abs(Math.sin(f * 0.35 + tn.ph)) * 1 : 0;
     const slump = st === "error" && !walking ? 1.4 : 0;
     const base = y0 + hop;
-    const facingLeft = tn.huddle;
+    const facingLeft = tn.huddle || sitting; // seated devs face their monitor (to the left)
 
     const climbing = !!tn.climbing;
     ctx.fillStyle = p.pants;
@@ -1307,11 +1615,12 @@ class PixelCrew {
       ctx.fillRect(x - 4.4, ty - 3.4 + g, 1.6, 1.6);
       ctx.fillRect(x + 2.6, ty - 3.4 + (1 - g), 1.6, 1.6);
     } else if (sitting) {
+      // typing toward the keyboard/monitor on the left
       const tap = f % 2 === 0 ? 0 : 0.8;
-      ctx.fillRect(x + 2.6, ty + 2.2, 3.4, 1.4);
+      ctx.fillRect(x - 6, ty + 2.2, 3.4, 1.4);
       ctx.fillStyle = handC;
-      ctx.fillRect(x + 5.6, ty + 2 + tap, 1.4, 1.4);
-      ctx.fillRect(x + 5.6, ty + 3.6 - tap, 1.4, 1.4);
+      ctx.fillRect(x - 7, ty + 2 + tap, 1.4, 1.4);
+      ctx.fillRect(x - 7, ty + 3.6 - tap, 1.4, 1.4);
     } else if (tn.huddle && !walking) {
       const lead = tn.deskIdx % 2 === 0;
       if (lead) {
@@ -1337,19 +1646,12 @@ class PixelCrew {
       ctx.fillRect(x - 4.4, ty - 0.6, 1.6, 2.8);
       ctx.fillStyle = handC;
       ctx.fillRect(x - 3.2, ty - 2, 1.5, 1.5); // cupped at the mouth
-    } else if (st === "complete" && !walking) {
-      const v = f % 2 === 0 ? 0 : 1;
-      ctx.fillRect(x - 4.6, ty - 3 + v, 1.5, 4);
-      ctx.fillRect(x + 3.1, ty - 3 + (1 - v), 1.5, 4);
-      ctx.fillStyle = handC;
-      ctx.fillRect(x - 4.8, ty - 4.6 + v, 1.8, 1.8);
-      ctx.fillRect(x + 2.9, ty - 4.6 + (1 - v), 1.8, 1.8);
     } else if (walking) {
       const sw = f % 2 === 0 ? 1 : -1;
       ctx.fillRect(x - 4.2, ty + 1.5 + sw * 0.8, 1.4, 4);
       ctx.fillRect(x + 2.8, ty + 1.5 - sw * 0.8, 1.4, 4);
-    } else if (st === "idle") {
-      // off the clock: scrolling on their phone (clearly NOT working)
+    } else if (st === "idle" || st === "complete") {
+      // not working (done, or off the clock): scrolling on their phone
       ctx.fillRect(x - 4.2, ty + 1.5, 1.4, 4); // left arm hangs
       ctx.fillRect(x + 2.6, ty + 1.2, 1.4, 2.4); // right arm bent up
       // phone with glowing screen
@@ -1390,7 +1692,7 @@ class PixelCrew {
     if (!blink) {
       ctx.fillStyle = "#14181b";
       // eyes drop to the phone when idle, occasionally glancing back up
-      const phoneGaze = st === "idle" && !walking && f % 50 > 6 ? 0.9 : 0;
+      const phoneGaze = (st === "idle" || st === "complete") && !walking && f % 50 > 6 ? 0.9 : 0;
       const ey = hy + 2.4 + slump * 0.5 + phoneGaze;
       if (facingLeft || (walking && tn.targetX < tn.x)) {
         ctx.fillRect(x - 2.2, ey, 1.1, 1.1);
@@ -1411,7 +1713,7 @@ class PixelCrew {
 }
 
 /* ============ window API ============ */
-(window as any).FleetCrew = {
+(window as any).DevTowerCrew = {
   _instance: null as PixelCrew | null,
   mount(container: HTMLElement, canvas: HTMLCanvasElement) {
     this._instance = new PixelCrew(container, canvas);

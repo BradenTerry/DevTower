@@ -1,19 +1,19 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { FleetStore } from "./fleet";
+import { DevTowerStore } from "./store";
 import { resolveCwd } from "./git";
 
 /**
  * Binds one NATIVE integrated terminal per agent, rooted in the agent's real
  * worktree. Selecting an agent reveals its terminal; sending input writes to
- * that terminal's PTY. If `fleet.launchCommand` is set, it runs on first open
+ * that terminal's PTY. If `devtower.launchCommand` is set, it runs on first open
  * (e.g. to resume an agent session), so subsequent sends go to that process's
  * stdin — this is how a live session is continued.
  */
 export class TerminalManager {
   private terminals = new Map<string, vscode.Terminal>();
 
-  constructor(private store: FleetStore) {
+  constructor(private store: DevTowerStore) {
     vscode.window.onDidCloseTerminal((t) => {
       for (const [id, term] of this.terminals) {
         if (term === t) this.terminals.delete(id);
@@ -31,11 +31,11 @@ export class TerminalManager {
         name: `◆ ${agent.name}`,
         iconPath: new vscode.ThemeIcon("pulse"),
         cwd,
-        message: `Fleet session — ${agent.repo} ⌥ ${agent.branch}`,
+        message: `DevTower session — ${agent.repo} ⌥ ${agent.branch}`,
       });
       this.terminals.set(agentId, term);
 
-      const cfg = vscode.workspace.getConfiguration("fleet");
+      const cfg = vscode.workspace.getConfiguration("devtower");
       const cmd = cfg.get<string>("launchCommand", "").trim();
       if (cmd) {
         const resolved = cmd

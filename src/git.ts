@@ -2,7 +2,7 @@ import { execFile } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import * as vscode from "vscode";
-import { Agent } from "./fleet";
+import { Agent } from "./store";
 
 export interface GitFile {
   /** repo-relative path */
@@ -182,8 +182,8 @@ export async function unstageAll(cwd: string): Promise<void> {
 
 /** Create a new worktree + branch off the repo at `dir`. Returns the worktree path. */
 export async function worktreeAdd(dir: string, name: string, n: number): Promise<{ wtPath: string; branch: string }> {
-  const wtPath = path.resolve(dir, "..", `${name}-fleet-${n}`);
-  const branch = `fleet/${name}-${n}`;
+  const wtPath = path.resolve(dir, "..", `${name}-devtower-${n}`);
+  const branch = `devtower/${name}-${n}`;
   await runGit(dir, ["worktree", "add", wtPath, "-b", branch]);
   return { wtPath, branch };
 }

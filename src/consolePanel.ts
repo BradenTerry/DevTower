@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { FleetStore, Agent, SessionMessage } from "./fleet";
+import { DevTowerStore, Agent, SessionMessage } from "./store";
 import { TerminalManager } from "./terminals";
 import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
@@ -27,14 +27,16 @@ export interface ReservedRoom {
 /** Full-window cockpit hosted as an editor-area WebviewPanel. */
 export class ConsolePanel {
   public static current: ConsolePanel | undefined;
-  private static readonly viewType = "fleet.console";
+  private static readonly viewType = "devtower.console";
   private usageTimer?: ReturnType<typeof setInterval>;
   private usageWatcher?: fs.FSWatcher;
   private disposables: vscode.Disposable[] = [];
+  /** Rooms with an add-agent flow in flight, so a double-click can't spawn two. */
+  private addingRooms = new Set<string>();
 
   static createOrShow(
     context: vscode.ExtensionContext,
-    store: FleetStore,
+    store: DevTowerStore,
     terminals: TerminalManager,
     prs: PrService,
     discovery?: ClaudeDiscovery
@@ -54,14 +56,14 @@ export class ConsolePanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")],
       }
     );
-    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "fleet.svg");
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "devtower.svg");
     ConsolePanel.current = new ConsolePanel(panel, context, store, terminals, prs, discovery);
   }
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
-    private readonly store: FleetStore,
+    private readonly store: DevTowerStore,
     private readonly terminals: TerminalManager,
     private readonly prs: PrService,
     private readonly discovery?: ClaudeDiscovery
@@ -129,7 +131,7 @@ export class ConsolePanel {
   private postPrs(): void {
     this.panel.webview.postMessage({
       type: "prs",
-      fleet: this.prs.getFleet(),
+      crew: this.prs.getCrew(),
       review: this.prs.getReview(),
     });
   }
@@ -139,7 +141,7 @@ export class ConsolePanel {
   /** Load reservations, healing legacy/corrupt entries (empty names, missing
    *  cols, dropped paths) so every room has a unique, non-empty key. */
   private getRooms(): ReservedRoom[] {
-    const raw = this.context.workspaceState.get<ReservedRoom[]>("fleet.reservedRooms", []);
+    const raw = this.context.workspaceState.get<ReservedRoom[]>("devtower.reservedRooms", []);
     const seen = new Set<string>();
     const rooms: ReservedRoom[] = [];
     for (const r of raw) {
@@ -159,7 +161,7 @@ export class ConsolePanel {
   }
 
   private async saveRooms(rooms: ReservedRoom[]): Promise<void> {
-    await this.context.workspaceState.update("fleet.reservedRooms", rooms);
+    await this.context.workspaceState.update("devtower.reservedRooms", rooms);
   }
 
   /** Click on an empty grid slot → pick a directory → reserve the room. */
@@ -204,6 +206,17 @@ export class ConsolePanel {
 
   /** "+ dev" button on a room → choose worktree vs base dir → spawn an agent. */
   private async addAgent(roomName: string): Promise<void> {
+    // guard against a double-click queuing two adds before the first applies
+    if (this.addingRooms.has(roomName)) return;
+    this.addingRooms.add(roomName);
+    try {
+      await this.addAgentInner(roomName);
+    } finally {
+      this.addingRooms.delete(roomName);
+    }
+  }
+
+  private async addAgentInner(roomName: string): Promise<void> {
     // resolve the room's directory: reserved room first, else any agent in that repo
     const reserved = this.getRooms().find((r) => r.name === roomName);
     let dir = reserved?.path;
@@ -212,7 +225,7 @@ export class ConsolePanel {
       dir = peer ? resolveCwd(peer) : undefined;
     }
     if (!dir) {
-      vscode.window.showWarningMessage(`Fleet: no directory known for room "${roomName}".`);
+      vscode.window.showWarningMessage(`DevTower: no directory known for room "${roomName}".`);
       return;
     }
 
@@ -235,14 +248,14 @@ export class ConsolePanel {
     let branch = await currentBranch(dir);
     if (pick.id === "wt") {
       if (!repoReady) {
-        vscode.window.showWarningMessage("Fleet: not a git repository — using the project directory instead.");
+        vscode.window.showWarningMessage("DevTower: not a git repository — using the project directory instead.");
       } else {
         try {
           const wt = await worktreeAdd(dir, roomName, n);
           worktree = wt.wtPath;
           branch = wt.branch;
         } catch (e) {
-          vscode.window.showErrorMessage(`Fleet: worktree creation failed (${String(e).slice(0, 120)}) — using the project directory.`);
+          vscode.window.showErrorMessage(`DevTower: worktree creation failed (${String(e).slice(0, 120)}) — using the project directory.`);
         }
       }
     }
@@ -262,8 +275,8 @@ export class ConsolePanel {
     this.store.setSelected(id);
 
     // start a real Claude CLI session in the agent's terminal (worktree cwd);
-    // fleet.launchCommand takes precedence if the user configured one
-    const cfg = vscode.workspace.getConfiguration("fleet");
+    // devtower.launchCommand takes precedence if the user configured one
+    const cfg = vscode.workspace.getConfiguration("devtower");
     const launch = cfg.get<string>("launchCommand", "").trim();
     const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim();
     if (!launch && claudeCmd) this.terminals.send(id, claudeCmd);
@@ -386,7 +399,7 @@ export class ConsolePanel {
         if (cwd && (await isRepo(cwd))) {
           if (act === "stageAll") await stageAll(cwd);
           else await unstageAll(cwd);
-          vscode.commands.executeCommand("fleet.refreshChanges");
+          vscode.commands.executeCommand("devtower.refreshChanges");
           await this.postChanges(id);
         }
         break;
@@ -431,7 +444,7 @@ export class ConsolePanel {
     }
     if (staging) await stage(cwd, path);
     else await unstage(cwd, path);
-    vscode.commands.executeCommand("fleet.refreshChanges");
+    vscode.commands.executeCommand("devtower.refreshChanges");
     await this.postChanges(id);
   }
 
@@ -559,7 +572,7 @@ export class ConsolePanel {
       <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
       <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
       <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
-      <span class="tstat"><b id="fleet-count">0</b><span class="lbl">crew</span></span>
+      <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
     </div>
     <div class="usage" id="usage" hidden>
       <span class="umeter" id="u-5h" title="Plan usage — 5-hour window">

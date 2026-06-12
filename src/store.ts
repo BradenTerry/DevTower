@@ -72,12 +72,12 @@ export const STATE_LABEL: Record<AgentState, string> = {
 };
 
 /**
- * Owns the fleet of agents. Source of truth for the extension.
+ * Owns the tower of agents. Source of truth for the extension.
  * Agents arrive from two places:
  *   1. mock seed data (for trying the UI), and
  *   2. an append-only state.jsonl file any agent runner can write to.
  */
-export class FleetStore {
+export class DevTowerStore {
   private agents = new Map<string, Agent>();
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
@@ -160,8 +160,8 @@ export class FleetStore {
 
   /** Begin watching the configured state.jsonl for live events. */
   watchStateFile(): void {
-    const cfg = vscode.workspace.getConfiguration("fleet");
-    const rel = cfg.get<string>("stateFile", ".fleet/state.jsonl");
+    const cfg = vscode.workspace.getConfiguration("devtower");
+    const rel = cfg.get<string>("stateFile", ".devtower/state.jsonl");
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this.stateFileAbs = path.isAbsolute(rel) ? rel : root ? path.join(root, rel) : undefined;
     if (!this.stateFileAbs) return;
