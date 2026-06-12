@@ -31,6 +31,9 @@
     window.FleetCrew.onReserve((floor, col) => vscode.postMessage({ type: "reserveRoom", floor, col }));
     window.FleetCrew.onAddAgent((room) => vscode.postMessage({ type: "addAgent", room }));
     window.FleetCrew.onRemoveRoom((room) => vscode.postMessage({ type: "removeRoom", room }));
+    window.FleetCrew.onCd((id, target) =>
+      vscode.postMessage({ type: "cdAgent", id, room: target.room, ghost: target.ghost })
+    );
     window.FleetCrew.start();
   }
 
@@ -75,6 +78,38 @@
     $("#t-waiting").textContent = c("waiting");
     $("#t-error").textContent = c("error");
     $("#fleet-count").textContent = agents.length;
+  }
+
+  /* ---------- plan usage meters (5h / weekly) ---------- */
+  function fmtReset(ts) {
+    if (!ts) return "";
+    const secs = ts - Math.floor(Date.now() / 1000);
+    if (secs <= 0) return " · resetting";
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return h >= 1 ? ` · resets in ${h}h ${m}m` : ` · resets in ${m}m`;
+  }
+  function setMeter(sel, label, w) {
+    const el = $(sel);
+    if (!el) return;
+    const has = w && typeof w.pct === "number";
+    el.style.display = has ? "" : "none";
+    if (!has) return;
+    const pct = w.pct;
+    el.querySelector(".ubar i").style.width = pct + "%";
+    el.querySelector(".upct").textContent = pct + "%";
+    el.classList.toggle("warn", pct >= 75 && pct < 90);
+    el.classList.toggle("crit", pct >= 90);
+    el.title = `Plan usage — ${label} window: ${pct}% used${fmtReset(w.resetsAt)}`;
+  }
+  function renderUsage(u) {
+    const wrap = $("#usage");
+    if (!wrap) return;
+    const any = u && (u.fiveHour || u.sevenDay);
+    wrap.hidden = !any;
+    if (!any) return;
+    setMeter("#u-5h", "5-hour", u.fiveHour);
+    setMeter("#u-wk", "weekly", u.sevenDay);
   }
 
   /* ---------- arrivals / departures feed ---------- */
@@ -333,6 +368,8 @@
       prs = { fleet: m.fleet || [], review: m.review || [] };
       renderPrBoard();
       if (panelOpen) renderPanel();
+    } else if (m.type === "usage") {
+      renderUsage(m.usage);
     }
   });
 

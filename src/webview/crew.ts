@@ -139,6 +139,9 @@ class PixelCrew {
   private panX = 0;
   private panY = 0;
   private drag = { active: false, moved: false, lastX: 0, lastY: 0 };
+  // dragging a toon onto a room (or a ghost cell) issues a /cd for that agent
+  private toonDrag: { id: string; active: boolean; mx: number; my: number } | null = null;
+  private dropTarget: { room?: string; ghost?: { floor: number; col: number } } | null = null;
 
   private running = false;
   private raf = 0;
@@ -157,6 +160,8 @@ class PixelCrew {
   private onReserveCb: (floor: number, col: number) => void = () => {};
   private onAddAgentCb: (room: string) => void = () => {};
   private onRemoveRoomCb: (room: string) => void = () => {};
+  private onCdCb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void =
+    () => {};
 
   private resizeT: ReturnType<typeof setTimeout> | undefined;
 
@@ -171,7 +176,7 @@ class PixelCrew {
     this.resize();
     // canvas text renders with fallback metrics until webfonts arrive
     (document as any).fonts?.ready?.then(() => {
-      this.dirty = true;
+      this.invalidate();
     });
 
     document.addEventListener("visibilitychange", () => {
@@ -179,14 +184,40 @@ class PixelCrew {
       else this.start();
     });
 
+    const canvasXY = (e: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return { mx: e.clientX - rect.left, my: e.clientY - rect.top };
+    };
     canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      // grabbing a toon begins a drag-to-relocate gesture, not a camera pan
+      const hit = this.pick(e);
+      if (hit.agent) {
+        const { mx, my } = canvasXY(e);
+        this.toonDrag = { id: hit.agent, active: false, mx, my };
+        return;
+      }
       this.drag.active = true;
       this.drag.moved = false;
       this.drag.lastX = e.clientX;
       this.drag.lastY = e.clientY;
-      canvas.setPointerCapture(e.pointerId);
     });
     canvas.addEventListener("pointermove", (e) => {
+      if (this.toonDrag) {
+        const { mx, my } = canvasXY(e);
+        if (!this.toonDrag.active && Math.abs(mx - this.toonDrag.mx) + Math.abs(my - this.toonDrag.my) > 4) {
+          this.toonDrag.active = true;
+        }
+        this.toonDrag.mx = mx;
+        this.toonDrag.my = my;
+        if (this.toonDrag.active) {
+          const hit = this.pick(e);
+          this.dropTarget = hit.room ? { room: hit.room } : hit.ghost ? { ghost: hit.ghost } : null;
+          this.container.style.cursor = this.dropTarget ? "copy" : "grabbing";
+          this.invalidate();
+        }
+        return;
+      }
       if (!this.drag.active) {
         const hit = this.pick(e);
         this.container.style.cursor =
@@ -204,10 +235,23 @@ class PixelCrew {
         this.panX = clamp(this.panX - dx / this.cam.z, -limX, limX);
         this.panY = clamp(this.panY - dy / this.cam.z, -limY, limY);
         this.container.style.cursor = "grabbing";
-        this.dirty = true;
+        this.invalidate();
       }
     });
     const endDrag = (e: PointerEvent) => {
+      if (this.toonDrag) {
+        const td = this.toonDrag;
+        this.toonDrag = null;
+        this.container.style.cursor = "default";
+        if (!td.active) {
+          this.onClick(e); // a tap, not a drag → select the agent
+        } else if (this.dropTarget) {
+          this.onCdCb(td.id, this.dropTarget);
+        }
+        this.dropTarget = null;
+        this.invalidate();
+        return;
+      }
       if (!this.drag.active) return;
       const wasDrag = this.drag.moved;
       this.drag.active = false;
@@ -219,13 +263,16 @@ class PixelCrew {
     canvas.addEventListener("pointercancel", () => {
       this.drag.active = false;
       this.drag.moved = false;
+      this.toonDrag = null;
+      this.dropTarget = null;
+      this.invalidate();
     });
     canvas.addEventListener(
       "wheel",
       (e) => {
         e.preventDefault();
         this.zoomMul = clamp(this.zoomMul * (1 - e.deltaY * 0.0012), 0.35, 4);
-        this.dirty = true;
+        this.invalidate();
       },
       { passive: false }
     );
@@ -235,6 +282,9 @@ class PixelCrew {
   onReserve(cb: (floor: number, col: number) => void) { this.onReserveCb = cb; }
   onAddAgent(cb: (room: string) => void) { this.onAddAgentCb = cb; }
   onRemoveRoom(cb: (room: string) => void) { this.onRemoveRoomCb = cb; }
+  onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
+    this.onCdCb = cb;
+  }
   private newToonIds = new Set<string>();
 
   /* ============ DATA ============ */
@@ -398,7 +448,7 @@ class PixelCrew {
     // keep the operator's view: refit a focused room, otherwise keep pan as-is
     if (this.focusRoom_ && this.rooms.has(this.focusRoom_)) this.focusOn(this.focusRoom_, false);
     else this.clearFocus(false, true);
-    this.dirty = true;
+    this.invalidate();
   }
 
   /* ============ CAMERA ============ */
@@ -414,7 +464,7 @@ class PixelCrew {
     this.panX = 0;
     this.panY = 0;
     if (resetZoom) this.zoomMul = 1;
-    this.dirty = true;
+    this.invalidate();
   }
 
   /** Tight zoom onto one agent (their corner of the room). */
@@ -430,7 +480,7 @@ class PixelCrew {
     this.panX = 0;
     this.panY = 0;
     this.zoomMul = 1;
-    this.dirty = true;
+    this.invalidate();
   }
 
   clearFocus(resetZoom = true, preservePan = false) {
@@ -444,7 +494,7 @@ class PixelCrew {
       this.panY = 0;
     }
     if (resetZoom) this.zoomMul = 1;
-    this.dirty = true;
+    this.invalidate();
   }
 
   setSelected(id: string | undefined) {
@@ -454,11 +504,11 @@ class PixelCrew {
       this.newToonIds.delete(id);
       this.focusAgent(id);
     }
-    this.dirty = true;
+    this.invalidate();
   }
   setEco(on: boolean) {
     this.eco = on;
-    this.dirty = true;
+    this.invalidate();
   }
 
   resize() {
@@ -469,7 +519,7 @@ class PixelCrew {
     this.canvas.height = Math.round(h * dpr);
     this.canvas.style.width = w + "px";
     this.canvas.style.height = h + "px";
-    this.dirty = true;
+    this.invalidate();
   }
 
   private targetZoom(): number {
@@ -488,7 +538,6 @@ class PixelCrew {
     this.lastNow = performance.now();
     const loop = (now: number) => {
       if (!this.running) return;
-      this.raf = requestAnimationFrame(loop);
       const dt = Math.min(250, now - this.lastNow);
       this.lastNow = now;
 
@@ -519,6 +568,12 @@ class PixelCrew {
         this.dirty = false;
         this.draw();
       }
+      if (!moving && !this.dirty && this.sceneIdle()) {
+        // nothing left to animate — park the loop until woken
+        this.running = false;
+        return;
+      }
+      this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
   }
@@ -526,6 +581,31 @@ class PixelCrew {
   stop() {
     this.running = false;
     cancelAnimationFrame(this.raf);
+  }
+
+  /** Wake the loop after a state change; no-op while hidden or already running. */
+  private wake() {
+    if (!this.running && !document.hidden) this.start();
+  }
+
+  /** Mark a redraw is needed and ensure the loop is running. */
+  private invalidate() {
+    this.dirty = true;
+    this.wake();
+  }
+
+  /** True when nothing needs animating, so the loop can park until woken. */
+  private sceneIdle(): boolean {
+    if (this.particles.length || this.leaving.length) return false;
+    for (const r of this.rooms.values()) {
+      if (r.dying || r.delay > 0 || r.built < 1) return false;
+    }
+    for (const tn of this.toons.values()) {
+      if (tn.entering || Math.abs(tn.targetX - tn.x) > 1) return false;
+      const s = tn.agent.state;
+      if (s === "active" || s === "waiting") return false;
+    }
+    return true;
   }
 
   /* ============ TICK ============ */
@@ -681,7 +761,7 @@ class PixelCrew {
     if (this.insetL === left && this.insetR === right) return;
     this.insetL = left;
     this.insetR = right;
-    this.dirty = true;
+    this.invalidate();
   }
 
   private inRect(mx: number, my: number, wx: number, wy: number, ww: number, wh: number) {
@@ -947,6 +1027,45 @@ class PixelCrew {
         ctx.fillText("▾", s.x, s.y - 18 + Math.sin(this.frame * 0.5) * 2);
       }
     }
+
+    if (this.toonDrag?.active) this.paintDropHint();
+  }
+
+  /** Overlay drawn while a toon is being dragged: highlight the drop target
+   *  room/ghost and show the agent name floating at the cursor. */
+  private paintDropHint() {
+    const ctx = this.ctx;
+    const dpr = Math.min(window.devicePixelRatio, 2);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const t = this.dropTarget;
+    if (t?.room) {
+      const r = this.rooms.get(t.room);
+      if (r) this.strokeWorldRect(r.x0, floorBase(r.floor) - ROOM_H, ROOM_W, ROOM_H + SLAB, "#7fd1ff");
+    } else if (t?.ghost) {
+      const g = this.ghosts.find((g) => g.floor === t.ghost!.floor && g.col === t.ghost!.col);
+      if (g) this.strokeWorldRect(g.x0, g.base - ROOM_H, ROOM_W, ROOM_H, "#9be38b");
+    }
+    const d = this.toonDrag!;
+    const label = this.toons.get(d.id)?.agent.name ?? "agent";
+    ctx.font = "11px 'IBM Plex Mono', monospace";
+    const w = ctx.measureText(label).width + 14;
+    ctx.fillStyle = "rgba(12,16,20,0.92)";
+    ctx.fillRect(d.mx + 12, d.my - 9, w, 18);
+    ctx.fillStyle = t ? "#cfe8ff" : "#9aa3ab";
+    ctx.fillText(label, d.mx + 19, d.my + 3.5);
+  }
+
+  /** Stroke a world-space rectangle in screen space (dashed highlight). */
+  private strokeWorldRect(wx: number, wy: number, ww: number, wh: number, color: string) {
+    const ctx = this.ctx;
+    const a = this.screenOf(wx, wy);
+    const b = this.screenOf(wx + ww, wy + wh);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.restore();
   }
 
   private drawGhost(ctx: CanvasRenderingContext2D, g: { x0: number; base: number }) {
@@ -1318,6 +1437,9 @@ class PixelCrew {
   },
   onRemoveRoom(cb: (room: string) => void) {
     this._instance?.onRemoveRoom(cb);
+  },
+  onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
+    this._instance?.onCd(cb);
   },
   start() {
     this._instance?.start();

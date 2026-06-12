@@ -66,6 +66,21 @@ export class TerminalManager {
     term.sendText(text, true);
   }
 
+  /**
+   * Submit a slash command (e.g. `/cd <dir>`) to the agent's Claude session.
+   * Typed key-by-key, `/cd ` opens the TUI's path autocomplete, which captures
+   * the trailing path and mangles the argument. Wrapping the text in a
+   * bracketed-paste sequence makes the TUI ingest it as one literal block
+   * (no autocomplete), then a separate Enter submits it.
+   */
+  command(agentId: string, text: string): void {
+    const term = this.ensure(agentId);
+    if (!term) return;
+    term.show(true);
+    term.sendText(`\x1b[200~${text}\x1b[201~`, false); // bracketed paste, no newline
+    term.sendText("", true); // Enter → submit
+  }
+
   dispose(): void {
     for (const t of this.terminals.values()) t.dispose();
     this.terminals.clear();
