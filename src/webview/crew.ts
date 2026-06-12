@@ -1327,9 +1327,6 @@ class PixelCrew {
     ctx.fillRect(win.x + win.w / 2 - 0.5, win.y, 1, win.h);
     ctx.fillRect(win.x, win.y + win.h / 2 - 0.5, win.w, 1);
 
-    // worktree partitions + cluster signs (behind the desks/devs)
-    this.drawGroups(ctx, r, base);
-
     // plant + hash decor
     const px = x + w - DOOR_W - 6;
     ctx.fillStyle = "#7a4a2a";
@@ -1452,38 +1449,6 @@ class PixelCrew {
         ctx.fillRect(cx + 1, cardY, 1.4, 4);
       }
     }
-  }
-
-  /** Worktree label on the floor, centered right below each group's section of
-   *  desks: the worktree name, its branch, and whether that branch has an open
-   *  PR. Drawn in the back layer so devs render in front. */
-  private drawGroups(ctx: CanvasRenderingContext2D, r: Room, base: number) {
-    const plan = r.plan;
-    if (!plan || plan.groups.length === 0) return;
-    const pitch = plan.pitch;
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-    for (const g of plan.groups) {
-      const gx0 = r.x0 + WB_W + g.startCol * pitch;
-      const cx = gx0 + (g.cols * pitch) / 2;
-      const hasPr = g.branch !== "—" && this.prBranches.has(g.branch.toLowerCase());
-      // worktree name (gold for main, hued otherwise)
-      ctx.font = "bold 3.8px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = g.isMain ? "#d6b25a" : `hsl(${g.hue} 60% 64%)`;
-      ctx.fillText(g.name, cx, base + 4.2);
-      // branch
-      if (g.branch !== "—") {
-        ctx.font = "3px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = "rgba(214,224,232,0.55)";
-        ctx.fillText(g.branch, cx, base + 8);
-      }
-      // PR status
-      ctx.font = "3px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = hasPr ? "#3ee089" : "rgba(214,224,232,0.4)";
-      ctx.fillText(hasPr ? "PR open" : "no PR", cx, base + 11.6);
-    }
-    ctx.restore();
   }
 
   private drawDesks(ctx: CanvasRenderingContext2D, r: Room, row: number) {

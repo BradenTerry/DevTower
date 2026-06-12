@@ -1200,7 +1200,6 @@
       ctx.fillStyle = "#10151c";
       ctx.fillRect(win.x + win.w / 2 - 0.5, win.y, 1, win.h);
       ctx.fillRect(win.x, win.y + win.h / 2 - 0.5, win.w, 1);
-      this.drawGroups(ctx, r, base);
       const px = x + w - DOOR_W - 6;
       ctx.fillStyle = "#7a4a2a";
       ctx.fillRect(px, base - 4.5, 4, 3);
@@ -1314,35 +1313,6 @@
           ctx.fillRect(cx + 1, cardY, 1.4, 4);
         }
       }
-    }
-    /** Worktree label on the floor, centered right below each group's section of
-     *  desks: the worktree name, its branch, and whether that branch has an open
-     *  PR. Drawn in the back layer so devs render in front. */
-    drawGroups(ctx, r, base) {
-      const plan = r.plan;
-      if (!plan || plan.groups.length === 0)
-        return;
-      const pitch = plan.pitch;
-      ctx.save();
-      ctx.textAlign = "center";
-      ctx.textBaseline = "alphabetic";
-      for (const g of plan.groups) {
-        const gx0 = r.x0 + WB_W + g.startCol * pitch;
-        const cx = gx0 + g.cols * pitch / 2;
-        const hasPr = g.branch !== "\u2014" && this.prBranches.has(g.branch.toLowerCase());
-        ctx.font = "bold 3.8px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = g.isMain ? "#d6b25a" : `hsl(${g.hue} 60% 64%)`;
-        ctx.fillText(g.name, cx, base + 4.2);
-        if (g.branch !== "\u2014") {
-          ctx.font = "3px 'IBM Plex Mono', monospace";
-          ctx.fillStyle = "rgba(214,224,232,0.55)";
-          ctx.fillText(g.branch, cx, base + 8);
-        }
-        ctx.font = "3px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = hasPr ? "#3ee089" : "rgba(214,224,232,0.4)";
-        ctx.fillText(hasPr ? "PR open" : "no PR", cx, base + 11.6);
-      }
-      ctx.restore();
     }
     drawDesks(ctx, r, row) {
       const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
