@@ -174,7 +174,7 @@
     const author = p.author && p.author !== "you" ? `<span class="pr-author">by ${esc(p.author)}</span>` : "";
     return `<div class="pr-row ${attn ? "attn" : ""}" data-url="${esc(p.url)}">
       <div class="pr-r1"><span class="pr-num">#${p.number}</span><span class="pr-title">${esc(p.title)}</span>${p.isDraft ? `<span class="pr-draft">Draft</span>` : ""}</div>
-      <div class="pr-r2"><span class="repo">${esc(p.repo)}</span>${author}<span class="spacer"></span>${checks}${review}</div>
+      <div class="pr-r2"><span class="repo">${esc(p.repo)}</span>${author}<span class="spacer"></span>${checks}${review}<button class="pr-review" title="Assign a dev to review this PR" data-number="${p.number}" data-repo="${esc(p.repo)}" data-branch="${esc(p.branch || "")}" data-url="${esc(p.url)}" data-title="${esc(p.title)}">Review</button></div>
     </div>`;
   }
 
@@ -202,6 +202,19 @@
     $("#prb-close", board).onclick = () => { prboardOpen = false; renderPrBoard(); updateInsets(); };
     $("#prb-refresh", board).onclick = () => vscode.postMessage({ type: "refreshPrs" });
     $$(".pr-row", board).forEach((r) => (r.onclick = () => vscode.postMessage({ type: "action", act: "openPr", url: r.dataset.url })));
+    $$(".pr-review", board).forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation(); // don't also open the PR
+      vscode.postMessage({
+        type: "assignReview",
+        pr: {
+          number: Number(b.dataset.number),
+          repo: b.dataset.repo,
+          branch: b.dataset.branch,
+          url: b.dataset.url,
+          title: b.dataset.title,
+        },
+      });
+    }));
   }
 
   function prChipHTML(a) {
@@ -368,6 +381,11 @@
       prs = { crew: m.crew || [], review: m.review || [] };
       renderPrBoard();
       if (panelOpen) renderPanel();
+      // tell the tower which branches have an open PR (shown on each board)
+      if (window.DevTowerCrew) {
+        const branches = [...prs.crew, ...prs.review].map((p) => p.branch).filter(Boolean);
+        window.DevTowerCrew.setPrBranches(branches);
+      }
     } else if (m.type === "usage") {
       renderUsage(m.usage);
     }

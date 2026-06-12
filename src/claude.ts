@@ -38,6 +38,9 @@ export class ClaudeDiscovery {
   // new cwd, so we give up after CD_HOLD_MS and revert to the real location.
   private cdPending = new Map<string, { dir: string; at: number }>();
   private static readonly CD_HOLD_MS = 120_000;
+  // session id → the panel-created placeholder agent it was adopted into, so a
+  // launched Claude session flows into that agent rather than spawning a dup.
+  private adopted = new Map<string, string>();
 
   constructor(private store: DevTowerStore) {}
 
@@ -140,17 +143,52 @@ export class ClaudeDiscovery {
     }
     found = kept;
 
+    // Panel-created placeholders (a reviewer / added dev) carry no transcript
+    // yet. When a live session turns up in such a placeholder's worktree, adopt
+    // it into that agent instead of spawning a separate discovered one — one
+    // terminal, one session, one agent.
+    const placeholderByWorktree = new Map<string, string>();
+    for (const a of this.store.list()) {
+      if (!a.transcriptPath && !this.mine.has(a.id) && !placeholderByWorktree.has(a.worktree)) {
+        placeholderByWorktree.set(a.worktree, a.id);
+      }
+    }
+
+    const seenSessions = new Set<string>();
+    const claimedPlaceholders = new Set<string>();
     const present = new Set<string>();
     for (const f of found) {
-      present.add(f.id);
-      this.mine.add(f.id);
+      seenSessions.add(f.id);
+      // which store agent this session drives: a prior adoption, a fresh adopt
+      // of a placeholder in its launch dir, or its own discovered id
+      let targetId = this.adopted.get(f.id);
+      if (targetId && !this.store.get(targetId)) {
+        this.adopted.delete(f.id);
+        targetId = undefined;
+      }
+      // only a genuinely NEW session may adopt a placeholder — a session we are
+      // already tracking keeps its own id, so an existing dev sharing the cwd
+      // can't hijack the placeholder (which would churn it out + back in)
+      if (!targetId && !this.mine.has(f.id)) {
+        const cand = placeholderByWorktree.get(f.launchCwd) ?? placeholderByWorktree.get(f.cwd);
+        if (cand && !claimedPlaceholders.has(cand)) {
+          targetId = cand;
+          this.adopted.set(f.id, cand);
+        }
+      }
+      const id = targetId ?? f.id;
+      const isAdopted = id !== f.id;
+      if (isAdopted) claimedPlaceholders.add(id);
+      present.add(id);
+      this.mine.add(id);
+
       // honor a pending /cd until the transcript reports the new directory,
       // or until the hold expires (a failed/declined /cd never lands)
       let cwd = f.cwd;
-      const pend = this.cdPending.get(f.id);
+      const pend = this.cdPending.get(id);
       if (pend) {
         if (cwd === pend.dir || Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
-          this.cdPending.delete(f.id);
+          this.cdPending.delete(id);
         } else {
           cwd = pend.dir;
         }
@@ -160,23 +198,39 @@ export class ClaudeDiscovery {
         branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
         this.branchCache.set(cwd, branch);
       }
-      this.store.apply({
-        id: f.id,
-        name: `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
-        model: f.model,
-        repo: path.basename(cwd),
-        worktree: cwd,
-        branch: branch || "—",
-        state: f.state,
-        task: f.task,
-        elapsed: ago(f.mtime),
-        transcriptPath: f.file,
-        question: f.question,
-        contextTokens: f.contextTokens,
-      });
+      if (isAdopted) {
+        // keep the placeholder's identity (name/repo/worktree/branch/task);
+        // only flow in the live session fields
+        this.store.apply({
+          id,
+          model: f.model,
+          state: f.state,
+          elapsed: ago(f.mtime),
+          transcriptPath: f.file,
+          question: f.question,
+          contextTokens: f.contextTokens,
+        });
+      } else {
+        this.store.apply({
+          id,
+          name: `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
+          model: f.model,
+          repo: path.basename(cwd),
+          worktree: cwd,
+          branch: branch || "—",
+          state: f.state,
+          task: f.task,
+          elapsed: ago(f.mtime),
+          transcriptPath: f.file,
+          question: f.question,
+          contextTokens: f.contextTokens,
+        });
+      }
     }
     // drop pending /cd for agents that are no longer present
     for (const id of [...this.cdPending.keys()]) if (!present.has(id)) this.cdPending.delete(id);
+    // forget adoptions whose session has gone away
+    for (const [sid] of [...this.adopted]) if (!seenSessions.has(sid)) this.adopted.delete(sid);
     // sessions that aged out or were deleted leave the tower
     for (const id of [...this.mine]) {
       if (!present.has(id)) {

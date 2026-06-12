@@ -10,6 +10,11 @@ import { ClaudeDiscovery } from "./claude";
 import * as fs from "fs";
 import * as os from "os";
 
+/** POSIX single-quote a string so it survives as one shell argument. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 /** One usage limit window (5-hour or weekly) from Claude's rate_limits feed. */
 interface UsageWindow {
   pct: number;
@@ -105,6 +110,9 @@ export class ConsolePanel {
       case "addAgent":
         if (typeof m.room === "string") await this.addAgent(m.room);
         break;
+      case "assignReview":
+        if (m.pr && typeof m.pr === "object") await this.assignReview(m.pr);
+        break;
       case "removeRoom":
         // note: must not truthiness-check — a legacy room can have name ""
         if (typeof m.room === "string") await this.removeRoom(m.room);
@@ -141,7 +149,11 @@ export class ConsolePanel {
   /** Load reservations, healing legacy/corrupt entries (empty names, missing
    *  cols, dropped paths) so every room has a unique, non-empty key. */
   private getRooms(): ReservedRoom[] {
-    const raw = this.context.workspaceState.get<ReservedRoom[]>("devtower.reservedRooms", []);
+    const raw = this.context.workspaceState.get<ReservedRoom[]>(
+      "devtower.reservedRooms",
+      // fall back to the pre-rename key so existing reservations survive the upgrade
+      this.context.workspaceState.get<ReservedRoom[]>("fleet.reservedRooms", [])
+    );
     const seen = new Set<string>();
     const rooms: ReservedRoom[] = [];
     for (const r of raw) {
@@ -281,6 +293,82 @@ export class ConsolePanel {
     const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim();
     if (!launch && claudeCmd) this.terminals.send(id, claudeCmd);
     else this.terminals.reveal(id);
+  }
+
+  /** Spawn a reviewer agent for a PR. Prompts for review focus, then drops a
+   *  dev into the PR's repo with a Claude session seeded to review it. */
+  private async assignReview(pr: {
+    number?: number;
+    repo?: string;
+    branch?: string;
+    url?: string;
+    title?: string;
+  }): Promise<void> {
+    if (typeof pr.number !== "number" || !pr.repo) return;
+    const key = `review-${pr.number}-${pr.repo}`.replace(/[^A-Za-z0-9_-]+/g, "-");
+    if (this.addingRooms.has(key)) return; // guard double-clicks
+    this.addingRooms.add(key);
+    try {
+      const focus = await vscode.window.showInputBox({
+        title: `Assign a dev to review ${pr.repo} #${pr.number}`,
+        prompt: pr.title,
+        placeHolder: "What should the reviewer focus on? (optional, leave blank for a full review)",
+        ignoreFocusOut: true,
+      });
+      if (focus === undefined) return; // cancelled
+
+      const dir = this.dirForRepo(pr.repo);
+      if (!dir) {
+        vscode.window.showWarningMessage(`DevTower: no local directory known for "${pr.repo}".`);
+        return;
+      }
+      this.store.apply({
+        id: key,
+        name: `review #${pr.number}`,
+        model: "—",
+        repo: pr.repo,
+        worktree: dir,
+        branch: pr.branch || `pr/${pr.number}`,
+        state: "active",
+        task: `Reviewing PR #${pr.number}: ${pr.title ?? ""}`.trim(),
+        elapsed: "new",
+      });
+      this.store.setSelected(key);
+
+      const extra = focus.trim() ? ` Focus on: ${focus.trim()}.` : "";
+      const prompt =
+        `Please review pull request #${pr.number} in ${pr.repo} (${pr.url}). ` +
+        `Use \`gh pr view ${pr.number}\` and \`gh pr diff ${pr.number}\` to read the change, ` +
+        `then give a thorough code review with concrete, actionable feedback.${extra}`;
+
+      const cfg = vscode.workspace.getConfiguration("devtower");
+      const launch = cfg.get<string>("launchCommand", "").trim();
+      const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim() || "claude";
+      if (launch) {
+        this.terminals.reveal(key); // launchCommand runs on first open
+        this.terminals.send(key, prompt);
+      } else {
+        this.terminals.send(key, `${claudeCmd} ${shellQuote(prompt)}`);
+      }
+    } finally {
+      this.addingRooms.delete(key);
+    }
+  }
+
+  /** Best-effort working directory for a repo: a reserved room, an agent already
+   *  in that repo (exact or by basename), else the first workspace folder. */
+  private dirForRepo(repo: string): string | undefined {
+    const reserved = this.getRooms().find((r) => r.name === repo);
+    if (reserved?.path) return reserved.path;
+    const base = repo.split("/").pop();
+    const peer =
+      this.store.list().find((a) => a.repo === repo) ??
+      this.store.list().find((a) => a.repo.split("/").pop() === base);
+    if (peer) {
+      const cwd = resolveCwd(peer);
+      if (cwd) return cwd;
+    }
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   }
 
   /** Drag a toon onto a room (or an empty ghost cell) → /cd that agent there.

@@ -50,7 +50,6 @@
   var DEPTH_Y = 22;
   var ROWS_OF_DESKS = 2;
   var ROW_DY = DEPTH_Y;
-  var ROW_DX = DESK_W / 2;
   var ROOM_W = 260;
   var backWall = (x0, base) => ({
     x0: x0 + DEPTH_X,
@@ -60,18 +59,18 @@
     yBot: base - DEPTH_Y
     // far-wall floor line
   });
-  var ROLLER_W = 24;
-  var ROLLER_H = 19;
+  var ROLLER_W = 30;
+  var ROLLER_H = 22;
   var ROLLER_DEPTH = 13;
-  var rollerPanel = (cx, base) => ({
-    x: cx - ROLLER_W / 2,
-    y: base - ROLLER_DEPTH - 36,
-    w: ROLLER_W,
-    h: ROLLER_H
-  });
+  var ROLLER_LEG = 12;
+  var rollerPanel = (cx, base) => {
+    const stand = base - ROLLER_DEPTH;
+    return { x: cx - ROLLER_W / 2, y: stand - ROLLER_LEG - ROLLER_H, w: ROLLER_W, h: ROLLER_H };
+  };
   var boardRect = (x0, base) => {
     const bw = backWall(x0, base);
-    return { x: bw.x0 + 44, y: bw.yTop + 6, w: bw.x1 - bw.x0 - 44 - 50, h: 26 };
+    const w = bw.x1 - bw.x0 - 94;
+    return { x: (bw.x0 + bw.x1) / 2 - w / 2, y: bw.yTop + 13, w, h: 26 };
   };
   var COL_STEP = ROOM_W;
   var cellX0 = (col) => col * COL_STEP - ROOM_W / 2;
@@ -96,6 +95,10 @@
       __publicField(this, "colRange", /* @__PURE__ */ new Map());
       __publicField(this, "bounds", { minX: -120, maxX: 120, topY: -120, botY: 40, minFloor: 0 });
       __publicField(this, "focusRoom_", null);
+      __publicField(this, "focusAgentId", null);
+      // when set, the camera tracks this dev (not the room)
+      __publicField(this, "prBranches", /* @__PURE__ */ new Set());
+      // branches (lowercased) with an open PR
       __publicField(this, "focus", { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 });
       __publicField(this, "cam", { x: 0, y: -ROOM_H / 2, z: 4 });
       __publicField(this, "zoomMul", 1);
@@ -257,6 +260,11 @@
       this.reserved = reserved || [];
       this.layout();
     }
+    /** Branches that currently have an open PR; shown on each worktree's board. */
+    setPrBranches(branches) {
+      this.prBranches = new Set((branches || []).filter(Boolean).map((b) => b.toLowerCase()));
+      this.invalidate();
+    }
     setAgents(agents) {
       const seen = new Set(agents.map((a) => a.id));
       for (const [id, tn] of this.toons) {
@@ -306,25 +314,29 @@
         byTree.get(key).push(a);
       }
       const isMain = (key, ags) => key === "." || key === "" || DEFAULT_BRANCHES.has((ags[0].branch ?? "").toLowerCase());
-      const label = (key, ags) => ags[0].branch || key.split(/[\\/]/).pop() || key;
+      const treeName = (key) => key.split(/[\\/]/).pop() || key;
       const entries = [...byTree.entries()].sort((a, b) => {
         const am = isMain(a[0], a[1]) ? 0 : 1;
         const bm = isMain(b[0], b[1]) ? 0 : 1;
         if (am !== bm)
           return am - bm;
-        return label(a[0], a[1]) < label(b[0], b[1]) ? -1 : 1;
+        return treeName(a[0]) < treeName(b[0]) ? -1 : 1;
       });
       const seats = /* @__PURE__ */ new Map();
       const groups = [];
       let startCol = 0;
+      let mainTaken = false;
       for (const [key, ags] of entries) {
         const cols = Math.max(1, Math.ceil(ags.length / ROWS_OF_DESKS));
         ags.forEach((a, i) => {
           seats.set(a.id, { col: startCol + Math.floor(i / ROWS_OF_DESKS), row: i % ROWS_OF_DESKS });
         });
-        const main = isMain(key, ags);
+        const main = !mainTaken && isMain(key, ags);
+        if (main)
+          mainTaken = true;
         groups.push({
-          label: main ? "main" : label(key, ags),
+          name: main ? "main" : treeName(key),
+          branch: ags[0].branch || "\u2014",
           isMain: main,
           startCol,
           cols,
@@ -332,7 +344,16 @@
         });
         startCol += cols + GROUP_GAP;
       }
-      return { seats, groups, totalCols: Math.max(0, startCol - GROUP_GAP) };
+      const totalCols = Math.max(0, startCol - GROUP_GAP);
+      const span = ROOM_W - WB_W - DOOR_W - DESK_W;
+      const pitch = totalCols > 1 ? Math.min(DESK_W, span / (totalCols - 1)) : DESK_W;
+      return { seats, groups, totalCols, pitch };
+    }
+    /** World x of a seat (col/row) within a room, using the room's compressed
+     *  column pitch so desks, chairs and signs all line up and stay inside. */
+    seatX(r, col, row) {
+      const pitch = r.plan?.pitch ?? DESK_W;
+      return r.x0 + WB_W + col * pitch + row * (pitch / 2);
     }
     /** Merge reserved rooms + live repos into grid cells; assign toon targets. */
     layout() {
@@ -450,7 +471,7 @@
           tn.deskIdx = di;
           const seat = room.plan.seats.get(a.id) ?? { col: 0, row: 0 };
           tn.row = seat.row;
-          const deskX = room.x0 + WB_W + seat.col * DESK_W + seat.row * ROW_DX;
+          const deskX = this.seatX(room, seat.col, seat.row);
           if (a.state === "active" && huddle) {
             tn.huddle = true;
             tn.targetX = room.x0 + 26 + wbSlot * 9;
@@ -468,7 +489,9 @@
         if (!huddle)
           room.scribbles = [];
       }
-      if (this.focusRoom_ && this.rooms.has(this.focusRoom_))
+      if (this.focusAgentId && this.toons.has(this.focusAgentId))
+        this.focusAgent(this.focusAgentId, false);
+      else if (this.focusRoom_ && this.rooms.has(this.focusRoom_))
         this.focusOn(this.focusRoom_, false);
       else
         this.clearFocus(false, true);
@@ -479,6 +502,7 @@
       const r = this.rooms.get(name);
       if (!r)
         return;
+      this.focusAgentId = null;
       this.focusRoom_ = name;
       this.focus.x = r.x0 + ROOM_W / 2;
       this.focus.y = floorBase(r.floor) - ROOM_H / 2;
@@ -490,24 +514,30 @@
         this.zoomMul = 1;
       this.invalidate();
     }
-    /** Tight zoom onto one agent (their corner of the room). */
-    focusAgent(id) {
+    /** Tight zoom onto one agent (their corner of the room). On the initial click
+     *  (resetZoom) we recentre; periodic re-layouts call it with resetZoom=false to
+     *  keep tracking the dev without fighting the operator's pan/zoom. */
+    focusAgent(id, resetZoom = true) {
       const tn = this.toons.get(id);
       if (!tn)
         return;
       const room = this.rooms.get(tn.agent.repo);
+      this.focusAgentId = id;
       this.focusRoom_ = room?.name ?? null;
       this.focus.x = tn.targetX;
       this.focus.y = tn.base - ROOM_H / 2 + 6;
       this.focus.spanW = 96;
       this.focus.spanH = FLOOR_STEP + 18;
-      this.panX = 0;
-      this.panY = 0;
-      this.zoomMul = 1;
+      if (resetZoom) {
+        this.panX = 0;
+        this.panY = 0;
+        this.zoomMul = 1;
+      }
       this.invalidate();
     }
     clearFocus(resetZoom = true, preservePan = false) {
       this.focusRoom_ = null;
+      this.focusAgentId = null;
       this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
       this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
       this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
@@ -740,24 +770,6 @@
           });
         }
       }
-      if (!this.eco && this.frame % 24 === 0) {
-        for (const tn of this.toons.values()) {
-          if (tn.agent.state === "complete") {
-            for (let i = 0; i < 7; i++) {
-              this.particles.push({
-                x: tn.x,
-                y: tn.base - tn.lift - 18,
-                vx: (Math.random() - 0.5) * 28,
-                vy: -22 - Math.random() * 16,
-                life: 1,
-                color: ACCENTS[i % ACCENTS.length],
-                size: 1.4,
-                gravity: 60
-              });
-            }
-          }
-        }
-      }
       if (!this.eco && this.frame % 14 === 0) {
         for (const tn of this.toons.values()) {
           if (tn.agent.state === "error") {
@@ -851,7 +863,7 @@
         this.onSelectCb(hit.agent);
         this.focusAgent(hit.agent);
       } else if (hit.room) {
-        if (this.focusRoom_ === hit.room)
+        if (!this.focusAgentId && this.focusRoom_ === hit.room)
           this.clearFocus();
         else
           this.focusOn(hit.room);
@@ -947,7 +959,7 @@
           for (const [, seat] of r.plan.seats) {
             if (seat.row !== row)
               continue;
-            chair(r.x0 + WB_W + seat.col * DESK_W + row * ROW_DX, base - row * ROW_DY);
+            chair(this.seatX(r, seat.col, row), base - row * ROW_DY);
           }
         }
         const rowToons = seated.filter((t) => displayRow(t) === row);
@@ -972,12 +984,6 @@
         if (r.built < 0.85)
           continue;
         const base = floorBase(r.floor);
-        const s = this.screenOf(r.x0 + 7, base - ROOM_H + 9);
-        ctx.font = "600 9px 'Martian Mono', monospace";
-        ctx.textAlign = "left";
-        ctx.fillStyle = `hsl(${r.hue} 50% 65%)`;
-        const lvl = r.floor >= 0 ? `F${r.floor}` : `B${-r.floor}`;
-        ctx.fillText(`${lvl} \xB7 ${r.name.toUpperCase()}`, s.x, s.y - 4 * this.cam.z);
         if (r.built >= 0.95) {
           const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
           const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
@@ -1160,6 +1166,14 @@
       if (eFurn <= 0)
         return;
       ctx.globalAlpha = eFurn;
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.font = "bold 5px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = `hsl(${r.hue} 52% 66%)`;
+      const lvl = r.floor >= 0 ? `F${r.floor}` : `B${-r.floor}`;
+      ctx.fillText(`${lvl} \xB7 ${r.name.toUpperCase()}`, (bw.x0 + bw.x1) / 2, bw.yTop + 9);
+      ctx.restore();
       this.drawBoard(ctx, r, base);
       const win = { x: bw.x1 - 44, y: bw.yTop + 6, w: 38, h: 28 };
       ctx.fillStyle = "#10151c";
@@ -1236,26 +1250,26 @@
         ctx.fill();
       }
       const sideAt = (t) => ({ x: x + w + (bw.x1 - (x + w)) * t, y: base + (bw.yBot - base) * t });
-      const dn = sideAt(0.14), df = sideAt(0.62);
+      const dn = sideAt(0.18), df = sideAt(0.5);
       ctx.fillStyle = "#4a3520";
       ctx.beginPath();
       ctx.moveTo(dn.x, dn.y);
-      ctx.lineTo(dn.x, dn.y - 22);
-      ctx.lineTo(df.x, df.y - 18);
+      ctx.lineTo(dn.x, dn.y - 31);
+      ctx.lineTo(df.x, df.y - 26);
       ctx.lineTo(df.x, df.y);
       ctx.closePath();
       ctx.fill();
-      const pn = sideAt(0.2), pf = sideAt(0.56);
+      const pn = sideAt(0.22), pf = sideAt(0.46);
       ctx.fillStyle = "#6e522f";
       ctx.beginPath();
       ctx.moveTo(pn.x, pn.y - 1.5);
-      ctx.lineTo(pn.x, pn.y - 20);
-      ctx.lineTo(pf.x, pf.y - 16.5);
+      ctx.lineTo(pn.x, pn.y - 29);
+      ctx.lineTo(pf.x, pf.y - 24.5);
       ctx.lineTo(pf.x, pf.y - 1.5);
       ctx.closePath();
       ctx.fill();
       ctx.fillStyle = "#d9b34a";
-      ctx.fillRect(pf.x + 0.4, pf.y - 11, 1.4, 1.6);
+      ctx.fillRect(pf.x + 0.4, pf.y - 14, 1.4, 1.6);
       if (!lit && r.path) {
         ctx.fillStyle = "rgba(8,11,14,0.45)";
         ctx.fillRect(x + 1.5, base - H, w - 3, H);
@@ -1301,92 +1315,34 @@
         }
       }
     }
-    /** Per-worktree furniture: a roller whiteboard spawns for every worktree
-     *  group (left of its desks; in the left inset for the main group, in the gap
-     *  before each other block so it doubles as the divider). When a room spans
-     *  more than one worktree, a hanging sign with the branch is added over each
-     *  block ("main" for the primary worktree, styled gold). Drawn in the back
-     *  layer so the devs and desks render in front. */
+    /** Worktree label on the floor, centered right below each group's section of
+     *  desks: the worktree name, its branch, and whether that branch has an open
+     *  PR. Drawn in the back layer so devs render in front. */
     drawGroups(ctx, r, base) {
       const plan = r.plan;
       if (!plan || plan.groups.length === 0)
         return;
-      const multi = plan.groups.length > 1;
+      const pitch = plan.pitch;
       ctx.save();
       ctx.textAlign = "center";
       ctx.textBaseline = "alphabetic";
-      for (let gi = 0; gi < plan.groups.length; gi++) {
-        const g = plan.groups[gi];
-        const gx0 = r.x0 + WB_W + g.startCol * DESK_W;
-        const gx1 = gx0 + g.cols * DESK_W;
-        const cx = (gx0 + gx1) / 2;
-        const boardX = gi === 0 ? r.x0 + WB_W / 2 : gx0 - GROUP_GAP * DESK_W / 2;
-        this.drawRoller(ctx, boardX, base, g, gi === 0 ? r.scribbles : void 0);
-        if (!multi)
-          continue;
-        let label = g.label;
-        if (label.length > 12)
-          label = label.slice(0, 11) + "\u2026";
-        ctx.font = "5px 'IBM Plex Mono', monospace";
-        const tw = Math.max(18, Math.round(ctx.measureText(label).width) + 8);
-        const sy = base - 50;
-        ctx.fillStyle = "#2a3138";
-        ctx.fillRect(cx - tw / 2 + 1, sy - 4, 1, 4);
-        ctx.fillRect(cx + tw / 2 - 2, sy - 4, 1, 4);
-        ctx.fillStyle = g.isMain ? "#caa64a" : `hsl(${g.hue} 45% 42%)`;
-        ctx.fillRect(cx - tw / 2, sy, tw, 8);
-        ctx.fillStyle = "rgba(0,0,0,0.28)";
-        ctx.fillRect(cx - tw / 2, sy + 7, tw, 1);
-        ctx.fillStyle = g.isMain ? "#2a2008" : "#0d1217";
-        ctx.fillText(label, cx, sy + 5.8);
+      for (const g of plan.groups) {
+        const gx0 = r.x0 + WB_W + g.startCol * pitch;
+        const cx = gx0 + g.cols * pitch / 2;
+        const hasPr = g.branch !== "\u2014" && this.prBranches.has(g.branch.toLowerCase());
+        ctx.font = "bold 3.8px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = g.isMain ? "#d6b25a" : `hsl(${g.hue} 60% 64%)`;
+        ctx.fillText(g.name, cx, base + 4.2);
+        if (g.branch !== "\u2014") {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = "rgba(214,224,232,0.55)";
+          ctx.fillText(g.branch, cx, base + 8);
+        }
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = hasPr ? "#3ee089" : "rgba(214,224,232,0.4)";
+        ctx.fillText(hasPr ? "PR open" : "no PR", cx, base + 11.6);
       }
       ctx.restore();
-    }
-    /** A freestanding roller whiteboard on castors, standing at world x = cx on
-     *  the floor. The main group's board shows the live huddle scribbles; others
-     *  get a couple of deterministic doodles. */
-    drawRoller(ctx, cx, base, g, scribbles) {
-      const panel = rollerPanel(cx, base);
-      const stand = base - ROLLER_DEPTH;
-      ctx.fillStyle = "#3a4046";
-      ctx.fillRect(cx - 7, stand - 13, 1.4, 13);
-      ctx.fillRect(cx + 5.6, stand - 13, 1.4, 13);
-      ctx.fillRect(cx - 7, stand - 13.4, 13.6, 1.4);
-      ctx.fillStyle = "#171c21";
-      ctx.fillRect(cx - 8.4, stand - 1.8, 2.8, 1.8);
-      ctx.fillRect(cx + 5.4, stand - 1.8, 2.8, 1.8);
-      ctx.fillStyle = "#20262c";
-      ctx.fillRect(panel.x - 2, panel.y - 2, panel.w + 4, panel.h + 4);
-      ctx.fillStyle = "#e8ecef";
-      ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
-      ctx.fillStyle = "#aab2b8";
-      ctx.fillRect(panel.x - 1, panel.y + panel.h, panel.w + 2, 1.6);
-      ctx.fillStyle = g.isMain ? "#caa64a" : `hsl(${g.hue} 45% 50%)`;
-      ctx.fillRect(panel.x, panel.y, panel.w, 1.4);
-      ctx.lineWidth = 0.8;
-      if (scribbles && scribbles.length) {
-        for (const s of scribbles) {
-          ctx.strokeStyle = s.color;
-          ctx.beginPath();
-          ctx.moveTo(s.x1, s.y1);
-          ctx.lineTo(s.x2, s.y2);
-          ctx.stroke();
-        }
-      } else {
-        const h = hash(g.label);
-        ctx.strokeStyle = "#2b6cb0";
-        ctx.beginPath();
-        ctx.moveTo(panel.x + 3, panel.y + 6 + h % 3);
-        ctx.lineTo(panel.x + panel.w - 4, panel.y + 7 + h % 4);
-        ctx.stroke();
-        ctx.strokeStyle = "#d9534f";
-        ctx.beginPath();
-        ctx.moveTo(panel.x + 4, panel.y + 12);
-        ctx.lineTo(panel.x + 9 + h % 6, panel.y + 14);
-        ctx.stroke();
-        ctx.fillStyle = "#2d3438";
-        ctx.fillRect(panel.x + 4, panel.y + 4, 5 + h % 5, 1);
-      }
     }
     drawDesks(ctx, r, row) {
       const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
@@ -1398,7 +1354,7 @@
       for (const [id, seat] of r.plan.seats) {
         if (seat.row !== row)
           continue;
-        const dx = r.x0 + WB_W + seat.col * DESK_W + row * ROW_DX;
+        const dx = this.seatX(r, seat.col, row);
         const tn = this.toons.get(id);
         const occupied = !!tn?.sitting;
         const st = occupied ? tn.agent.state : void 0;
@@ -1407,27 +1363,27 @@
         ctx.fillStyle = "#54401f";
         ctx.fillRect(dx + 3, db - 9, 1.5, 9);
         ctx.fillRect(dx + 17.5, db - 9, 1.5, 9);
-        const flicker = occupied && st === "active" && this.frame % 4 < 2;
-        const screenCol = st === "error" ? "#8a2f28" : occupied ? flicker ? "#9fd8ff" : "#7fc4ef" : "#222d35";
         ctx.fillStyle = "#171c21";
-        ctx.fillRect(dx + 6.4, db - 11.4, 1.6, 1.4);
-        ctx.fillRect(dx + 4.4, db - 10.2, 5, 1);
-        ctx.fillStyle = "#171c21";
+        ctx.fillRect(dx + 7.2, db - 11.2, 1.6, 1.2);
+        ctx.fillRect(dx + 5.4, db - 10.2, 5.4, 1);
+        ctx.fillStyle = "#1b2129";
         ctx.beginPath();
-        ctx.moveTo(dx + 4, db - 16);
-        ctx.lineTo(dx + 11, db - 18);
-        ctx.lineTo(dx + 11, db - 11.4);
-        ctx.lineTo(dx + 4, db - 12.4);
+        ctx.moveTo(dx + 5, db - 18);
+        ctx.lineTo(dx + 11, db - 16.5);
+        ctx.lineTo(dx + 11, db - 11);
+        ctx.lineTo(dx + 5, db - 12.5);
         ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = screenCol;
+        ctx.fillStyle = "#11161c";
         ctx.beginPath();
-        ctx.moveTo(dx + 4.9, db - 15.4);
-        ctx.lineTo(dx + 10.1, db - 16.9);
-        ctx.lineTo(dx + 10.1, db - 12.2);
-        ctx.lineTo(dx + 4.9, db - 13.1);
+        ctx.moveTo(dx + 5.9, db - 17.2);
+        ctx.lineTo(dx + 10.1, db - 15.9);
+        ctx.lineTo(dx + 10.1, db - 11.6);
+        ctx.lineTo(dx + 5.9, db - 13.1);
         ctx.closePath();
         ctx.fill();
+        ctx.fillStyle = occupied ? st === "error" ? "#d9534f" : "#3ee089" : "#2a3138";
+        ctx.fillRect(dx + 8.8, db - 12.6, 0.9, 0.9);
         ctx.fillStyle = "#2a3138";
         ctx.fillRect(dx + 8.5, db - 11.2, 5.5, 1);
         ctx.fillStyle = "#d9534f";
@@ -1435,6 +1391,17 @@
         if (occupied && this.frame % 8 < 4) {
           ctx.fillStyle = "rgba(255,255,255,0.25)";
           ctx.fillRect(dx + 1, db - 15, 0.8, 1.4);
+        }
+        if (occupied) {
+          const c = st === "error" ? "217,83,79" : "159,216,255";
+          const peak = st === "error" ? 0.3 : st === "active" && this.frame % 4 < 2 ? 0.4 : 0.24;
+          const gx = dx + 13, gy = db - 16;
+          const grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, 7);
+          grd.addColorStop(0, `rgba(${c},${peak})`);
+          grd.addColorStop(0.6, `rgba(${c},${peak * 0.45})`);
+          grd.addColorStop(1, `rgba(${c},0)`);
+          ctx.fillStyle = grd;
+          ctx.fillRect(dx + 10, db - 24, 8, 20);
         }
       }
       ctx.globalAlpha = 1;
@@ -1584,6 +1551,9 @@
     },
     setRooms(r) {
       this._instance?.setRooms(r);
+    },
+    setPrBranches(b) {
+      this._instance?.setPrBranches(b);
     },
     setSelected(id) {
       this._instance?.setSelected(id);
