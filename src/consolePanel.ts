@@ -6,6 +6,15 @@ import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
 import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, currentBranch } from "./git";
 import { PrService } from "./prs";
+import { ClaudeDiscovery } from "./claude";
+import * as fs from "fs";
+import * as os from "os";
+
+/** One usage limit window (5-hour or weekly) from Claude's rate_limits feed. */
+interface UsageWindow {
+  pct: number;
+  resetsAt?: number;
+}
 
 /** A grid cell the user reserved for a directory (persisted per-workspace). */
 export interface ReservedRoom {
@@ -19,13 +28,16 @@ export interface ReservedRoom {
 export class ConsolePanel {
   public static current: ConsolePanel | undefined;
   private static readonly viewType = "fleet.console";
+  private usageTimer?: ReturnType<typeof setInterval>;
+  private usageWatcher?: fs.FSWatcher;
   private disposables: vscode.Disposable[] = [];
 
   static createOrShow(
     context: vscode.ExtensionContext,
     store: FleetStore,
     terminals: TerminalManager,
-    prs: PrService
+    prs: PrService,
+    discovery?: ClaudeDiscovery
   ): void {
     const column = vscode.ViewColumn.Active;
     if (ConsolePanel.current) {
@@ -43,7 +55,7 @@ export class ConsolePanel {
       }
     );
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "fleet.svg");
-    ConsolePanel.current = new ConsolePanel(panel, context, store, terminals, prs);
+    ConsolePanel.current = new ConsolePanel(panel, context, store, terminals, prs, discovery);
   }
 
   private constructor(
@@ -51,7 +63,8 @@ export class ConsolePanel {
     private readonly context: vscode.ExtensionContext,
     private readonly store: FleetStore,
     private readonly terminals: TerminalManager,
-    private readonly prs: PrService
+    private readonly prs: PrService,
+    private readonly discovery?: ClaudeDiscovery
   ) {
     this.panel.webview.html = this.html();
     this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m), null, this.disposables);
@@ -59,6 +72,7 @@ export class ConsolePanel {
     this.store.onDidChangeSelection(() => this.postState(), null, this.disposables);
     this.prs.onChange(() => this.postPrs(), null, this.disposables);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    this.startUsage();
   }
 
   private async onMessage(m: any): Promise<void> {
@@ -66,6 +80,7 @@ export class ConsolePanel {
     switch (m.type) {
       case "ready":
         this.postState();
+        this.postUsage();
         break;
       case "select":
         if (id) this.store.setSelected(id);
@@ -91,6 +106,9 @@ export class ConsolePanel {
       case "removeRoom":
         // note: must not truthiness-check — a legacy room can have name ""
         if (typeof m.room === "string") await this.removeRoom(m.room);
+        break;
+      case "cdAgent":
+        if (id) await this.cdAgent(id, m.room, m.ghost);
         break;
       case "refreshPrs":
         void this.prs.refresh();
@@ -252,6 +270,75 @@ export class ConsolePanel {
     else this.terminals.reveal(id);
   }
 
+  /** Drag a toon onto a room (or an empty ghost cell) → /cd that agent there.
+   *  Existing room: use its directory. Empty cell: pick + reserve a new room. */
+  private async cdAgent(
+    id: string,
+    room?: string,
+    ghost?: { floor: number; col: number }
+  ): Promise<void> {
+    const agent = this.store.get(id);
+    if (!agent) return;
+
+    let dir: string | undefined;
+    let roomName: string | undefined;
+    if (typeof room === "string") {
+      const reserved = this.getRooms().find((r) => r.name === room);
+      dir = reserved?.path;
+      if (!dir) {
+        const peer = this.store.list().find((a) => a.repo === room && a.id !== id);
+        dir = peer ? resolveCwd(peer) : undefined;
+      }
+      roomName = room;
+    } else if (ghost) {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: `Move ${agent.name} here`,
+        title: `DevTower: pick a directory for ${agent.name}`,
+      });
+      if (!picked?.[0]) return;
+      dir = picked[0].fsPath;
+      const rooms = this.getRooms();
+      const existing = rooms.find((r) => r.path === dir);
+      if (existing) {
+        roomName = existing.name;
+      } else {
+        let name = path.basename(dir) || path.basename(path.dirname(dir)) || "room";
+        const base = name;
+        let n = 2;
+        while (rooms.some((r) => r.name === name)) name = `${base}-${n++}`;
+        rooms.push({ name, path: dir, floor: ghost.floor, col: ghost.col });
+        await this.saveRooms(rooms);
+        roomName = name;
+      }
+    }
+
+    if (!dir) {
+      vscode.window.showWarningMessage(`DevTower: no directory known for room "${room ?? ""}".`);
+      return;
+    }
+    if (resolveCwd(agent) === dir) return; // already there
+
+    // tell the live Claude session to change directory; the terminal hosts the
+    // real session (auto-resumed on first open). Use command() so the path is
+    // pasted as a literal block — typing it would trip Claude's /cd autocomplete
+    this.terminals.command(id, `/cd ${dir}`);
+    // relocate the toon now; discovery confirms once the transcript reports the
+    // new cwd (expectCd holds the position until then, preventing a snap-back)
+    this.store.apply({
+      id,
+      repo: roomName ?? path.basename(dir),
+      worktree: dir,
+      name: `${roomName ?? path.basename(dir)}·${id.slice(3, 7)}`,
+      state: "active",
+      task: `Moved to ${path.basename(dir)}`,
+    });
+    this.discovery?.expectCd(id, dir);
+    this.postState();
+  }
+
   private handleSend(id: string, text: string): void {
     const t = (text || "").trim();
     if (!t) return;
@@ -391,8 +478,46 @@ export class ConsolePanel {
     this.panel.webview.postMessage({ type: "session", id, messages: getSession(agent) });
   }
 
+  /* ============ PLAN USAGE (5h / weekly rate-limit windows) ============ */
+
+  /** Path Claude Code's statusline caches its `rate_limits` payload to. */
+  private usageFile(): string {
+    return path.join(os.homedir(), ".claude", "claude-viewer-rate-limits.json");
+  }
+
+  /** Watch + poll the rate-limit cache so the header meters stay current. The
+   *  file is rewritten whenever a Claude statusline renders; we also poll on an
+   *  interval as a fallback in case the watch misses an atomic replace. */
+  private startUsage(): void {
+    this.postUsage();
+    this.usageTimer = setInterval(() => this.postUsage(), 60_000);
+    try {
+      this.usageWatcher = fs.watch(this.usageFile(), () => this.postUsage());
+    } catch {
+      /* file may not exist yet — the interval will pick it up once it appears */
+    }
+  }
+
+  private postUsage(): void {
+    let usage: { fiveHour?: UsageWindow; sevenDay?: UsageWindow } | null = null;
+    try {
+      const raw = fs.readFileSync(this.usageFile(), "utf8");
+      const j = JSON.parse(raw);
+      const read = (o: any): UsageWindow | undefined =>
+        o && typeof o.used_percentage === "number"
+          ? { pct: Math.max(0, Math.min(100, Math.round(o.used_percentage))), resetsAt: o.resets_at }
+          : undefined;
+      usage = { fiveHour: read(j.five_hour), sevenDay: read(j.seven_day) };
+    } catch {
+      usage = null; // missing/unreadable → webview hides the meters
+    }
+    this.panel.webview.postMessage({ type: "usage", usage });
+  }
+
   private dispose(): void {
     ConsolePanel.current = undefined;
+    if (this.usageTimer) clearInterval(this.usageTimer);
+    this.usageWatcher?.close();
     this.panel.dispose();
     while (this.disposables.length) this.disposables.pop()?.dispose();
   }
@@ -435,6 +560,14 @@ export class ConsolePanel {
       <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
       <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
       <span class="tstat"><b id="fleet-count">0</b><span class="lbl">crew</span></span>
+    </div>
+    <div class="usage" id="usage" hidden>
+      <span class="umeter" id="u-5h" title="Plan usage — 5-hour window">
+        <span class="ulbl">5H</span><span class="ubar"><i></i></span><b class="upct">–</b>
+      </span>
+      <span class="umeter" id="u-wk" title="Plan usage — weekly window">
+        <span class="ulbl">WK</span><span class="ubar"><i></i></span><b class="upct">–</b>
+      </span>
     </div>
     <div class="spacer"></div>
     <button class="iconbtn" id="prbtn" title="Pull requests">⇄<span class="nbadge" id="pr-badge" hidden>0</span></button>

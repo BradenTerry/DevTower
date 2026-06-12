@@ -32,8 +32,21 @@ export class ClaudeDiscovery {
   private timer?: ReturnType<typeof setInterval>;
   private mine = new Set<string>(); // agent ids this service created
   private branchCache = new Map<string, string>();
+  // agent id → directory it was just told to /cd into (+ when), held until the
+  // transcript reports the new cwd so the toon doesn't snap back meanwhile. The
+  // timestamp bounds the hold: a /cd that fails or is declined never reports the
+  // new cwd, so we give up after CD_HOLD_MS and revert to the real location.
+  private cdPending = new Map<string, { dir: string; at: number }>();
+  private static readonly CD_HOLD_MS = 120_000;
 
   constructor(private store: FleetStore) {}
+
+  /** Record that an agent was sent `/cd <dir>`; relocate it optimistically and
+   *  re-scan so the move shows immediately rather than on the next poll. */
+  expectCd(agentId: string, dir: string): void {
+    this.cdPending.set(agentId, { dir, at: Date.now() });
+    void this.refresh();
+  }
 
   start(intervalMs = 30_000): void {
     this.timer = setInterval(() => void this.refresh(), intervalMs);
@@ -44,12 +57,20 @@ export class ClaudeDiscovery {
   }
 
   /**
-   * Working directories of claude processes that are actually running right
-   * now. A transcript on disk is NOT a running session — without this check,
-   * every session touched in the last day shows up as a phantom agent.
+   * How many claude processes are actually running in each working directory
+   * right now. A transcript on disk is NOT a running session — without this
+   * check, every session touched in the last day shows up as a phantom agent.
+   *
+   * We count per cwd rather than returning a plain live/not set because a
+   * single cwd can host several concurrent sessions (and the CLI exposes no
+   * session id via argv/env, nor does it keep the transcript file open, so the
+   * cwd is the only handle the OS gives us). The caller keeps the N newest
+   * transcripts per cwd, so closing one of several sessions there drops exactly
+   * one toon on the next poll instead of leaving a phantom behind.
+   *
    * Returns null when the check isn't possible (Windows / tools missing).
    */
-  private async liveCwds(): Promise<Set<string> | null> {
+  private async liveCwdCounts(): Promise<Map<string, number> | null> {
     if (process.platform === "win32") return null;
     try {
       const ps = await execP("ps", ["-axo", "pid=,comm="]);
@@ -61,13 +82,17 @@ export class ClaudeDiscovery {
         const comm = t.slice(sp + 1).trim();
         if (comm === "claude" || comm.endsWith("/claude")) pids.push(t.slice(0, sp));
       }
-      if (!pids.length) return new Set();
+      if (!pids.length) return new Map();
+      // -a -d cwd → exactly one cwd record per pid; counting them per path
+      // yields the number of live claude processes rooted at that directory.
       const out = await execP("lsof", ["-a", "-d", "cwd", "-p", pids.join(","), "-Fn"]);
-      const set = new Set<string>();
+      const counts = new Map<string, number>();
       for (const line of out.split("\n")) {
-        if (line.startsWith("n")) set.add(line.slice(1).trim());
+        if (!line.startsWith("n")) continue;
+        const cwd = line.slice(1).trim();
+        counts.set(cwd, (counts.get(cwd) ?? 0) + 1);
       }
-      return set;
+      return counts;
     } catch {
       return null;
     }
@@ -86,25 +111,30 @@ export class ClaudeDiscovery {
       return 0;
     }
 
-    // keep only sessions backed by a live claude process (newest per cwd);
-    // optionally also show recent-but-closed ones as idle "resumable" rooms
-    const live = await this.liveCwds();
-    const seenCwd = new Set<string>();
+    // keep one transcript per live claude process (newest first per cwd);
+    // optionally also show recent-but-closed ones as idle "resumable" rooms.
+    // NB: key liveness by launchCwd (the dir claude started in, which is what
+    // `lsof` reports), NOT the latest cwd — a session that cd'd into a subdir
+    // still belongs to the process counted under its launch directory.
+    const liveCounts = await this.liveCwdCounts();
+    const usedPerCwd = new Map<string, number>();
     const kept: Found[] = [];
     for (const f of found) {
-      // found is sorted newest-first
-      const isLive =
-        live === null
-          ? Date.now() - f.mtime < 15 * 60_000 // no process info → only very fresh
-          : live.has(f.cwd);
+      // found is sorted newest-first, so a cwd's slots fill with its freshest
+      // sessions; the rest are treated as closed.
+      const used = usedPerCwd.get(f.launchCwd) ?? 0;
+      let isLive: boolean;
+      if (liveCounts === null) {
+        // no process info → treat only a single very-fresh session as live
+        isLive = used === 0 && Date.now() - f.mtime < 15 * 60_000;
+      } else {
+        isLive = used < (liveCounts.get(f.launchCwd) ?? 0);
+      }
       if (isLive) {
-        // at most one agent per cwd unless both are actively being written
-        if (seenCwd.has(f.cwd) && Date.now() - f.mtime > 10 * 60_000) continue;
-        seenCwd.add(f.cwd);
+        usedPerCwd.set(f.launchCwd, used + 1);
         kept.push(f);
-      } else if (showRecent) {
-        if (seenCwd.has(f.cwd)) continue;
-        seenCwd.add(f.cwd);
+      } else if (showRecent && used === 0) {
+        usedPerCwd.set(f.launchCwd, 1);
         kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
       }
     }
@@ -114,17 +144,28 @@ export class ClaudeDiscovery {
     for (const f of found) {
       present.add(f.id);
       this.mine.add(f.id);
-      let branch = this.branchCache.get(f.cwd);
+      // honor a pending /cd until the transcript reports the new directory,
+      // or until the hold expires (a failed/declined /cd never lands)
+      let cwd = f.cwd;
+      const pend = this.cdPending.get(f.id);
+      if (pend) {
+        if (cwd === pend.dir || Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
+          this.cdPending.delete(f.id);
+        } else {
+          cwd = pend.dir;
+        }
+      }
+      let branch = this.branchCache.get(cwd);
       if (branch === undefined) {
-        branch = (await isRepo(f.cwd)) ? await currentBranch(f.cwd) : "";
-        this.branchCache.set(f.cwd, branch);
+        branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
+        this.branchCache.set(cwd, branch);
       }
       this.store.apply({
         id: f.id,
-        name: `${path.basename(f.cwd)}·${f.id.slice(3, 7)}`,
+        name: `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
         model: f.model,
-        repo: path.basename(f.cwd),
-        worktree: f.cwd,
+        repo: path.basename(cwd),
+        worktree: cwd,
         branch: branch || "—",
         state: f.state,
         task: f.task,
@@ -134,6 +175,8 @@ export class ClaudeDiscovery {
         contextTokens: f.contextTokens,
       });
     }
+    // drop pending /cd for agents that are no longer present
+    for (const id of [...this.cdPending.keys()]) if (!present.has(id)) this.cdPending.delete(id);
     // sessions that aged out or were deleted leave the tower
     for (const id of [...this.mine]) {
       if (!present.has(id)) {
@@ -171,6 +214,7 @@ export class ClaudeDiscovery {
           id: "cc-" + fn.slice(0, 8),
           file,
           cwd: meta.cwd,
+          launchCwd: meta.launchCwd ?? meta.cwd,
           mtime: st.mtimeMs,
           state,
           task: meta.task || "Claude session",
@@ -188,7 +232,8 @@ export class ClaudeDiscovery {
 interface Found {
   id: string;
   file: string;
-  cwd: string;
+  cwd: string; // latest cwd (transcript tail) — used for the room/label
+  launchCwd: string; // dir claude started in (transcript head) — used for liveness
   mtime: number;
   state: AgentState;
   task: string;
@@ -201,7 +246,7 @@ interface Found {
 async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -209,7 +254,7 @@ async function readMeta(
     const headBuf = Buffer.alloc(Math.min(CHUNK, size));
     await fh.read(headBuf, 0, headBuf.length, 0);
     const head = headBuf.toString("utf8");
-    const cwd = /"cwd"\s*:\s*"([^"]+)"/.exec(head)?.[1];
+    const headCwd = /"cwd"\s*:\s*"([^"]+)"/.exec(head)?.[1];
 
     let tail = head;
     if (size > CHUNK) {
@@ -217,6 +262,8 @@ async function readMeta(
       await fh.read(tailBuf, 0, CHUNK, size - CHUNK);
       tail = tailBuf.toString("utf8");
     }
+    // prefer the most recent cwd record so /cd mid-session relocates the agent
+    const cwd = lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g) ?? headCwd;
     const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g);
     // context usage = the last turn's full input window + output
     let contextTokens: number | undefined;
@@ -275,7 +322,7 @@ async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, lastRole, task, model, question, contextTokens };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens };
   } finally {
     await fh.close();
   }

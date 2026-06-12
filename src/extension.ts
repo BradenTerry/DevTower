@@ -40,12 +40,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand("fleet.refresh", () => store.watchStateFile()),
     vscode.commands.registerCommand("fleet.openConsole", () =>
-      ConsolePanel.createOrShow(context, store, terminals, prs)
+      ConsolePanel.createOrShow(context, store, terminals, prs, discovery)
     )
   );
 
   // The 3D console is the primary interface — open it on activation.
-  ConsolePanel.createOrShow(context, store, terminals, prs);
+  ConsolePanel.createOrShow(context, store, terminals, prs, discovery);
 }
 
 export function deactivate(): void {

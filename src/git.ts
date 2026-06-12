@@ -114,7 +114,15 @@ export interface ChangeSummary {
   untracked: boolean;
 }
 
-/** Flat changed-file list with +/- counts, for the console Changes tab. */
+/**
+ * Flat changed-file list with +/- counts, for the console Changes tab.
+ *
+ * NOTE: this assumes `cwd` (the agent's worktree) is a git repo root. When an
+ * agent runs from an umbrella directory that merely *contains* repos (e.g. a
+ * ~/Projects folder), git finds no repo at `cwd` and this returns []. Nested
+ * child repos are intentionally not scanned — the panel reflects one worktree,
+ * so changes only appear when the agent's cwd is itself a repo root.
+ */
 export async function changedFiles(cwd: string): Promise<ChangeSummary[]> {
   const st = await status(cwd);
   const counts = new Map<string, { add: number; del: number }>();
