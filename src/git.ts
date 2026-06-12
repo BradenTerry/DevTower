@@ -2,7 +2,7 @@ import { execFile } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import * as vscode from "vscode";
-import { Agent } from "./fleet";
+import { Agent } from "./store";
 
 export interface GitFile {
   /** repo-relative path */
@@ -25,8 +25,9 @@ export interface GitStatus {
 
 export function runGit(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => {
-      if (err) reject(err);
+    execFile("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+      // git puts the useful reason ("fatal: ...") on stderr; surface that
+      if (err) reject(new Error((String(stderr).trim() || err.message).trim()));
       else resolve(stdout);
     });
   });
@@ -181,9 +182,52 @@ export async function unstageAll(cwd: string): Promise<void> {
 }
 
 /** Create a new worktree + branch off the repo at `dir`. Returns the worktree path. */
+async function branchExists(dir: string, branch: string): Promise<boolean> {
+  try {
+    await runGit(dir, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+    return true; // exit 0 → the ref exists
+  } catch {
+    return false;
+  }
+}
+
+/** Add `pattern` to the repo's local `.git/info/exclude` (untracked, never
+ *  committed) so the in-repo worktrees dir doesn't show up as changes. */
+async function ensureExcluded(dir: string, pattern: string): Promise<void> {
+  try {
+    const common = (await runGit(dir, ["rev-parse", "--git-common-dir"])).trim();
+    const gitDir = path.isAbsolute(common) ? common : path.join(dir, common);
+    const file = path.join(gitDir, "info", "exclude");
+    let content = "";
+    try {
+      content = await fs.promises.readFile(file, "utf8");
+    } catch {
+      /* file may not exist yet */
+    }
+    if (content.split("\n").some((l) => l.trim() === pattern)) return;
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.appendFile(file, (content && !content.endsWith("\n") ? "\n" : "") + pattern + "\n");
+  } catch {
+    /* best effort — worktree still works without it */
+  }
+}
+
 export async function worktreeAdd(dir: string, name: string, n: number): Promise<{ wtPath: string; branch: string }> {
-  const wtPath = path.resolve(dir, "..", `${name}-fleet-${n}`);
-  const branch = `fleet/${name}-${n}`;
+  // worktrees live under <repo>/.claude/worktrees/ (kept out of git status via
+  // .git/info/exclude) rather than littering the parent directory
+  const top = await topLevel(dir).catch(() => dir);
+  const wtRoot = path.join(top, ".claude", "worktrees");
+  await ensureExcluded(dir, ".claude/worktrees/");
+  // pick a directory + branch that don't already exist — a prior attempt can
+  // leave one behind, and n collides after agents are removed/re-added
+  let i = n;
+  let wtPath = path.join(wtRoot, `${name}-${i}`);
+  let branch = `devtower/${name}-${i}`;
+  for (let tries = 0; tries < 100 && (fs.existsSync(wtPath) || (await branchExists(dir, branch))); tries++) {
+    i++;
+    wtPath = path.join(wtRoot, `${name}-${i}`);
+    branch = `devtower/${name}-${i}`;
+  }
   await runGit(dir, ["worktree", "add", wtPath, "-b", branch]);
   return { wtPath, branch };
 }

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { FleetStore } from "./fleet";
+import { DevTowerStore } from "./store";
 import { TerminalManager } from "./terminals";
 import { DiffProvider, GIT_SCHEME, MOCK_SCHEME } from "./diffProvider";
 import { registerChanges } from "./changesView";
@@ -8,7 +8,7 @@ import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  const store = new FleetStore(context);
+  const store = new DevTowerStore(context);
   const terminals = new TerminalManager(store);
   const diffProvider = new DiffProvider(store);
   const prs = new PrService(store);
@@ -23,14 +23,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     { dispose: () => discovery.dispose() }
   );
 
-  const cfg = vscode.workspace.getConfiguration("fleet");
-  // real Claude CLI sessions first; mock fleet only if nothing real exists
+  const cfg = vscode.workspace.getConfiguration("devtower");
+  // real Claude CLI sessions first; mock crew only if nothing real exists
   let liveSessions = 0;
   if (cfg.get<boolean>("discoverClaudeSessions", true)) {
     liveSessions = await discovery.refresh().catch(() => 0);
-    discovery.start();
+    discovery.start(cfg.get<number>("pollIntervalMs", 8_000));
   }
-  if (liveSessions === 0 && cfg.get<boolean>("useMockData", true)) store.seedMock();
+  if (liveSessions === 0 && cfg.get<boolean>("useMockData", false)) store.seedMock();
   store.watchStateFile();
   prs.start(120_000, 4_000); // PR polling stays off the startup path
 
@@ -38,8 +38,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerChanges(context, store);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("fleet.refresh", () => store.watchStateFile()),
-    vscode.commands.registerCommand("fleet.openConsole", () =>
+    vscode.commands.registerCommand("devtower.refresh", () => store.watchStateFile()),
+    vscode.commands.registerCommand("devtower.openConsole", () =>
       ConsolePanel.createOrShow(context, store, terminals, prs, discovery)
     )
   );

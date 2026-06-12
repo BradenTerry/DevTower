@@ -1,24 +1,24 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { FleetStore, reconstruct } from "./fleet";
+import { DevTowerStore, reconstruct } from "./store";
 import { show, GitFile } from "./git";
 
 /**
  * Serves file content for the NATIVE diff editor.
- *   fleet-git:  real content at a git ref (`git show <ref>:<file>`)
- *   fleet-mock: reconstructed before/after for seeded mock agents
+ *   devtower-git:  real content at a git ref (`git show <ref>:<file>`)
+ *   devtower-mock: reconstructed before/after for seeded mock agents
  *
  * The "after" side of a real diff is the working-tree file itself (a plain
  * file: URI), so edits in the diff editor write straight to disk.
  */
-export const GIT_SCHEME = "fleet-git";
-export const MOCK_SCHEME = "fleet-mock";
+export const GIT_SCHEME = "devtower-git";
+export const MOCK_SCHEME = "devtower-mock";
 
 export class DiffProvider implements vscode.TextDocumentContentProvider {
   private _onDidChange = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this._onDidChange.event;
 
-  constructor(private store: FleetStore) {}
+  constructor(private store: DevTowerStore) {}
 
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
     if (uri.scheme === GIT_SCHEME) {
@@ -79,7 +79,7 @@ export async function openGitFileDiff(
 
 /** Open a mock agent's reconstructed file diff. */
 export async function openMockFileDiff(
-  store: FleetStore,
+  store: DevTowerStore,
   agentId: string,
   filePath: string
 ): Promise<void> {

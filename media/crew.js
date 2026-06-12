@@ -40,17 +40,43 @@
       accColor: ACCENTS[(h >> 9) % ACCENTS.length]
     };
   }
-  var ROOM_H = 52;
+  var ROOM_H = 84;
   var SLAB = 8;
   var FLOOR_STEP = ROOM_H + SLAB;
-  var WB_W = 30;
+  var WB_W = 42;
   var DESK_W = 26;
   var DOOR_W = 18;
-  var MAX_DESKS = 4;
-  var ROOM_W = WB_W + MAX_DESKS * DESK_W + DOOR_W;
+  var DEPTH_X = 24;
+  var DEPTH_Y = 22;
+  var ROWS_OF_DESKS = 2;
+  var ROW_DY = DEPTH_Y;
+  var ROOM_W = 260;
+  var backWall = (x0, base) => ({
+    x0: x0 + DEPTH_X,
+    x1: x0 + ROOM_W - DEPTH_X,
+    yTop: base - ROOM_H + 10,
+    // just below the receded ceiling
+    yBot: base - DEPTH_Y
+    // far-wall floor line
+  });
+  var ROLLER_W = 30;
+  var ROLLER_H = 22;
+  var ROLLER_DEPTH = 13;
+  var ROLLER_LEG = 12;
+  var rollerPanel = (cx, base) => {
+    const stand = base - ROLLER_DEPTH;
+    return { x: cx - ROLLER_W / 2, y: stand - ROLLER_LEG - ROLLER_H, w: ROLLER_W, h: ROLLER_H };
+  };
+  var boardRect = (x0, base) => {
+    const bw = backWall(x0, base);
+    const w = bw.x1 - bw.x0 - 94;
+    return { x: (bw.x0 + bw.x1) / 2 - w / 2, y: bw.yTop + 13, w, h: 26 };
+  };
   var COL_STEP = ROOM_W;
   var cellX0 = (col) => col * COL_STEP - ROOM_W / 2;
   var WALK_SPEED = 30;
+  var GROUP_GAP = 1;
+  var DEFAULT_BRANCHES = /* @__PURE__ */ new Set(["main", "master", "head", "develop", "trunk"]);
   var floorBase = (floor) => -floor * FLOOR_STEP;
   var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   var PixelCrew = class {
@@ -69,6 +95,10 @@
       __publicField(this, "colRange", /* @__PURE__ */ new Map());
       __publicField(this, "bounds", { minX: -120, maxX: 120, topY: -120, botY: 40, minFloor: 0 });
       __publicField(this, "focusRoom_", null);
+      __publicField(this, "focusAgentId", null);
+      // when set, the camera tracks this dev (not the room)
+      __publicField(this, "prBranches", /* @__PURE__ */ new Set());
+      // branches (lowercased) with an open PR
       __publicField(this, "focus", { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 });
       __publicField(this, "cam", { x: 0, y: -ROOM_H / 2, z: 4 });
       __publicField(this, "zoomMul", 1);
@@ -230,6 +260,11 @@
       this.reserved = reserved || [];
       this.layout();
     }
+    /** Branches that currently have an open PR; shown on each worktree's board. */
+    setPrBranches(branches) {
+      this.prBranches = new Set((branches || []).filter(Boolean).map((b) => b.toLowerCase()));
+      this.invalidate();
+    }
     setAgents(agents) {
       const seen = new Set(agents.map((a) => a.id));
       for (const [id, tn] of this.toons) {
@@ -250,6 +285,8 @@
             base: 0,
             x0: 0,
             deskIdx: 0,
+            row: 0,
+            lift: 0,
             huddle: false,
             sitting: false,
             entering: true,
@@ -263,6 +300,60 @@
       }
       this.agents = agents;
       this.layout();
+    }
+    /** Group a room's agents into per-worktree desk blocks. The main worktree
+     *  (default branch, or a "." / root checkout) comes first and is labelled
+     *  "main"; each other worktree gets a contiguous block of columns after a
+     *  one-column partition gap, signed with its branch. */
+    seatPlan(agents) {
+      const byTree = /* @__PURE__ */ new Map();
+      for (const a of agents) {
+        const key = a.worktree && a.worktree.trim() ? a.worktree : ".";
+        if (!byTree.has(key))
+          byTree.set(key, []);
+        byTree.get(key).push(a);
+      }
+      const isMain = (key, ags) => key === "." || key === "" || DEFAULT_BRANCHES.has((ags[0].branch ?? "").toLowerCase());
+      const treeName = (key) => key.split(/[\\/]/).pop() || key;
+      const entries = [...byTree.entries()].sort((a, b) => {
+        const am = isMain(a[0], a[1]) ? 0 : 1;
+        const bm = isMain(b[0], b[1]) ? 0 : 1;
+        if (am !== bm)
+          return am - bm;
+        return treeName(a[0]) < treeName(b[0]) ? -1 : 1;
+      });
+      const seats = /* @__PURE__ */ new Map();
+      const groups = [];
+      let startCol = 0;
+      let mainTaken = false;
+      for (const [key, ags] of entries) {
+        const cols = Math.max(1, Math.ceil(ags.length / ROWS_OF_DESKS));
+        ags.forEach((a, i) => {
+          seats.set(a.id, { col: startCol + Math.floor(i / ROWS_OF_DESKS), row: i % ROWS_OF_DESKS });
+        });
+        const main = !mainTaken && isMain(key, ags);
+        if (main)
+          mainTaken = true;
+        groups.push({
+          name: main ? "main" : treeName(key),
+          branch: ags[0].branch || "\u2014",
+          isMain: main,
+          startCol,
+          cols,
+          hue: main ? 150 : hash(key) % 360
+        });
+        startCol += cols + GROUP_GAP;
+      }
+      const totalCols = Math.max(0, startCol - GROUP_GAP);
+      const span = ROOM_W - WB_W - DOOR_W - DESK_W;
+      const pitch = totalCols > 1 ? Math.min(DESK_W, span / (totalCols - 1)) : DESK_W;
+      return { seats, groups, totalCols, pitch };
+    }
+    /** World x of a seat (col/row) within a room, using the room's compressed
+     *  column pitch so desks, chairs and signs all line up and stay inside. */
+    seatX(r, col, row) {
+      const pitch = r.plan?.pitch ?? DESK_W;
+      return r.x0 + WB_W + col * pitch + row * (pitch / 2);
     }
     /** Merge reserved rooms + live repos into grid cells; assign toon targets. */
     layout() {
@@ -370,6 +461,7 @@
         const activeCount = room.agents.filter((a) => a.state === "active").length;
         const huddle = activeCount >= 2;
         let wbSlot = 0;
+        room.plan = this.seatPlan(room.agents);
         room.agents.forEach((a, di) => {
           const tn = this.toons.get(a.id);
           if (!tn)
@@ -377,7 +469,9 @@
           tn.base = base;
           tn.x0 = room.x0;
           tn.deskIdx = di;
-          const deskX = room.x0 + WB_W + di % MAX_DESKS * DESK_W;
+          const seat = room.plan.seats.get(a.id) ?? { col: 0, row: 0 };
+          tn.row = seat.row;
+          const deskX = this.seatX(room, seat.col, seat.row);
           if (a.state === "active" && huddle) {
             tn.huddle = true;
             tn.targetX = room.x0 + 26 + wbSlot * 9;
@@ -395,7 +489,9 @@
         if (!huddle)
           room.scribbles = [];
       }
-      if (this.focusRoom_ && this.rooms.has(this.focusRoom_))
+      if (this.focusAgentId && this.toons.has(this.focusAgentId))
+        this.focusAgent(this.focusAgentId, false);
+      else if (this.focusRoom_ && this.rooms.has(this.focusRoom_))
         this.focusOn(this.focusRoom_, false);
       else
         this.clearFocus(false, true);
@@ -406,6 +502,7 @@
       const r = this.rooms.get(name);
       if (!r)
         return;
+      this.focusAgentId = null;
       this.focusRoom_ = name;
       this.focus.x = r.x0 + ROOM_W / 2;
       this.focus.y = floorBase(r.floor) - ROOM_H / 2;
@@ -417,24 +514,30 @@
         this.zoomMul = 1;
       this.invalidate();
     }
-    /** Tight zoom onto one agent (their corner of the room). */
-    focusAgent(id) {
+    /** Tight zoom onto one agent (their corner of the room). On the initial click
+     *  (resetZoom) we recentre; periodic re-layouts call it with resetZoom=false to
+     *  keep tracking the dev without fighting the operator's pan/zoom. */
+    focusAgent(id, resetZoom = true) {
       const tn = this.toons.get(id);
       if (!tn)
         return;
       const room = this.rooms.get(tn.agent.repo);
+      this.focusAgentId = id;
       this.focusRoom_ = room?.name ?? null;
       this.focus.x = tn.targetX;
       this.focus.y = tn.base - ROOM_H / 2 + 6;
       this.focus.spanW = 96;
       this.focus.spanH = FLOOR_STEP + 18;
-      this.panX = 0;
-      this.panY = 0;
-      this.zoomMul = 1;
+      if (resetZoom) {
+        this.panX = 0;
+        this.panY = 0;
+        this.zoomMul = 1;
+      }
       this.invalidate();
     }
     clearFocus(resetZoom = true, preservePan = false) {
       this.focusRoom_ = null;
+      this.focusAgentId = null;
       this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
       this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
       this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
@@ -609,6 +712,9 @@
         else if (tn.entering)
           tn.entering = false;
         tn.sitting = tn.agent.state === "active" && !tn.huddle && !tn.entering && Math.abs(dx) <= 1;
+        const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.huddle;
+        const targetLift = atDesk ? tn.row * ROW_DY : 0;
+        tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
       }
       for (let i = this.leaving.length - 1; i >= 0; i--) {
         const tn = this.leaving[i];
@@ -654,32 +760,14 @@
         });
         if (huddlers.length >= 2 && r.scribbles.length < 16 && this.frame % 6 === 0) {
           const base = floorBase(r.floor);
-          const bx = r.x0 + 5, by = base - ROOM_H + 14;
+          const wb = rollerPanel(r.x0 + WB_W / 2, base);
           r.scribbles.push({
-            x1: bx + 2 + Math.random() * 16,
-            y1: by + 2 + Math.random() * 8,
-            x2: bx + 2 + Math.random() * 16,
-            y2: by + 2 + Math.random() * 8,
+            x1: wb.x + 3 + Math.random() * (wb.w - 6),
+            y1: wb.y + 3 + Math.random() * (wb.h - 6),
+            x2: wb.x + 3 + Math.random() * (wb.w - 6),
+            y2: wb.y + 3 + Math.random() * (wb.h - 6),
             color: Math.random() < 0.3 ? "#d9534f" : Math.random() < 0.5 ? "#2b6cb0" : "#2d3438"
           });
-        }
-      }
-      if (!this.eco && this.frame % 24 === 0) {
-        for (const tn of this.toons.values()) {
-          if (tn.agent.state === "complete") {
-            for (let i = 0; i < 7; i++) {
-              this.particles.push({
-                x: tn.x,
-                y: tn.base - 18,
-                vx: (Math.random() - 0.5) * 28,
-                vy: -22 - Math.random() * 16,
-                life: 1,
-                color: ACCENTS[i % ACCENTS.length],
-                size: 1.4,
-                gravity: 60
-              });
-            }
-          }
         }
       }
       if (!this.eco && this.frame % 14 === 0) {
@@ -687,7 +775,7 @@
           if (tn.agent.state === "error") {
             this.particles.push({
               x: tn.x + 6,
-              y: tn.base - 13,
+              y: tn.base - tn.lift - 13,
               vx: 2 + Math.random() * 3,
               vy: -6 - Math.random() * 4,
               life: 1,
@@ -749,7 +837,7 @@
         }
       }
       for (const tn of this.toons.values()) {
-        const s = this.screenOf(tn.x, tn.base);
+        const s = this.screenOf(tn.x, tn.base - tn.lift);
         const w = 14 * this.cam.z, h = 22 * this.cam.z;
         if (mx > s.x - w / 2 && mx < s.x + w / 2 && my > s.y - h && my < s.y + 4 * this.cam.z) {
           return { agent: tn.agent.id };
@@ -775,7 +863,7 @@
         this.onSelectCb(hit.agent);
         this.focusAgent(hit.agent);
       } else if (hit.room) {
-        if (this.focusRoom_ === hit.room)
+        if (!this.focusAgentId && this.focusRoom_ === hit.room)
           this.clearFocus();
         else
           this.focusOn(hit.room);
@@ -839,30 +927,10 @@
             ctx.fillRect(x0 + 7.4, roofY - 10.6, 3.2, 1.6);
         }
       }
-      const occupants = /* @__PURE__ */ new Map();
-      for (const tn of this.toons.values()) {
-        if (!occupants.has(tn.agent.repo))
-          occupants.set(tn.agent.repo, /* @__PURE__ */ new Map());
-        if (tn.sitting)
-          occupants.get(tn.agent.repo).set(tn.deskIdx, tn);
-      }
       for (const r of this.rooms.values())
         this.drawRoomBack(ctx, r);
       for (const g of this.ghosts)
         this.drawGhost(ctx, g);
-      for (const r of this.rooms.values()) {
-        if (r.built < 0.7)
-          continue;
-        const base = floorBase(r.floor);
-        const slots = Math.min(MAX_DESKS, Math.max(1, r.agents.length || 1));
-        for (let i = 0; i < slots; i++) {
-          const dx = r.x0 + WB_W + i * DESK_W;
-          ctx.fillStyle = "#3a4046";
-          ctx.fillRect(dx + 10, base - 8, 7, 1.6);
-          ctx.fillRect(dx + 15.6, base - 14, 1.4, 7);
-          ctx.fillRect(dx + 13, base - 6.5, 1.4, 6.5);
-        }
-      }
       for (const tn of this.leaving) {
         if (tn.ladderFrom === void 0 || tn.ladderX === void 0)
           continue;
@@ -875,12 +943,35 @@
           ctx.fillRect(tn.ladderX - 2.6, y, 5.2, 0.8);
         }
       }
-      const allToons = [...this.toons.values(), ...this.leaving];
-      allToons.sort((a, b) => a.x - b.x);
-      for (const tn of allToons)
-        this.drawToon(ctx, tn);
-      for (const r of this.rooms.values())
-        this.drawDesks(ctx, r, occupants.get(r.name));
+      const chair = (dx, db) => {
+        ctx.fillStyle = "#3a4046";
+        ctx.fillRect(dx + 10, db - 8, 7, 1.6);
+        ctx.fillRect(dx + 15.6, db - 14, 1.4, 7);
+        ctx.fillRect(dx + 13, db - 6.5, 1.4, 6.5);
+      };
+      const displayRow = (tn) => tn.lift > ROW_DY / 2 ? 1 : 0;
+      const seated = [...this.toons.values()];
+      for (let row = ROWS_OF_DESKS - 1; row >= 0; row--) {
+        for (const r of this.rooms.values()) {
+          if (r.built < 0.7 || !r.plan)
+            continue;
+          const base = floorBase(r.floor);
+          for (const [, seat] of r.plan.seats) {
+            if (seat.row !== row)
+              continue;
+            chair(this.seatX(r, seat.col, row), base - row * ROW_DY);
+          }
+        }
+        const rowToons = seated.filter((t) => displayRow(t) === row);
+        for (const tn of this.leaving)
+          if (displayRow(tn) === row)
+            rowToons.push(tn);
+        rowToons.sort((a, b) => a.x - b.x);
+        for (const tn of rowToons)
+          this.drawToon(ctx, tn);
+        for (const r of this.rooms.values())
+          this.drawDesks(ctx, r, row);
+      }
       for (const p of this.particles) {
         ctx.globalAlpha = clamp(p.life, 0, 1);
         ctx.fillStyle = p.color;
@@ -893,12 +984,6 @@
         if (r.built < 0.85)
           continue;
         const base = floorBase(r.floor);
-        const s = this.screenOf(r.x0 + 7, base - ROOM_H + 9);
-        ctx.font = "600 9px 'Martian Mono', monospace";
-        ctx.textAlign = "left";
-        ctx.fillStyle = `hsl(${r.hue} 50% 65%)`;
-        const lvl = r.floor >= 0 ? `F${r.floor}` : `B${-r.floor}`;
-        ctx.fillText(`${lvl} \xB7 ${r.name.toUpperCase()}`, s.x, s.y - 4 * this.cam.z);
         if (r.built >= 0.95) {
           const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
           const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
@@ -938,7 +1023,7 @@
         ctx.fillText(`${lvl} \xB7 pick a directory`, s.x, s.y + 11);
       }
       for (const tn of this.toons.values()) {
-        const s = this.screenOf(tn.x, tn.base - 23);
+        const s = this.screenOf(tn.x, tn.base - tn.lift - 23);
         const st = tn.agent.state;
         ctx.font = "9px 'IBM Plex Mono', monospace";
         ctx.textAlign = "center";
@@ -1032,58 +1117,89 @@
       ctx.fillRect(x, base - 1.5, w * eFloor, 1.2);
       if (eWall <= 0)
         return;
-      const wallH = H * eWall;
-      ctx.fillStyle = underground ? `hsl(${r.hue} 10% 16%)` : `hsl(${r.hue} 14% 20%)`;
-      ctx.fillRect(x + 1.5, base - wallH, w - 3, wallH);
-      ctx.fillStyle = underground ? `hsl(${r.hue} 12% 12%)` : `hsl(${r.hue} 16% 16%)`;
-      ctx.fillRect(x + 1.5, base - Math.min(10, wallH), w - 3, Math.min(10, wallH));
+      const grow = eWall;
+      const bw = backWall(x, base);
+      const topY = base - H * grow;
+      const byT = base - (base - bw.yTop) * grow;
+      const byB = base - DEPTH_Y * grow;
+      const shade = (l) => `hsl(${r.hue} ${underground ? 10 : 15}% ${l}%)`;
+      ctx.fillStyle = underground ? "#241c12" : "#2b2218";
+      ctx.beginPath();
+      ctx.moveTo(x, base);
+      ctx.lineTo(x + w, base);
+      ctx.lineTo(bw.x1, byB);
+      ctx.lineTo(bw.x0, byB);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = shade(underground ? 9 : 11);
+      ctx.beginPath();
+      ctx.moveTo(x, topY);
+      ctx.lineTo(x + w, topY);
+      ctx.lineTo(bw.x1, byT);
+      ctx.lineTo(bw.x0, byT);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = shade(underground ? 12 : 15);
+      ctx.beginPath();
+      ctx.moveTo(x, topY);
+      ctx.lineTo(bw.x0, byT);
+      ctx.lineTo(bw.x0, byB);
+      ctx.lineTo(x, base);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x + w, topY);
+      ctx.lineTo(bw.x1, byT);
+      ctx.lineTo(bw.x1, byB);
+      ctx.lineTo(x + w, base);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = shade(underground ? 17 : 22);
+      ctx.fillRect(bw.x0, byT, bw.x1 - bw.x0, byB - byT);
+      ctx.fillStyle = shade(underground ? 12 : 16);
+      ctx.fillRect(bw.x0, byB - 2, bw.x1 - bw.x0, 2);
       ctx.fillStyle = "#1a2128";
-      ctx.fillRect(x, base - wallH, 1.5, wallH + 3);
-      ctx.fillRect(x + w - 1.5, base - wallH, 1.5, wallH + 3);
-      if (eWall >= 1)
+      ctx.fillRect(x, topY, 1.5, base - topY + 3);
+      ctx.fillRect(x + w - 1.5, topY, 1.5, base - topY + 3);
+      if (grow >= 1)
         ctx.fillRect(x, base - H - 1.5, w, 1.5);
       if (eFurn <= 0)
         return;
       ctx.globalAlpha = eFurn;
-      const winX = x + w - DOOR_W - 24, winY = base - H + 8;
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.font = "bold 5px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = `hsl(${r.hue} 52% 66%)`;
+      const lvl = r.floor >= 0 ? `F${r.floor}` : `B${-r.floor}`;
+      ctx.fillText(`${lvl} \xB7 ${r.name.toUpperCase()}`, (bw.x0 + bw.x1) / 2, bw.yTop + 9);
+      ctx.restore();
+      this.drawBoard(ctx, r, base);
+      const win = { x: bw.x1 - 44, y: bw.yTop + 6, w: 38, h: 28 };
       ctx.fillStyle = "#10151c";
-      ctx.fillRect(winX - 1, winY - 1, 20, 15);
+      ctx.fillRect(win.x - 2, win.y - 2, win.w + 4, win.h + 4);
       if (underground) {
         ctx.fillStyle = "#241a12";
-        ctx.fillRect(winX, winY, 18, 13);
+        ctx.fillRect(win.x, win.y, win.w, win.h);
         ctx.fillStyle = "#3a2c1d";
-        ctx.fillRect(winX + 3, winY + 4, 4, 2);
-        ctx.fillRect(winX + 11, winY + 8, 5, 2);
+        ctx.fillRect(win.x + 6, win.y + 8, 8, 4);
+        ctx.fillRect(win.x + 22, win.y + 16, 10, 4);
         ctx.fillStyle = "#c98ab0";
         if (this.frame % 16 < 8)
-          ctx.fillRect(winX + 8, winY + 10, 2.4, 1);
+          ctx.fillRect(win.x + 16, win.y + 20, 4, 2);
       } else {
-        const sky = ctx.createLinearGradient(0, winY, 0, winY + 13);
+        const sky = ctx.createLinearGradient(0, win.y, 0, win.y + win.h);
         sky.addColorStop(0, "#2c4a6e");
         sky.addColorStop(1, "#b86a3a");
         ctx.fillStyle = sky;
-        ctx.fillRect(winX, winY, 18, 13);
+        ctx.fillRect(win.x, win.y, win.w, win.h);
         ctx.fillStyle = "rgba(255,255,255,0.7)";
-        ctx.fillRect(winX + 3, winY + 3, 3, 1);
-        ctx.fillRect(winX + 11, winY + 6, 4, 1);
+        ctx.fillRect(win.x + 6, win.y + 6, 6, 2);
+        ctx.fillRect(win.x + 22, win.y + 12, 8, 2);
       }
       ctx.fillStyle = "#10151c";
-      ctx.fillRect(winX + 8.5, winY, 1, 13);
-      const bx = x + 5, by = base - H + 14;
-      ctx.fillStyle = "#20262c";
-      ctx.fillRect(bx - 1, by - 1, 23, 15);
-      ctx.fillStyle = "#e8ecef";
-      ctx.fillRect(bx, by, 21, 13);
-      ctx.fillStyle = "#aab2b8";
-      ctx.fillRect(bx, by + 13, 21, 1.2);
-      ctx.lineWidth = 0.8;
-      for (const s of r.scribbles) {
-        ctx.strokeStyle = s.color;
-        ctx.beginPath();
-        ctx.moveTo(s.x1, s.y1);
-        ctx.lineTo(s.x2, s.y2);
-        ctx.stroke();
-      }
+      ctx.fillRect(win.x + win.w / 2 - 0.5, win.y, 1, win.h);
+      ctx.fillRect(win.x, win.y + win.h / 2 - 0.5, win.w, 1);
       const px = x + w - DOOR_W - 6;
       ctx.fillStyle = "#7a4a2a";
       ctx.fillRect(px, base - 4.5, 4, 3);
@@ -1113,63 +1229,149 @@
         ctx.fillStyle = "rgba(255,255,255,0.6)";
         ctx.fillRect(x + WB_W + 3.2, base - H + 12, 4.6, 1);
       }
-      const lx = x + w / 2;
-      ctx.fillStyle = "#20262c";
-      ctx.fillRect(lx - 0.6, base - H, 1.2, 4);
-      ctx.fillStyle = "#3a4046";
-      ctx.fillRect(lx - 3.5, base - H + 4, 7, 2);
       const lit = r.agents.length > 0;
-      ctx.fillStyle = lit ? "rgba(255,200,110,0.07)" : "rgba(255,200,110,0.02)";
+      const LAMPS = 3;
+      for (let li = 0; li < LAMPS; li++) {
+        const lx = x + w * (li + 1) / (LAMPS + 1);
+        ctx.fillStyle = "#20262c";
+        ctx.fillRect(lx - 0.6, base - H, 1.2, 4);
+        ctx.fillStyle = "#3a4046";
+        ctx.fillRect(lx - 3.5, base - H + 4, 7, 2);
+        ctx.fillStyle = lit ? "#ffd27a" : "#4a4636";
+        ctx.fillRect(lx - 1.4, base - H + 5.4, 2.8, 1.6);
+        ctx.fillStyle = lit ? "rgba(255,200,110,0.07)" : "rgba(255,200,110,0.02)";
+        ctx.beginPath();
+        ctx.moveTo(lx - 3, base - H + 6);
+        ctx.lineTo(lx + 3, base - H + 6);
+        ctx.lineTo(lx + 11, base);
+        ctx.lineTo(lx - 11, base);
+        ctx.closePath();
+        ctx.fill();
+      }
+      const sideAt = (t) => ({ x: x + w + (bw.x1 - (x + w)) * t, y: base + (bw.yBot - base) * t });
+      const dn = sideAt(0.18), df = sideAt(0.5);
+      ctx.fillStyle = "#4a3520";
       ctx.beginPath();
-      ctx.moveTo(lx - 3, base - H + 6);
-      ctx.lineTo(lx + 3, base - H + 6);
-      ctx.lineTo(lx + 13, base);
-      ctx.lineTo(lx - 13, base);
+      ctx.moveTo(dn.x, dn.y);
+      ctx.lineTo(dn.x, dn.y - 31);
+      ctx.lineTo(df.x, df.y - 26);
+      ctx.lineTo(df.x, df.y);
       ctx.closePath();
       ctx.fill();
-      const doorX = x + w - DOOR_W + 3;
-      ctx.fillStyle = "#5a4126";
-      ctx.fillRect(doorX, base - 21, 11, 21);
+      const pn = sideAt(0.22), pf = sideAt(0.46);
       ctx.fillStyle = "#6e522f";
-      ctx.fillRect(doorX + 1.2, base - 19.5, 8.6, 18);
+      ctx.beginPath();
+      ctx.moveTo(pn.x, pn.y - 1.5);
+      ctx.lineTo(pn.x, pn.y - 29);
+      ctx.lineTo(pf.x, pf.y - 24.5);
+      ctx.lineTo(pf.x, pf.y - 1.5);
+      ctx.closePath();
+      ctx.fill();
       ctx.fillStyle = "#d9b34a";
-      ctx.fillRect(doorX + 8.2, base - 11, 1.4, 1.4);
+      ctx.fillRect(pf.x + 0.4, pf.y - 14, 1.4, 1.6);
       if (!lit && r.path) {
         ctx.fillStyle = "rgba(8,11,14,0.45)";
         ctx.fillRect(x + 1.5, base - H, w - 3, H);
       }
       ctx.globalAlpha = 1;
     }
-    drawDesks(ctx, r, occ) {
+    /** Placeholder task board on the far wall: a "TASKS" strip over three columns
+     *  (planned / active / review) with stub cards. Not wired to data yet — once
+     *  a room's directory has git configured, these columns will hold real tasks
+     *  / PRs that agents slide across as their state changes. */
+    drawBoard(ctx, r, base) {
+      const b = boardRect(r.x0, base);
+      if (b.w < 24 || b.h < 14)
+        return;
+      ctx.fillStyle = "#10151c";
+      ctx.fillRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
+      ctx.fillStyle = "#161d24";
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.fillStyle = "#222d35";
+      ctx.fillRect(b.x, b.y, b.w, 5);
+      ctx.fillStyle = "rgba(230,238,240,0.7)";
+      ctx.fillRect(b.x + 2, b.y + 2, 14, 1);
+      const tints = ["#5b6675", "#3a78c2", "#c89a3a"];
+      const pad = 3;
+      const top = b.y + 7;
+      const colH = b.h - 10;
+      const cw = (b.w - pad * 4) / 3;
+      for (let c = 0; c < 3; c++) {
+        const cx = b.x + pad + c * (cw + pad);
+        ctx.fillStyle = tints[c];
+        ctx.fillRect(cx, top, cw, 3);
+        ctx.fillStyle = "rgba(255,255,255,0.04)";
+        ctx.fillRect(cx, top + 4, cw, colH - 4);
+        const n = 1 + hash(r.name + "card" + c) % 3;
+        for (let i = 0; i < n; i++) {
+          const cardY = top + 6 + i * 5;
+          if (cardY + 4 > top + colH)
+            break;
+          ctx.fillStyle = "rgba(230,238,240,0.16)";
+          ctx.fillRect(cx + 1, cardY, cw - 2, 4);
+          ctx.fillStyle = tints[c];
+          ctx.fillRect(cx + 1, cardY, 1.4, 4);
+        }
+      }
+    }
+    drawDesks(ctx, r, row) {
       const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
-      if (eFurn <= 0)
+      if (eFurn <= 0 || !r.plan)
         return;
       const base = floorBase(r.floor);
+      const db = base - row * ROW_DY;
       ctx.globalAlpha = eFurn;
-      const slots = Math.min(MAX_DESKS, Math.max(1, r.agents.length || 1));
-      for (let i = 0; i < slots; i++) {
-        const dx = r.x0 + WB_W + i * DESK_W;
-        const tn = occ?.get(i);
-        const st = tn?.agent.state;
+      for (const [id, seat] of r.plan.seats) {
+        if (seat.row !== row)
+          continue;
+        const dx = this.seatX(r, seat.col, row);
+        const tn = this.toons.get(id);
+        const occupied = !!tn?.sitting;
+        const st = occupied ? tn.agent.state : void 0;
         ctx.fillStyle = "#6e522f";
-        ctx.fillRect(dx + 2, base - 11, 18, 2);
+        ctx.fillRect(dx + 2, db - 11, 18, 2);
         ctx.fillStyle = "#54401f";
-        ctx.fillRect(dx + 3, base - 9, 1.5, 9);
-        ctx.fillRect(dx + 17.5, base - 9, 1.5, 9);
-        const flicker = tn && st === "active" && this.frame % 4 < 2;
+        ctx.fillRect(dx + 3, db - 9, 1.5, 9);
+        ctx.fillRect(dx + 17.5, db - 9, 1.5, 9);
         ctx.fillStyle = "#171c21";
-        ctx.fillRect(dx + 4, base - 18, 9, 7);
-        ctx.fillStyle = st === "error" ? "#8a2f28" : tn ? flicker ? "#9fd8ff" : "#7fc4ef" : "#222d35";
-        ctx.fillRect(dx + 4.8, base - 17.2, 7.4, 5.4);
-        ctx.fillStyle = "#171c21";
-        ctx.fillRect(dx + 8, base - 11, 1.4, 1);
+        ctx.fillRect(dx + 7.2, db - 11.2, 1.6, 1.2);
+        ctx.fillRect(dx + 5.4, db - 10.2, 5.4, 1);
+        ctx.fillStyle = "#1b2129";
+        ctx.beginPath();
+        ctx.moveTo(dx + 5, db - 18);
+        ctx.lineTo(dx + 11, db - 16.5);
+        ctx.lineTo(dx + 11, db - 11);
+        ctx.lineTo(dx + 5, db - 12.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#11161c";
+        ctx.beginPath();
+        ctx.moveTo(dx + 5.9, db - 17.2);
+        ctx.lineTo(dx + 10.1, db - 15.9);
+        ctx.lineTo(dx + 10.1, db - 11.6);
+        ctx.lineTo(dx + 5.9, db - 13.1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = occupied ? st === "error" ? "#d9534f" : "#3ee089" : "#2a3138";
+        ctx.fillRect(dx + 8.8, db - 12.6, 0.9, 0.9);
         ctx.fillStyle = "#2a3138";
-        ctx.fillRect(dx + 13.5, base - 11.8, 5, 1);
+        ctx.fillRect(dx + 8.5, db - 11.2, 5.5, 1);
         ctx.fillStyle = "#d9534f";
-        ctx.fillRect(dx + 0.5, base - 13, 2, 2);
-        if (tn && this.frame % 8 < 4) {
+        ctx.fillRect(dx + 0.5, db - 13, 2, 2);
+        if (occupied && this.frame % 8 < 4) {
           ctx.fillStyle = "rgba(255,255,255,0.25)";
-          ctx.fillRect(dx + 1, base - 15, 0.8, 1.4);
+          ctx.fillRect(dx + 1, db - 15, 0.8, 1.4);
+        }
+        if (occupied) {
+          const c = st === "error" ? "217,83,79" : "159,216,255";
+          const peak = st === "error" ? 0.3 : st === "active" && this.frame % 4 < 2 ? 0.4 : 0.24;
+          const gx = dx + 13, gy = db - 16;
+          const grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, 7);
+          grd.addColorStop(0, `rgba(${c},${peak})`);
+          grd.addColorStop(0.6, `rgba(${c},${peak * 0.45})`);
+          grd.addColorStop(1, `rgba(${c},0)`);
+          ctx.fillStyle = grd;
+          ctx.fillRect(dx + 10, db - 24, 8, 20);
         }
       }
       ctx.globalAlpha = 1;
@@ -1181,11 +1383,11 @@
       const f = this.frame + Math.floor(tn.ph * 10);
       const x = Math.round(tn.x * 2) / 2;
       const sitting = tn.sitting;
-      const y0 = tn.base + (sitting ? -3.5 : 0);
-      const hop = st === "complete" && !walking ? -Math.abs(Math.sin(f * 0.55 + tn.ph)) * 2 : st === "waiting" && !walking ? -Math.abs(Math.sin(f * 0.35 + tn.ph)) * 1 : 0;
+      const y0 = tn.base - tn.lift + (sitting ? -3.5 : 0);
+      const hop = st === "waiting" && !walking ? -Math.abs(Math.sin(f * 0.35 + tn.ph)) * 1 : 0;
       const slump = st === "error" && !walking ? 1.4 : 0;
       const base = y0 + hop;
-      const facingLeft = tn.huddle;
+      const facingLeft = tn.huddle || sitting;
       const climbing = !!tn.climbing;
       ctx.fillStyle = p.pants;
       if (sitting) {
@@ -1221,10 +1423,10 @@
         ctx.fillRect(x + 2.6, ty - 3.4 + (1 - g), 1.6, 1.6);
       } else if (sitting) {
         const tap = f % 2 === 0 ? 0 : 0.8;
-        ctx.fillRect(x + 2.6, ty + 2.2, 3.4, 1.4);
+        ctx.fillRect(x - 6, ty + 2.2, 3.4, 1.4);
         ctx.fillStyle = handC;
-        ctx.fillRect(x + 5.6, ty + 2 + tap, 1.4, 1.4);
-        ctx.fillRect(x + 5.6, ty + 3.6 - tap, 1.4, 1.4);
+        ctx.fillRect(x - 7, ty + 2 + tap, 1.4, 1.4);
+        ctx.fillRect(x - 7, ty + 3.6 - tap, 1.4, 1.4);
       } else if (tn.huddle && !walking) {
         const lead = tn.deskIdx % 2 === 0;
         if (lead) {
@@ -1249,18 +1451,11 @@
         ctx.fillRect(x - 4.4, ty - 0.6, 1.6, 2.8);
         ctx.fillStyle = handC;
         ctx.fillRect(x - 3.2, ty - 2, 1.5, 1.5);
-      } else if (st === "complete" && !walking) {
-        const v = f % 2 === 0 ? 0 : 1;
-        ctx.fillRect(x - 4.6, ty - 3 + v, 1.5, 4);
-        ctx.fillRect(x + 3.1, ty - 3 + (1 - v), 1.5, 4);
-        ctx.fillStyle = handC;
-        ctx.fillRect(x - 4.8, ty - 4.6 + v, 1.8, 1.8);
-        ctx.fillRect(x + 2.9, ty - 4.6 + (1 - v), 1.8, 1.8);
       } else if (walking) {
         const sw = f % 2 === 0 ? 1 : -1;
         ctx.fillRect(x - 4.2, ty + 1.5 + sw * 0.8, 1.4, 4);
         ctx.fillRect(x + 2.8, ty + 1.5 - sw * 0.8, 1.4, 4);
-      } else if (st === "idle") {
+      } else if (st === "idle" || st === "complete") {
         ctx.fillRect(x - 4.2, ty + 1.5, 1.4, 4);
         ctx.fillRect(x + 2.6, ty + 1.2, 1.4, 2.4);
         ctx.fillStyle = "#171c21";
@@ -1296,7 +1491,7 @@
       const blink = (f + Math.floor(tn.ph * 7)) % 40 === 0;
       if (!blink) {
         ctx.fillStyle = "#14181b";
-        const phoneGaze = st === "idle" && !walking && f % 50 > 6 ? 0.9 : 0;
+        const phoneGaze = (st === "idle" || st === "complete") && !walking && f % 50 > 6 ? 0.9 : 0;
         const ey = hy + 2.4 + slump * 0.5 + phoneGaze;
         if (facingLeft || walking && tn.targetX < tn.x) {
           ctx.fillRect(x - 2.2, ey, 1.1, 1.1);
@@ -1315,7 +1510,7 @@
       }
     }
   };
-  window.FleetCrew = {
+  window.DevTowerCrew = {
     _instance: null,
     mount(container, canvas) {
       this._instance = new PixelCrew(container, canvas);
@@ -1326,6 +1521,9 @@
     },
     setRooms(r) {
       this._instance?.setRooms(r);
+    },
+    setPrBranches(b) {
+      this._instance?.setPrBranches(b);
     },
     setSelected(id) {
       this._instance?.setSelected(id);

@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { execFile } from "child_process";
 import * as vscode from "vscode";
-import { FleetStore, AgentState } from "./fleet";
+import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo } from "./git";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -38,8 +38,11 @@ export class ClaudeDiscovery {
   // new cwd, so we give up after CD_HOLD_MS and revert to the real location.
   private cdPending = new Map<string, { dir: string; at: number }>();
   private static readonly CD_HOLD_MS = 120_000;
+  // session id → the panel-created placeholder agent it was adopted into, so a
+  // launched Claude session flows into that agent rather than spawning a dup.
+  private adopted = new Map<string, string>();
 
-  constructor(private store: FleetStore) {}
+  constructor(private store: DevTowerStore) {}
 
   /** Record that an agent was sent `/cd <dir>`; relocate it optimistically and
    *  re-scan so the move shows immediately rather than on the next poll. */
@@ -48,7 +51,7 @@ export class ClaudeDiscovery {
     void this.refresh();
   }
 
-  start(intervalMs = 30_000): void {
+  start(intervalMs = 8_000): void {
     this.timer = setInterval(() => void this.refresh(), intervalMs);
   }
 
@@ -102,7 +105,7 @@ export class ClaudeDiscovery {
   async refresh(): Promise<number> {
     const root = path.join(os.homedir(), ".claude", "projects");
     const showRecent = vscode.workspace
-      .getConfiguration("fleet")
+      .getConfiguration("devtower")
       .get<boolean>("showRecentSessions", false);
     let found: Found[];
     try {
@@ -140,17 +143,52 @@ export class ClaudeDiscovery {
     }
     found = kept;
 
+    // Panel-created placeholders (a reviewer / added dev) carry no transcript
+    // yet. When a live session turns up in such a placeholder's worktree, adopt
+    // it into that agent instead of spawning a separate discovered one — one
+    // terminal, one session, one agent.
+    const placeholderByWorktree = new Map<string, string>();
+    for (const a of this.store.list()) {
+      if (!a.transcriptPath && !this.mine.has(a.id) && !placeholderByWorktree.has(a.worktree)) {
+        placeholderByWorktree.set(a.worktree, a.id);
+      }
+    }
+
+    const seenSessions = new Set<string>();
+    const claimedPlaceholders = new Set<string>();
     const present = new Set<string>();
     for (const f of found) {
-      present.add(f.id);
-      this.mine.add(f.id);
+      seenSessions.add(f.id);
+      // which store agent this session drives: a prior adoption, a fresh adopt
+      // of a placeholder in its launch dir, or its own discovered id
+      let targetId = this.adopted.get(f.id);
+      if (targetId && !this.store.get(targetId)) {
+        this.adopted.delete(f.id);
+        targetId = undefined;
+      }
+      // only a genuinely NEW session may adopt a placeholder — a session we are
+      // already tracking keeps its own id, so an existing dev sharing the cwd
+      // can't hijack the placeholder (which would churn it out + back in)
+      if (!targetId && !this.mine.has(f.id)) {
+        const cand = placeholderByWorktree.get(f.launchCwd) ?? placeholderByWorktree.get(f.cwd);
+        if (cand && !claimedPlaceholders.has(cand)) {
+          targetId = cand;
+          this.adopted.set(f.id, cand);
+        }
+      }
+      const id = targetId ?? f.id;
+      const isAdopted = id !== f.id;
+      if (isAdopted) claimedPlaceholders.add(id);
+      present.add(id);
+      this.mine.add(id);
+
       // honor a pending /cd until the transcript reports the new directory,
       // or until the hold expires (a failed/declined /cd never lands)
       let cwd = f.cwd;
-      const pend = this.cdPending.get(f.id);
+      const pend = this.cdPending.get(id);
       if (pend) {
         if (cwd === pend.dir || Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
-          this.cdPending.delete(f.id);
+          this.cdPending.delete(id);
         } else {
           cwd = pend.dir;
         }
@@ -160,23 +198,39 @@ export class ClaudeDiscovery {
         branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
         this.branchCache.set(cwd, branch);
       }
-      this.store.apply({
-        id: f.id,
-        name: `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
-        model: f.model,
-        repo: path.basename(cwd),
-        worktree: cwd,
-        branch: branch || "—",
-        state: f.state,
-        task: f.task,
-        elapsed: ago(f.mtime),
-        transcriptPath: f.file,
-        question: f.question,
-        contextTokens: f.contextTokens,
-      });
+      if (isAdopted) {
+        // keep the placeholder's identity (name/repo/worktree/branch/task);
+        // only flow in the live session fields
+        this.store.apply({
+          id,
+          model: f.model,
+          state: f.state,
+          elapsed: ago(f.mtime),
+          transcriptPath: f.file,
+          question: f.question,
+          contextTokens: f.contextTokens,
+        });
+      } else {
+        this.store.apply({
+          id,
+          name: `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
+          model: f.model,
+          repo: path.basename(cwd),
+          worktree: cwd,
+          branch: branch || "—",
+          state: f.state,
+          task: f.task,
+          elapsed: ago(f.mtime),
+          transcriptPath: f.file,
+          question: f.question,
+          contextTokens: f.contextTokens,
+        });
+      }
     }
     // drop pending /cd for agents that are no longer present
     for (const id of [...this.cdPending.keys()]) if (!present.has(id)) this.cdPending.delete(id);
+    // forget adoptions whose session has gone away
+    for (const [sid] of [...this.adopted]) if (!seenSessions.has(sid)) this.adopted.delete(sid);
     // sessions that aged out or were deleted leave the tower
     for (const id of [...this.mine]) {
       if (!present.has(id)) {
@@ -188,7 +242,7 @@ export class ClaudeDiscovery {
   }
 
   private async scan(root: string): Promise<Found[]> {
-    const cfg = vscode.workspace.getConfiguration("fleet");
+    const cfg = vscode.workspace.getConfiguration("devtower");
     const maxAge = cfg.get<number>("sessionMaxAgeHours", 24) * 3_600_000;
     const now = Date.now();
     const out: Found[] = [];
@@ -265,22 +319,13 @@ async function readMeta(
     // prefer the most recent cwd record so /cd mid-session relocates the agent
     const cwd = lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g) ?? headCwd;
     const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g);
-    // context usage = the last turn's full input window + output
+
+    // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
+    // Mirrors Claude Code's own `/context`: input + the two cache buckets (all
+    // tokens occupying the window), NOT output. We read it from the parsed
+    // records below so sub-agent (sidechain) turns — which carry their own,
+    // smaller usage — never masquerade as the session's real context.
     let contextTokens: number | undefined;
-    // capture up to the first closing brace — the four token counts all come
-    // before nested objects like server_tool_use:{...}
-    const usageStr = lastMatch(tail, /"usage"\s*:\s*\{([^}]*)/g);
-    if (usageStr) {
-      const num = (k: string) => {
-        const m = new RegExp(`"${k}"\\s*:\\s*(\\d+)`).exec(usageStr);
-        return m ? Number(m[1]) : 0;
-      };
-      contextTokens =
-        num("input_tokens") +
-        num("cache_read_input_tokens") +
-        num("cache_creation_input_tokens") +
-        num("output_tokens");
-    }
 
     let lastRole: string | undefined;
     let task: string | undefined;
@@ -294,6 +339,17 @@ async function readMeta(
         const role = rec.type ?? rec.message?.role;
         if (role === "user" || role === "assistant") {
           if (!lastRole) lastRole = role;
+          // first (= newest, scanning backwards) real assistant turn wins;
+          // skip sidechain sub-agent turns and the streaming partial at the tail
+          if (contextTokens === undefined && role === "assistant" && !rec.isSidechain) {
+            const u = rec.message?.usage;
+            if (u) {
+              contextTokens =
+                (u.input_tokens ?? 0) +
+                (u.cache_creation_input_tokens ?? 0) +
+                (u.cache_read_input_tokens ?? 0);
+            }
+          }
           if (!lastAssistantText && role === "assistant") {
             const text = flatten(rec.message?.content ?? rec.content);
             if (text) lastAssistantText = text;

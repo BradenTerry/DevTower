@@ -10,7 +10,7 @@
 
   let agents = [], selectedId = null, theme = "dark", panelOpen = false;
   let firstState = true, prboardOpen = false;
-  let prs = { fleet: [], review: [] };
+  let prs = { crew: [], review: [] };
   const changes = new Map();
   const prevStates = new Map();
   const get = (id) => agents.find((a) => a.id === id);
@@ -25,27 +25,27 @@
 
   /* ---------- 3D scene ---------- */
   function mountCrew() {
-    if (!window.FleetCrew) return;
-    window.FleetCrew.mount($("#crew-wrap"), $("#crew-canvas"));
-    window.FleetCrew.onSelect((id) => selectAgent(id, true));
-    window.FleetCrew.onReserve((floor, col) => vscode.postMessage({ type: "reserveRoom", floor, col }));
-    window.FleetCrew.onAddAgent((room) => vscode.postMessage({ type: "addAgent", room }));
-    window.FleetCrew.onRemoveRoom((room) => vscode.postMessage({ type: "removeRoom", room }));
-    window.FleetCrew.onCd((id, target) =>
+    if (!window.DevTowerCrew) return;
+    window.DevTowerCrew.mount($("#crew-wrap"), $("#crew-canvas"));
+    window.DevTowerCrew.onSelect((id) => selectAgent(id, true));
+    window.DevTowerCrew.onReserve((floor, col) => vscode.postMessage({ type: "reserveRoom", floor, col }));
+    window.DevTowerCrew.onAddAgent((room) => vscode.postMessage({ type: "addAgent", room }));
+    window.DevTowerCrew.onRemoveRoom((room) => vscode.postMessage({ type: "removeRoom", room }));
+    window.DevTowerCrew.onCd((id, target) =>
       vscode.postMessage({ type: "cdAgent", id, room: target.room, ghost: target.ghost })
     );
-    window.FleetCrew.start();
+    window.DevTowerCrew.start();
   }
 
   function pushCrew() {
-    if (!window.FleetCrew) return;
-    window.FleetCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model })));
-    window.FleetCrew.setSelected(selectedId);
+    if (!window.DevTowerCrew) return;
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch })));
+    window.DevTowerCrew.setSelected(selectedId);
   }
 
   function updateInsets() {
-    if (!window.FleetCrew) return;
-    window.FleetCrew.setInsets(prboardOpen ? 404 : 0, panelOpen ? 392 : 0);
+    if (!window.DevTowerCrew) return;
+    window.DevTowerCrew.setInsets(prboardOpen ? 404 : 0, panelOpen ? 392 : 0);
   }
 
   /* ---------- selection ---------- */
@@ -53,7 +53,7 @@
     selectedId = id;
     vscode.postMessage({ type: "select", id }); // reveals the agent's terminal
     vscode.postMessage({ type: "requestChanges", id });
-    if (window.FleetCrew) window.FleetCrew.setSelected(id);
+    if (window.DevTowerCrew) window.DevTowerCrew.setSelected(id);
     if (open) panelOpen = true;
     const hint = $("#hint");
     if (hint) hint.style.opacity = panelOpen ? "0" : "1";
@@ -66,7 +66,7 @@
     $("#panel").hidden = true;
     const hint = $("#hint");
     if (hint) hint.style.opacity = "1";
-    if (window.FleetCrew) window.FleetCrew.setSelected(undefined);
+    if (window.DevTowerCrew) window.DevTowerCrew.setSelected(undefined);
     selectedId = null;
     updateInsets();
   }
@@ -77,7 +77,7 @@
     $("#t-active").textContent = c("active");
     $("#t-waiting").textContent = c("waiting");
     $("#t-error").textContent = c("error");
-    $("#fleet-count").textContent = agents.length;
+    $("#devtower-count").textContent = agents.length;
   }
 
   /* ---------- plan usage meters (5h / weekly) ---------- */
@@ -125,7 +125,7 @@
     setTimeout(() => el.remove(), 7300);
   }
 
-  function diffFleet(next) {
+  function diffCrew(next) {
     if (firstState) {
       next.forEach((a) => prevStates.set(a.id, a.state));
       firstState = false;
@@ -157,7 +157,7 @@
   const REVIEW_LABEL = { approved: "approved", changes: "changes requested", required: "review needed", none: "" };
 
   function prFor(agentId) {
-    return prs.fleet.find((p) => p.agentId === agentId);
+    return prs.crew.find((p) => p.agentId === agentId);
   }
 
   function renderPrBadge() {
@@ -174,7 +174,7 @@
     const author = p.author && p.author !== "you" ? `<span class="pr-author">by ${esc(p.author)}</span>` : "";
     return `<div class="pr-row ${attn ? "attn" : ""}" data-url="${esc(p.url)}">
       <div class="pr-r1"><span class="pr-num">#${p.number}</span><span class="pr-title">${esc(p.title)}</span>${p.isDraft ? `<span class="pr-draft">Draft</span>` : ""}</div>
-      <div class="pr-r2"><span class="repo">${esc(p.repo)}</span>${author}<span class="spacer"></span>${checks}${review}</div>
+      <div class="pr-r2"><span class="repo">${esc(p.repo)}</span>${author}<span class="spacer"></span>${checks}${review}<button class="pr-review" title="Assign a dev to review this PR" data-number="${p.number}" data-repo="${esc(p.repo)}" data-branch="${esc(p.branch || "")}" data-url="${esc(p.url)}" data-title="${esc(p.title)}">Review</button></div>
     </div>`;
   }
 
@@ -186,7 +186,7 @@
     const section = (title, list, attn) =>
       `<div class="pr-section">
         <div class="pr-sec-title ${attn ? "attn" : ""}">${title}<span class="cnt">${list.length}</span><span class="ln"></span></div>
-        ${list.length ? list.map((p) => prRowHTML(p, attn)).join("") : `<div class="prb-empty">${attn ? "Nothing waiting on you." : "No open fleet PRs yet."}</div>`}
+        ${list.length ? list.map((p) => prRowHTML(p, attn)).join("") : `<div class="prb-empty">${attn ? "Nothing waiting on you." : "No open crew PRs yet."}</div>`}
       </div>`;
     board.innerHTML = `
       <div class="prb-head"><span class="ic">⇄</span>Pull Requests
@@ -197,11 +197,24 @@
       </div>
       <div class="prb-body">
         ${section("Needs your review", prs.review, true)}
-        ${section("Fleet PRs", prs.fleet, false)}
+        ${section("Crew PRs", prs.crew, false)}
       </div>`;
     $("#prb-close", board).onclick = () => { prboardOpen = false; renderPrBoard(); updateInsets(); };
     $("#prb-refresh", board).onclick = () => vscode.postMessage({ type: "refreshPrs" });
     $$(".pr-row", board).forEach((r) => (r.onclick = () => vscode.postMessage({ type: "action", act: "openPr", url: r.dataset.url })));
+    $$(".pr-review", board).forEach((b) => (b.onclick = (e) => {
+      e.stopPropagation(); // don't also open the PR
+      vscode.postMessage({
+        type: "assignReview",
+        pr: {
+          number: Number(b.dataset.number),
+          repo: b.dataset.repo,
+          branch: b.dataset.branch,
+          url: b.dataset.url,
+          title: b.dataset.title,
+        },
+      });
+    }));
   }
 
   function prChipHTML(a) {
@@ -317,7 +330,7 @@
   function setEco(on, auto) {
     eco = on;
     ecoAuto = !!auto;
-    if (window.FleetCrew) window.FleetCrew.setEco(on);
+    if (window.DevTowerCrew) window.DevTowerCrew.setEco(on);
     $("#ecobtn").classList.toggle("on", on);
     $("#ecobtn").title = on
       ? `Efficiency mode on${ecoAuto ? " (auto: on battery)" : ""} — click to disable`
@@ -354,20 +367,25 @@
   window.addEventListener("message", (e) => {
     const m = e.data;
     if (m.type === "state") {
-      diffFleet(m.agents || []);
+      diffCrew(m.agents || []);
       agents = m.agents || [];
       if (m.selectedId && panelOpen) selectedId = m.selectedId;
       renderTelemetry();
-      if (window.FleetCrew) window.FleetCrew.setRooms(m.rooms || []);
+      if (window.DevTowerCrew) window.DevTowerCrew.setRooms(m.rooms || []);
       pushCrew();
       renderPanel();
     } else if (m.type === "changes") {
       changes.set(m.id, m.files || []);
       if (m.id === selectedId) renderPanel();
     } else if (m.type === "prs") {
-      prs = { fleet: m.fleet || [], review: m.review || [] };
+      prs = { crew: m.crew || [], review: m.review || [] };
       renderPrBoard();
       if (panelOpen) renderPanel();
+      // tell the tower which branches have an open PR (shown on each board)
+      if (window.DevTowerCrew) {
+        const branches = [...prs.crew, ...prs.review].map((p) => p.branch).filter(Boolean);
+        window.DevTowerCrew.setPrBranches(branches);
+      }
     } else if (m.type === "usage") {
       renderUsage(m.usage);
     }

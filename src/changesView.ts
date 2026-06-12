@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { FleetStore } from "./fleet";
+import { DevTowerStore } from "./store";
 import {
   isRepo,
   resolveCwd,
@@ -39,7 +39,7 @@ class FileNode extends vscode.TreeItem {
     const letter = file.untracked ? "U" : staged ? file.index : file.work;
     this.tooltip = `${file.path} — ${statusWord(letter)}`;
     this.command = {
-      command: "fleet.openFileDiff",
+      command: "devtower.openFileDiff",
       title: "Open Diff",
       arguments: [this],
     };
@@ -54,7 +54,7 @@ class MockFileNode extends vscode.TreeItem {
     this.resourceUri = vscode.Uri.file(filePath);
     this.contextValue = "mock";
     this.command = {
-      command: "fleet.openFileDiff",
+      command: "devtower.openFileDiff",
       title: "Open Diff",
       arguments: [this],
     };
@@ -80,7 +80,7 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
-  constructor(private store: FleetStore) {
+  constructor(private store: DevTowerStore) {
     store.onDidChangeSelection(() => this.refresh());
     store.onChange(() => this.refresh());
   }
@@ -136,13 +136,13 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
 /** Register the changes tree + its stage/unstage/open commands. */
 export function registerChanges(
   context: vscode.ExtensionContext,
-  store: FleetStore
+  store: DevTowerStore
 ): ChangesProvider {
   const provider = new ChangesProvider(store);
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider("fleet.changes", provider),
+    vscode.window.registerTreeDataProvider("devtower.changes", provider),
 
-    vscode.commands.registerCommand("fleet.openFileDiff", async (node: any) => {
+    vscode.commands.registerCommand("devtower.openFileDiff", async (node: any) => {
       if (node instanceof FileNode) {
         await openGitFileDiff(node.cwd, node.file, node.agentLabel || "agent");
       } else if (node instanceof MockFileNode) {
@@ -150,30 +150,30 @@ export function registerChanges(
       }
     }),
 
-    vscode.commands.registerCommand("fleet.stageFile", async (node: FileNode) => {
+    vscode.commands.registerCommand("devtower.stageFile", async (node: FileNode) => {
       await stage(node.cwd, node.file.path);
       provider.refresh();
     }),
-    vscode.commands.registerCommand("fleet.unstageFile", async (node: FileNode) => {
+    vscode.commands.registerCommand("devtower.unstageFile", async (node: FileNode) => {
       await unstage(node.cwd, node.file.path);
       provider.refresh();
     }),
 
-    vscode.commands.registerCommand("fleet.stageAll", async () => {
+    vscode.commands.registerCommand("devtower.stageAll", async () => {
       const agent = store.getSelected();
       const cwd = agent && resolveCwd(agent);
       if (!cwd) return;
       await stageAll(cwd);
       provider.refresh();
     }),
-    vscode.commands.registerCommand("fleet.unstageAll", async () => {
+    vscode.commands.registerCommand("devtower.unstageAll", async () => {
       const agent = store.getSelected();
       const cwd = agent && resolveCwd(agent);
       if (!cwd) return;
       await unstageAll(cwd);
       provider.refresh();
     }),
-    vscode.commands.registerCommand("fleet.refreshChanges", () => provider.refresh())
+    vscode.commands.registerCommand("devtower.refreshChanges", () => provider.refresh())
   );
   return provider;
 }

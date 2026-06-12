@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import * as vscode from "vscode";
-import { FleetStore } from "./fleet";
+import { DevTowerStore } from "./store";
 import { isRepo, resolveCwd } from "./git";
 
 export interface PrInfo {
@@ -53,22 +53,22 @@ function mapDecision(d: string | undefined): PrInfo["review"] {
 
 /**
  * Tracks two PR sets via the gh CLI:
- *  - fleet:  open PRs for each agent's branch (run in that agent's worktree)
+ *  - crew:   open PRs for each agent's branch (run in that agent's worktree)
  *  - review: open PRs where the user's review is requested (any repo)
  * Falls back to seeded mock PRs when gh/data is unavailable and mock mode is on.
  */
 export class PrService {
-  private fleet: PrInfo[] = [];
+  private crew: PrInfo[] = [];
   private review: PrInfo[] = [];
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
   private timer?: ReturnType<typeof setInterval>;
   private refreshing = false;
 
-  constructor(private store: FleetStore) {}
+  constructor(private store: DevTowerStore) {}
 
-  getFleet(): PrInfo[] {
-    return this.fleet;
+  getCrew(): PrInfo[] {
+    return this.crew;
   }
   getReview(): PrInfo[] {
     return this.review;
@@ -83,9 +83,9 @@ export class PrService {
     if (this.refreshing) return;
     this.refreshing = true;
     try {
-      const [fleet, review] = await Promise.all([this.fetchFleet(), this.fetchReview()]);
-      const mock = vscode.workspace.getConfiguration("fleet").get<boolean>("useMockData", true);
-      this.fleet = fleet.length || !mock ? fleet : MOCK_FLEET_PRS;
+      const [crew, review] = await Promise.all([this.fetchCrew(), this.fetchReview()]);
+      const mock = vscode.workspace.getConfiguration("devtower").get<boolean>("useMockData", false);
+      this.crew = crew.length || !mock ? crew : MOCK_CREW_PRS;
       this.review = review.length || !mock ? review : MOCK_REVIEW_PRS;
       this._onChange.fire();
     } finally {
@@ -93,7 +93,7 @@ export class PrService {
     }
   }
 
-  private async fetchFleet(): Promise<PrInfo[]> {
+  private async fetchCrew(): Promise<PrInfo[]> {
     const out: PrInfo[] = [];
     const seen = new Set<string>();
     for (const agent of this.store.list()) {
@@ -161,7 +161,7 @@ export class PrService {
 }
 
 /* ============ MOCK PRS (UI preview without gh) ============ */
-const MOCK_FLEET_PRS: PrInfo[] = [
+const MOCK_CREW_PRS: PrInfo[] = [
   {
     id: "atlas-web#142", number: 142,
     title: "Agent cockpit: tree + diff panel",
