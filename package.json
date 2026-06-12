@@ -1,0 +1,181 @@
+{
+  "name": "devtower",
+  "displayName": "DevTower",
+  "description": "A pixel office tower for your coding agents — watch Claude sessions work, dig new floors, spawn devs into worktrees, review diffs and PRs.",
+  "version": "0.1.0",
+  "publisher": "fleet",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "fleet",
+          "title": "DevTower",
+          "icon": "media/fleet.svg"
+        }
+      ]
+    },
+    "views": {
+      "fleet": [
+        {
+          "id": "fleet.changes",
+          "name": "Changes",
+          "type": "tree"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "fleet.openConsole",
+        "title": "DevTower: Open Tower",
+        "icon": "$(screen-full)"
+      },
+      {
+        "command": "fleet.refresh",
+        "title": "DevTower: Refresh Agents",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fleet.refreshChanges",
+        "title": "DevTower: Refresh Changes",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "fleet.openFileDiff",
+        "title": "DevTower: Open File Diff"
+      },
+      {
+        "command": "fleet.stageFile",
+        "title": "Stage Changes",
+        "icon": "$(add)"
+      },
+      {
+        "command": "fleet.unstageFile",
+        "title": "Unstage Changes",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "fleet.stageAll",
+        "title": "Stage All Changes",
+        "icon": "$(add)"
+      },
+      {
+        "command": "fleet.unstageAll",
+        "title": "Unstage All Changes",
+        "icon": "$(remove)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "fleet.openConsole",
+          "when": "view == fleet.changes",
+          "group": "navigation@0"
+        },
+        {
+          "command": "fleet.stageAll",
+          "when": "view == fleet.changes",
+          "group": "navigation@1"
+        },
+        {
+          "command": "fleet.unstageAll",
+          "when": "view == fleet.changes",
+          "group": "navigation@2"
+        },
+        {
+          "command": "fleet.refreshChanges",
+          "when": "view == fleet.changes",
+          "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "fleet.stageFile",
+          "when": "view == fleet.changes && viewItem == unstaged",
+          "group": "inline"
+        },
+        {
+          "command": "fleet.unstageFile",
+          "when": "view == fleet.changes && viewItem == staged",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "fleet.openFileDiff",
+          "when": "false"
+        },
+        {
+          "command": "fleet.stageFile",
+          "when": "false"
+        },
+        {
+          "command": "fleet.unstageFile",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DevTower",
+      "properties": {
+        "fleet.stateFile": {
+          "type": "string",
+          "default": ".fleet/state.jsonl",
+          "description": "Path (relative to the first workspace folder, or absolute) to the append-only JSONL file agents write state events to."
+        },
+        "fleet.useMockData": {
+          "type": "boolean",
+          "default": true,
+          "description": "Seed simulated agents on startup when no live Claude sessions are discovered."
+        },
+        "fleet.discoverClaudeSessions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan ~/.claude/projects for live Claude Code CLI sessions and show them in the tower."
+        },
+        "fleet.sessionMaxAgeHours": {
+          "type": "number",
+          "default": 24,
+          "description": "How far back to scan transcripts when looking for sessions (the candidate pool; running-process check still applies)."
+        },
+        "fleet.showRecentSessions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also show recent Claude sessions that have no running process (as idle, resumable rooms). Off = only sessions actually running right now."
+        },
+        "fleet.claudeCommand": {
+          "type": "string",
+          "default": "claude",
+          "description": "Command launched in a new agent's terminal when you add a dev to a room (starts a fresh Claude session in that worktree). Ignored if launchCommand is set."
+        },
+        "fleet.launchCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Overrides claudeCommand: command run in an agent's terminal on first open. Placeholders: ${worktree}, ${branch}, ${id}."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "compile": "node esbuild.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}

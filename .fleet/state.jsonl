@@ -1,0 +1,2 @@
+{"id":"a1","name":"streamer","model":"opus-4.8","repo":"atlas-api","worktree":"../wt/feat-sse","branch":"feat/streaming-sse","state":"active","task":"Wiring SSE transport","elapsed":"8m"}
+{"id":"a2","name":"refresher","model":"sonnet-4.6","repo":"atlas-api","worktree":"../wt/fix-auth","branch":"fix/auth-refresh","state":"waiting","task":"Needs rotation decision","elapsed":"2m"}

@@ -1,0 +1,86 @@
+# DevTower — Feature Tracker
+
+Capability map, independent of the current visual theme. The **data contracts** (webview messages, state feed schema, git/gh integration) are the stable core; the 3D scene and HUD are a **presentation layer** that can be re-themed without touching them.
+
+## Architecture split (what survives a re-theme)
+
+| Layer | Files | Re-theme impact |
+|---|---|---|
+| Data core: fleet store, state feed, git, PRs, terminals, sessions, diff provider | `src/fleet.ts`, `src/git.ts`, `src/prs.ts`, `src/terminals.ts`, `src/session.ts`, `src/diffProvider.ts`, `src/changesView.ts` | none |
+| Bridge: webview messages (`state`, `session`, `changes`, `prs` / `select`, `send`, `action`, `request*`) | `src/consolePanel.ts` | none (contract is theme-agnostic) |
+| Presentation: 3D scene + HUD | `src/webview/crew.ts`, `media/console.{js,css}` | replaced/reskinned |
+
+## Implemented
+
+| Feature | Status | Notes |
+|---|---|---|
+| Agent fleet state (active / waiting / complete / error / idle) | ✅ | Generic `state.jsonl` watcher + manual UI transitions |
+| Claude Code hooks emitter | ✅ | `hooks/fleet-emit.mjs`; maps hook events → states |
+| Mock seed data | ✅ | `fleet.useMockData` for trying the UI without a runner |
+| Pixel crew scene: per-agent sprite devs, deterministic persona | ✅ | Hair/shirt/cap/glasses/headphones from id hash; blink |
+| State-driven animation (sit-and-type, raise hand, cheer, slump, idle) | ✅ | Typing taps, monitor flicker, confetti, smoke, coffee sips |
+| Repo grouping: office rooms; join = walk in via door, leave = walk out | ✅ | Construction animation on repo add |
+| Whiteboard collaboration (2+ active agents in a room huddle) | ✅ | Lead draws, others gesture; scribbles accumulate then wipe |
+| Mining-game building: build up, dig down, AND expand left/right | ✅ | 2D grid; rooms share walls (door-to-door, one contiguous building); ghost slots at every empty neighbor cell; ragged-skyline roofs |
+| Remove a reserved room (✕ button + modal confirm) | ✅ | Reservation only — directory and agents untouched |
+| Reserve a cell: click a ghost slot → native folder picker binds a directory | ✅ | Persisted per-workspace (`fleet.reservedRooms`, with column); vacant rooms sit dark |
+| "+ DEV" button on rooms: spawn an agent there | ✅ | QuickPick: create git worktree (`git worktree add` + `fleet/<name>-<n>` branch) or run in the project base directory; then launches `fleet.claudeCommand` in its terminal |
+| Live Claude CLI session discovery | ✅ | Scans `~/.claude/projects/*/*.jsonl`; cwd/model/last-role parsed from transcript head+tail; active <2m, assistant-last → waiting; chat panel renders the real transcript; 30s poll; mock data only seeds when nothing real is found |
+| Phantom-session filter: only sessions with a running `claude` process | ✅ | `ps`+`lsof` cwd match; closed-but-recent sessions hidden unless `fleet.showRecentSessions` (then shown idle as "(recent)"); 15-min freshness fallback where process check unavailable |
+| Terminal-first chat: native terminal auto-attaches `claude --resume <session>` | ✅ | The terminal IS the conversation; custom chat panel removed |
+| Agent stats card: context-window % bar (+ token count), model, branch, changes | ✅ | Usage parsed from transcript tail; 1M-context inferred when >200k |
+| Departure sequence: walk to building edge → fire-escape ladder to ground → away | ✅ | Ladder drawn under climber; hand-over-hand climb pose |
+| Deferred demolition: empty rooms deconstruct only after the leaver exits | ✅ | Reverse construction with dust; cell stays occupied until done |
+| Camera: click agent → zoom to them; new dev → camera follows; overview pan preserved across re-layouts | ✅ | Startup lag fixes: debounced resize, staggered construction, font-ready repaint, deferred PR polling |
+| Selection: click character → agent panel | ✅ | Amber ring marks selection |
+| Camera: scroll zoom; click island → zoom to its crew; click away → overview | ✅ | Glide animation; focus survives re-layout |
+| Camera: click-drag to pan across the archipelago | ✅ | Pixel-accurate at look-at plane; clamped to layout span; drag ≠ click |
+| Arrivals/departures feed + state-transition toasts | ✅ | joined / left / needs input / error / finished |
+| Agent panel: chat view (full conversation) | ✅ | Operator/Agent/Tool/Result message kinds |
+| Continue session: composer + state-aware quick actions | ✅ | Waiting → inline question callout with Approve / Request changes |
+| Live "now" strip (what the agent is doing/asking) | ✅ | From task/question fields |
+| Changes tab: per-worktree file list with +/− counts | ✅ | Real `git status --porcelain` + numstat |
+| Stage / unstage per file + stage all / unstage all | ✅ | In-panel and in native Changes tree |
+| Native diff editor (HEAD ↔ working tree), opens beside console | ✅ | Virtual content provider; worktree-scoped, never workspace cwd |
+| Per-agent native terminal rooted in its worktree | ✅ | `fleet.launchCommand` to attach a real session |
+| PR board: fleet PRs (checks + review status) | ✅ | `gh pr list --head <branch>` per worktree; 2-min poll |
+| PR board: PRs requesting my review | ✅ | `gh search prs --review-requested=@me`; badge count in HUD |
+| PR chip on agent panel + Create PR / View PR tool | ✅ | `gh pr create --web` via agent terminal |
+| Light/dark theme toggle | ✅ | Token-driven; presentation-only |
+
+## Partial / mock-backed (works in UI, needs real backing)
+
+| Feature | Gap | What real support needs |
+|---|---|---|
+| Chat content for real agents | Mock agents use seeded sessions | Hook emitter to include `transcript_path`; `session.ts` already parses Claude Code transcript JSONL |
+| Sending input to a real agent process | Terminal echo unless a process is attached | Set `fleet.launchCommand` (e.g. resume CLI session) so composer text reaches stdin; or wire a control API |
+| Approve / interrupt semantics | UI state flips locally | Map to real runner controls (e.g. Claude Code permission response / SIGINT) |
+| Changes for mock agents | Read-only seeded list | Real worktree path on disk → live automatically |
+| PR data without `gh` | Falls back to mock PRs | `gh` CLI installed + authed; works per-worktree remote |
+| Review-requested PR checks | Neutral (API gap) | `gh search` lacks rollup; would need per-PR `gh pr view` follow-up calls |
+| Elapsed/timing display | Static strings from feed | Emitter could send timestamps; UI compute live elapsed |
+
+## Not yet implemented (candidates)
+
+| Feature | Needs |
+|---|---|
+| Merge/close PR from the board | `gh pr merge` + confirmation UX |
+| PR event toasts (checks went red, review approved) | Diff PR snapshots between polls → feed |
+| Commit + push from Changes tab | Commit message input + `git commit/push`; sits next to stage/unstage |
+| Quick-jump roster / minimap for large fleets | HUD strip of avatar chips |
+| Camera orbit (rotate around the scene) | Extend drag handler with a modifier/right-button orbit |
+| Multi-select / bulk agent actions (pause all in repo) | Selection model extension |
+| Discard file changes | `git checkout -- <file>` + confirm |
+| Agent-to-agent handoff visualization (walking between islands) | Animation + state semantics |
+| Sound cues (agent needs input) | Optional, off by default |
+
+## Theme notes
+
+Current theme: **pixel dev office floor** (Canvas2D, no WebGL — replaced the 3D floating-islands renderer). Each repo is a cutaway room: tinted walls, window with dusk sky, whiteboard, desks/monitors, plant + hash-picked decor (watercooler / blinking server rack / poster), ceiling lamp glow, door. Bundle dropped ~510KB → ~16KB; animation runs on a fixed 10fps pixel tick (6fps eco) with renders only on ticks/camera motion — idle cost near zero by construction.
+
+Theme-specific features added with the swap:
+- **Room construction animation** when a repo joins: floor tiles in, walls rise, furniture pops with dust, nameplate last.
+- **Whiteboard huddle**: 2+ active agents in one room gather at the whiteboard; marker scribbles accumulate; board wipes when the huddle ends.
+- Desk life: typing taps + monitor flicker, coffee steam, idle sips, confetti on complete, smoke on error.
+
+Alternative pixel themes considered: space station, guild tavern, city street. A re-theme replaces the `drawRoom*`/`drawToon` painters in `crew.ts` and nothing else; the `FleetCrew` API, picking, camera, and all data flows carry over.
