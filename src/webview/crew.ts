@@ -443,6 +443,7 @@ class PixelCrew {
     () => {};
   private onAssignReviewCb: (pr: { number: number; repo: string; title: string; branch?: string; url?: string }) => void = () => {};
   private onRefreshPrsCb: () => void = () => {};
+  private onOpenPrCb: (url: string) => void = () => {};
 
   private resizeT: ReturnType<typeof setTimeout> | undefined;
 
@@ -592,6 +593,7 @@ class PixelCrew {
     this.onAssignReviewCb = cb;
   }
   onRefreshPrs(cb: () => void) { this.onRefreshPrsCb = cb; }
+  onOpenPr(cb: (url: string) => void) { this.onOpenPrCb = cb; }
   private newToonIds = new Set<string>();
 
   /* ============ DATA ============ */
@@ -621,7 +623,7 @@ class PixelCrew {
   }
 
   /** Geometry for the review billboard, shared by draw + pick. Null when empty. */
-  private billboardGeom(): { x: number; top: number; w: number; bodyH: number; headerH: number; rowH: number; rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number }[]; surfaceY: number; extra: number; refresh: { x: number; y: number; w: number; h: number } } {
+  private billboardGeom(): { x: number; top: number; w: number; bodyH: number; headerH: number; rowH: number; rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number; open: { x: number; y: number; w: number; h: number } }[]; surfaceY: number; extra: number; refresh: { x: number; y: number; w: number; h: number } } {
     // always present, always listing its PRs (or an empty-state line); clicking
     // it flies the camera in rather than expanding in place
     const n = Math.min(this.reviewPrs.length, BB_MAX);
@@ -629,8 +631,11 @@ class PixelCrew {
     const surfaceY = floorBase(0) + SLAB;
     const bodyH = BB_HEADER + Math.max(n, 1) * BB_ROW + 5;
     const top = surfaceY - 40 - bodyH;
-    const rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number }[] = [];
-    for (let i = 0; i < n; i++) rows.push({ pr: this.reviewPrs[i], y: top + BB_HEADER + i * BB_ROW });
+    const rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number; open: { x: number; y: number; w: number; h: number } }[] = [];
+    for (let i = 0; i < n; i++) {
+      const y = top + BB_HEADER + i * BB_ROW;
+      rows.push({ pr: this.reviewPrs[i], y, open: { x: x + BB_W - 13, y: y + BB_ROW - 12, w: 10, h: 10 } });
+    }
     return {
       x, top, w: BB_W, bodyH, headerH: BB_HEADER, rows, rowH: BB_ROW, surfaceY,
       extra: this.reviewPrs.length - n,
@@ -1710,6 +1715,7 @@ class PixelCrew {
     reviewPr?: { number: number; repo: string; title: string; branch?: string; url?: string };
     billboardRefresh?: boolean; // ↻ on the review sign
     billboardZoom?: boolean; // click the sign body → fly the camera to it
+    openPrUrl?: string; // ↗ on a row → open the PR on GitHub
   } {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -1718,7 +1724,8 @@ class PixelCrew {
     const bb = this.billboardGeom();
     {
       if (this.inRect(mx, my, bb.refresh.x, bb.refresh.y, bb.refresh.w, bb.refresh.h)) return { billboardRefresh: true };
-      for (const { pr, y } of bb.rows) {
+      for (const { pr, y, open } of bb.rows) {
+        if (pr.url && this.inRect(mx, my, open.x, open.y, open.w, open.h)) return { openPrUrl: pr.url };
         if (this.inRect(mx, my, bb.x, y, bb.w, bb.rowH)) return { reviewPr: pr };
       }
       if (this.inRect(mx, my, bb.x, bb.top, bb.w, bb.bodyH)) return { billboardZoom: true };
@@ -1740,6 +1747,8 @@ class PixelCrew {
       if (btns.push && this.inRect(mx, my, btns.push.x, btns.push.y, btns.push.w, btns.push.h)) return { pushRoom: r.name };
       if (btns.pull && this.inRect(mx, my, btns.pull.x, btns.pull.y, btns.pull.w, btns.pull.h)) return { pullRoom: r.name };
       if (btns.fetch && this.inRect(mx, my, btns.fetch.x, btns.fetch.y, btns.fetch.w, btns.fetch.h)) return { fetchRoom: r.name };
+      const prb = this.prOpenButton(r);
+      if (prb && this.inRect(mx, my, prb.x, prb.y, prb.w, prb.h)) return { openPrUrl: prb.url };
     }
     // ghost slots: +building (extend an island) and +island (reserve a directory)
     for (const g of this.ghosts) {
@@ -1767,6 +1776,7 @@ class PixelCrew {
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
     if (hit.billboardRefresh) { this.onRefreshPrsCb(); }
+    else if (hit.openPrUrl) { this.onOpenPrCb(hit.openPrUrl); }
     else if (hit.billboardZoom) { this.focusBillboard(); }
     else if (hit.reviewPr) { this.onAssignReviewCb(hit.reviewPr); }
     else if (hit.fetchRoom) { this.onFetchCb(hit.fetchRoom); }
@@ -2279,20 +2289,28 @@ class PixelCrew {
     ctx.fillText("↻", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
     // PR rows
     ctx.textAlign = "left";
-    for (const { pr, y } of rows) {
+    for (const { pr, y, open } of rows) {
       ctx.fillStyle = "rgba(255,255,255,0.06)"; // separator
       ctx.fillRect(x + 4, y, w - 8, 0.6);
       ctx.fillStyle = "#7fb8df"; // PR number
       ctx.font = "600 7px 'IBM Plex Mono', monospace";
       ctx.fillText(`#${pr.number}`, x + 6, y + 9);
-      ctx.fillStyle = "rgba(180,190,196,0.55)"; // repo (right, dim)
+      ctx.fillStyle = "rgba(180,190,196,0.55)"; // repo (dim, right of number)
       ctx.font = "6px 'IBM Plex Mono', monospace";
       ctx.textAlign = "right";
-      ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.5), x + w - 6, y + 9);
+      ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.45), x + w - 6, y + 9);
       ctx.textAlign = "left";
       ctx.fillStyle = "rgba(230,238,240,0.9)"; // title
       ctx.font = "7px 'IBM Plex Mono', monospace";
-      ctx.fillText(this.fitText(ctx, pr.title || "", w - 16), x + 6, y + 17);
+      ctx.fillText(this.fitText(ctx, pr.title || "", w - 30), x + 6, y + 17);
+      // open-in-GitHub button (↗)
+      ctx.fillStyle = "rgba(255,255,255,0.07)";
+      ctx.fillRect(open.x, open.y, open.w, open.h);
+      ctx.fillStyle = "rgba(230,238,240,0.85)";
+      ctx.font = "7px 'IBM Plex Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("↗", open.x + open.w / 2, open.y + open.h - 2.5);
+      ctx.textAlign = "left";
     }
     if (!rows.length) {
       ctx.fillStyle = "rgba(180,190,196,0.5)";
@@ -2557,6 +2575,18 @@ class PixelCrew {
     return { push, pull, fetch, synced: !push && !pull };
   }
 
+  /** Rect of the open-in-GitHub (↗) button in a room's board PR cell, plus the
+   *  PR url to open. Mirrors drawBoard's PR-cell layout. Null when there's no PR. */
+  private prOpenButton(r: Room): { x: number; y: number; w: number; h: number; url: string } | null {
+    const bd = r.boardShown ?? r.board;
+    if (!bd || bd.missing || !bd.pr?.url) return null;
+    const b = boardRect(r.x0, r.baseY);
+    if (b.w < 20 || b.h < 14) return null;
+    const innerR = b.x + b.w - 4;
+    const bodyTop = b.y + 12;
+    return { x: innerR - 6, y: bodyTop, w: 6, h: 6, url: bd.pr.url };
+  }
+
   /** Draw a number, rolling the old value up and out while the new value rises in
    *  when it just changed (a flip-board feel). Uses the caller's font + fillStyle.
    *  `fontH` is the cap height, used to size the clip box and the roll distance. */
@@ -2777,7 +2807,16 @@ class PixelCrew {
       ctx.font = "bold 6px 'Martian Mono', monospace";
       ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
       ctx.textAlign = "right";
-      ctx.fillText(`#${pr.number}`, innerR, py + 0.4);
+      ctx.fillText(`#${pr.number}`, innerR - 8, py + 0.4); // leave room for the ↗ button
+      ctx.textAlign = "left";
+      // open-in-GitHub button (↗) at the top-right of the PR cell
+      const ob = { x: innerR - 6, y: bodyTop, w: 6, h: 6 };
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+      ctx.fillStyle = "rgba(220,228,234,0.9)";
+      ctx.font = "5px 'IBM Plex Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("↗", ob.x + ob.w / 2, ob.y + ob.h - 1.3);
       ctx.textAlign = "left";
     } else if (loadingPr) {
       this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
@@ -3272,6 +3311,9 @@ class PixelCrew {
   },
   onRefreshPrs(cb: () => void) {
     this._instance?.onRefreshPrs(cb);
+  },
+  onOpenPr(cb: (url: string) => void) {
+    this._instance?.onOpenPr(cb);
   },
   focusReviewBoard() {
     this._instance?.toggleBillboard();

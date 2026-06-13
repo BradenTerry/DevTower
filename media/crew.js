@@ -243,6 +243,8 @@
       });
       __publicField(this, "onRefreshPrsCb", () => {
       });
+      __publicField(this, "onOpenPrCb", () => {
+      });
       __publicField(this, "resizeT");
       __publicField(this, "newToonIds", /* @__PURE__ */ new Set());
       this.ctx = canvas.getContext("2d");
@@ -403,6 +405,9 @@
     onRefreshPrs(cb) {
       this.onRefreshPrsCb = cb;
     }
+    onOpenPr(cb) {
+      this.onOpenPrCb = cb;
+    }
     /* ============ DATA ============ */
     setRooms(reserved) {
       this.reserved = reserved || [];
@@ -432,8 +437,10 @@
       const bodyH = BB_HEADER + Math.max(n, 1) * BB_ROW + 5;
       const top = surfaceY - 40 - bodyH;
       const rows = [];
-      for (let i = 0; i < n; i++)
-        rows.push({ pr: this.reviewPrs[i], y: top + BB_HEADER + i * BB_ROW });
+      for (let i = 0; i < n; i++) {
+        const y = top + BB_HEADER + i * BB_ROW;
+        rows.push({ pr: this.reviewPrs[i], y, open: { x: x + BB_W - 13, y: y + BB_ROW - 12, w: 10, h: 10 } });
+      }
       return {
         x,
         top,
@@ -1528,7 +1535,9 @@
       {
         if (this.inRect(mx, my, bb.refresh.x, bb.refresh.y, bb.refresh.w, bb.refresh.h))
           return { billboardRefresh: true };
-        for (const { pr, y } of bb.rows) {
+        for (const { pr, y, open } of bb.rows) {
+          if (pr.url && this.inRect(mx, my, open.x, open.y, open.w, open.h))
+            return { openPrUrl: pr.url };
           if (this.inRect(mx, my, bb.x, y, bb.w, bb.rowH))
             return { reviewPr: pr };
         }
@@ -1552,6 +1561,9 @@
           return { pullRoom: r.name };
         if (btns.fetch && this.inRect(mx, my, btns.fetch.x, btns.fetch.y, btns.fetch.w, btns.fetch.h))
           return { fetchRoom: r.name };
+        const prb = this.prOpenButton(r);
+        if (prb && this.inRect(mx, my, prb.x, prb.y, prb.w, prb.h))
+          return { openPrUrl: prb.url };
       }
       for (const g of this.ghosts) {
         if (this.inRect(mx, my, g.x0, g.base - ROOM_H, ROOM_W, ROOM_H)) {
@@ -1576,6 +1588,8 @@
       const hit = this.pick(e);
       if (hit.billboardRefresh) {
         this.onRefreshPrsCb();
+      } else if (hit.openPrUrl) {
+        this.onOpenPrCb(hit.openPrUrl);
       } else if (hit.billboardZoom) {
         this.focusBillboard();
       } else if (hit.reviewPr) {
@@ -2052,7 +2066,7 @@
       ctx.textAlign = "center";
       ctx.fillText("\u21BB", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
       ctx.textAlign = "left";
-      for (const { pr, y } of rows) {
+      for (const { pr, y, open } of rows) {
         ctx.fillStyle = "rgba(255,255,255,0.06)";
         ctx.fillRect(x + 4, y, w - 8, 0.6);
         ctx.fillStyle = "#7fb8df";
@@ -2061,11 +2075,18 @@
         ctx.fillStyle = "rgba(180,190,196,0.55)";
         ctx.font = "6px 'IBM Plex Mono', monospace";
         ctx.textAlign = "right";
-        ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.5), x + w - 6, y + 9);
+        ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.45), x + w - 6, y + 9);
         ctx.textAlign = "left";
         ctx.fillStyle = "rgba(230,238,240,0.9)";
         ctx.font = "7px 'IBM Plex Mono', monospace";
-        ctx.fillText(this.fitText(ctx, pr.title || "", w - 16), x + 6, y + 17);
+        ctx.fillText(this.fitText(ctx, pr.title || "", w - 30), x + 6, y + 17);
+        ctx.fillStyle = "rgba(255,255,255,0.07)";
+        ctx.fillRect(open.x, open.y, open.w, open.h);
+        ctx.fillStyle = "rgba(230,238,240,0.85)";
+        ctx.font = "7px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("\u2197", open.x + open.w / 2, open.y + open.h - 2.5);
+        ctx.textAlign = "left";
       }
       if (!rows.length) {
         ctx.fillStyle = "rgba(180,190,196,0.5)";
@@ -2319,6 +2340,19 @@
       const fetch = { x: cx + cwIn - 6.5, y, w: 7, h };
       return { push, pull, fetch, synced: !push && !pull };
     }
+    /** Rect of the open-in-GitHub (↗) button in a room's board PR cell, plus the
+     *  PR url to open. Mirrors drawBoard's PR-cell layout. Null when there's no PR. */
+    prOpenButton(r) {
+      const bd = r.boardShown ?? r.board;
+      if (!bd || bd.missing || !bd.pr?.url)
+        return null;
+      const b = boardRect(r.x0, r.baseY);
+      if (b.w < 20 || b.h < 14)
+        return null;
+      const innerR = b.x + b.w - 4;
+      const bodyTop = b.y + 12;
+      return { x: innerR - 6, y: bodyTop, w: 6, h: 6, url: bd.pr.url };
+    }
     /** Draw a number, rolling the old value up and out while the new value rises in
      *  when it just changed (a flip-board feel). Uses the caller's font + fillStyle.
      *  `fontH` is the cap height, used to size the clip box and the roll distance. */
@@ -2533,7 +2567,15 @@
         ctx.font = "bold 6px 'Martian Mono', monospace";
         ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
         ctx.textAlign = "right";
-        ctx.fillText(`#${pr.number}`, innerR, py + 0.4);
+        ctx.fillText(`#${pr.number}`, innerR - 8, py + 0.4);
+        ctx.textAlign = "left";
+        const ob = { x: innerR - 6, y: bodyTop, w: 6, h: 6 };
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+        ctx.fillStyle = "rgba(220,228,234,0.9)";
+        ctx.font = "5px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("\u2197", ob.x + ob.w / 2, ob.y + ob.h - 1.3);
         ctx.textAlign = "left";
       } else if (loadingPr) {
         this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
@@ -3003,6 +3045,9 @@
     },
     onRefreshPrs(cb) {
       this._instance?.onRefreshPrs(cb);
+    },
+    onOpenPr(cb) {
+      this._instance?.onOpenPr(cb);
     },
     focusReviewBoard() {
       this._instance?.toggleBillboard();

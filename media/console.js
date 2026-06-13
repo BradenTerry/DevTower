@@ -40,6 +40,7 @@
     );
     window.DevTowerCrew.onAssignReview((pr) => openReviewDispatch(pr));
     window.DevTowerCrew.onRefreshPrs(() => vscode.postMessage({ type: "refreshPrs" }));
+    window.DevTowerCrew.onOpenPr((url) => vscode.postMessage({ type: "action", act: "openPr", url }));
     window.DevTowerCrew.start();
   }
 
