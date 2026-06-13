@@ -11,6 +11,8 @@
  * camera motion; hard-stop when hidden. Same window.DevTowerCrew API as before,
  * plus setRooms / onReserve / onAddAgent. */
 
+import { TEXT } from "./palette";
+
 interface CrewAgent {
   id: string;
   name: string;
@@ -2392,7 +2394,7 @@ class PixelCrew {
       ctx.fillStyle = "#7fb8df"; // PR number
       ctx.font = "600 7px 'IBM Plex Mono', monospace";
       ctx.fillText(`#${pr.number}`, x + 6, y + 9);
-      ctx.fillStyle = "rgba(180,190,196,0.55)"; // repo (dim, right of number)
+      ctx.fillStyle = TEXT.muted; // repo (right of number)
       ctx.font = "6px 'IBM Plex Mono', monospace";
       ctx.textAlign = "right";
       ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.45), x + w - 6, y + 9);
@@ -2415,22 +2417,22 @@ class PixelCrew {
       ctx.textAlign = "center";
       if (this.githubConnected === false) {
         // no token: show the disconnected glyph + a prompt, not a misleading empty
-        this.drawDisconnected(ctx, x + w / 2, cy - 4, 7, "rgba(255,177,61,0.85)");
-        ctx.fillStyle = "rgba(210,218,224,0.8)";
+        this.drawDisconnected(ctx, x + w / 2, cy - 4, 7, "#ffb13d");
+        ctx.fillStyle = TEXT.primary;
         ctx.font = "6px 'IBM Plex Mono', monospace";
         ctx.fillText("GitHub not connected", x + w / 2, cy + 11);
-        ctx.fillStyle = "rgba(180,190,196,0.55)";
+        ctx.fillStyle = TEXT.muted;
         ctx.font = "5px 'IBM Plex Mono', monospace";
         ctx.fillText("add a token in ⚙ Settings", x + w / 2, cy + 19);
       } else {
-        ctx.fillStyle = "rgba(180,190,196,0.5)";
+        ctx.fillStyle = TEXT.muted;
         ctx.font = "6.5px 'IBM Plex Mono', monospace";
         ctx.fillText("nothing awaiting you", x + w / 2, cy);
       }
       ctx.textAlign = "left";
     }
     if (extra > 0) {
-      ctx.fillStyle = "rgba(180,190,196,0.6)";
+      ctx.fillStyle = TEXT.muted;
       ctx.font = "6px 'IBM Plex Mono', monospace";
       ctx.fillText(`+${extra} more`, x + 6, top + bodyH - 3);
     }
@@ -2909,7 +2911,7 @@ class PixelCrew {
       const pfx = ["u", "s", "c"][i];
       ctx.textAlign = "left";
       ctx.font = "3px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = "rgba(170,182,190,0.7)";
+      ctx.fillStyle = TEXT.heading; // readable cell heading (AA, see palette/contrast test)
       ctx.fillText(c.label, cx, bodyTop + 3);
       ctx.font = "bold 5.5px 'Martian Mono', monospace";
       ctx.fillStyle = c.tint;
@@ -2968,7 +2970,7 @@ class PixelCrew {
     let py = bodyTop + 3;
     ctx.textAlign = "left";
     ctx.font = "3px 'IBM Plex Mono', monospace";
-    ctx.fillStyle = "rgba(170,182,190,0.7)";
+    ctx.fillStyle = TEXT.heading; // readable PR-cell heading
     ctx.fillText("PR", px, py);
     const loadingPr = !bd.pr && !bd.prReady; // first GitHub lookup still in flight
     const pr = bd.pr;
@@ -3002,13 +3004,13 @@ class PixelCrew {
     if (!pr) {
       ctx.font = "3.4px 'IBM Plex Mono', monospace";
       if (loadingPr) {
-        ctx.fillStyle = "rgba(185,140,255,0.7)";
+        ctx.fillStyle = "#c9b0ff"; // brighter, opaque so the tiny label reads
         ctx.fillText("checking…", px, py);
       } else if (this.githubConnected === false) {
-        ctx.fillStyle = "rgba(255,177,61,0.7)";
+        ctx.fillStyle = "#ffb13d"; // amber, AA-contrast (see palette test)
         ctx.fillText("not connected", px, py);
       } else {
-        ctx.fillStyle = "rgba(170,182,190,0.55)";
+        ctx.fillStyle = TEXT.muted;
         ctx.fillText("no open PR", px, py);
       }
     } else {
@@ -3062,7 +3064,7 @@ class PixelCrew {
         }
       } else {
         ctx.font = "3px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = "rgba(150,160,168,0.55)";
+        ctx.fillStyle = TEXT.muted;
         ctx.fillText("no checks", px, py);
       }
       py += 5;
