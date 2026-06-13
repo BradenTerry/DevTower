@@ -702,6 +702,14 @@ export class ConsolePanel {
     }
     this.boardsByPath = boards;
     this.branchByPath = branches;
+    // feed the room checkouts' branches to the PR service so a PR opened outside
+    // any agent (e.g. from the CLI) still surfaces on its building's board
+    const prTargets: { cwd: string; repo: string; branch: string }[] = [];
+    for (const [roomKey, branch] of branches) {
+      const gp = pairs.get(roomKey);
+      if (gp && branch) prTargets.push({ cwd: gp, repo: path.basename(gp), branch });
+    }
+    this.prs.setExtraTargets(prTargets);
     // only push (and wake the render loop) when something actually changed, so
     // the idle poll doesn't defeat the webview's park-when-quiet power saving
     const sig = JSON.stringify([...boards].sort());
