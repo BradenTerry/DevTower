@@ -56,7 +56,7 @@ DevTower drives your existing CLIs; it makes no network calls of its own (git/gh
 | **git** | required | Changes view, native diffs, `git worktree add`, per-room push/pull/fetch |
 | **claude** ([Claude Code](https://claude.com/claude-code) CLI) | required for live agents | spawning/resuming sessions in terminals (`devtower.claudeCommand`); session discovery reads `~/.claude/projects` transcripts |
 | **gh** ([GitHub CLI](https://cli.github.com)) | optional | PR board, review-requested billboard, review dispatch, create/view PR. Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
-| **ps** / **lsof** (Unix) | optional | phantom-session filter - only show sessions whose `claude` process is still running. Unavailable on Windows (a 15-min freshness fallback is used) |
+| **ps** / **lsof** (macOS / Linux) | optional | phantom-session filter - show only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower instead counts running `claude` processes fleet-wide via WMI (`Get-CimInstance Win32_Process`) and caps shown sessions to that many, newest-first; if even that is unavailable it falls back to a 15-min freshness window |
 
 What it accesses currently:
 

@@ -43,7 +43,7 @@ DevTower drives your existing command-line tools and makes **no network calls of
 | **git** | required | the Changes view, native diffs, `git worktree add`, and per-room push / pull / fetch |
 | **Claude Code CLI** (`claude`) | required for live agents | spawning and resuming sessions in terminals; discovering sessions from `~/.claude/projects` |
 | **GitHub CLI** (`gh`) | optional | the PR board, review-requested billboard, review dispatch, and create / view PR. Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
-| **ps** / **lsof** (macOS / Linux) | optional | showing only sessions whose `claude` process is still running. Unavailable on Windows (a freshness fallback is used instead) |
+| **ps** / **lsof** (macOS / Linux) | optional | showing only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower counts running `claude` processes fleet-wide via WMI (PowerShell) and caps shown sessions to that many; if unavailable it uses a freshness fallback |
 
 **What it reads and writes:**
 
