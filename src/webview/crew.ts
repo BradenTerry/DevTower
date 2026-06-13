@@ -3156,6 +3156,69 @@ class PixelCrew {
     ctx.restore();
   }
 
+  /** A floor-standing paper shredder right of the desks. A dev walks here when
+   *  its session is /cleared, feeds its stack of context papers in, then returns
+   *  to its seat (see the shred state machine in tick + the carried stack in
+   *  drawToon). It blinks red and spits confetti strips while a dev is feeding. */
+  private drawShredder(ctx: CanvasRenderingContext2D, r: Room) {
+    const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
+    if (eFurn <= 0) return;
+    const base = r.baseY;
+    const sx = r.x0 + SHRED_REACH + 3; // bin sits just past where the dev stands
+    // remaining feed fraction if a dev is shredding into THIS room's bin (0 = idle)
+    let feed = 0;
+    for (const tn of this.toons.values()) {
+      if (tn.shred?.phase === "feed" && this.rooms.get(tn.bkey ?? "") === r) {
+        feed = Math.max(feed, clamp(tn.shred.t / SHRED_FEED, 0, 1));
+      }
+    }
+    ctx.save();
+    ctx.globalAlpha = eFurn;
+    ctx.fillStyle = "rgba(0,0,0,0.3)"; // contact shadow
+    ctx.fillRect(sx - 1.5, base - 0.6, 12, 1.6);
+    // bin body
+    ctx.fillStyle = "#23282e";
+    ctx.fillRect(sx, base - 15, 9, 15);
+    ctx.fillStyle = "#2e343b"; // lit left face
+    ctx.fillRect(sx, base - 15, 2, 15);
+    ctx.fillStyle = "#171b20"; // right shadow
+    ctx.fillRect(sx + 7, base - 15, 2, 15);
+    // window onto the collected shreds
+    ctx.fillStyle = "#3a4148";
+    ctx.fillRect(sx + 2, base - 11, 5, 8);
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = i % 2 ? "#cfc9b6" : "#b4ae9b";
+      ctx.fillRect(sx + 2.4 + i * 1.1, base - 10.5, 0.7, 7);
+    }
+    // shredder head (motor unit) on top of the bin, wider than the body
+    ctx.fillStyle = "#3a4046";
+    ctx.fillRect(sx - 1, base - 19, 11, 4);
+    ctx.fillStyle = "#4a5158";
+    ctx.fillRect(sx - 1, base - 19, 11, 1); // top highlight
+    ctx.fillStyle = "#0f1318"; // intake slot
+    ctx.fillRect(sx + 0.5, base - 16.4, 8, 1);
+    // status LED: steady green idle, blinking red while shredding
+    const blink = this.frame % 6 < 3;
+    ctx.fillStyle = feed > 0 ? (blink ? "#ff5a52" : "#5a2522") : "#3ee089";
+    ctx.fillRect(sx + 8, base - 18.5, 1.2, 1.2);
+    if (feed > 0) {
+      // a sheet jutting from the slot, shrinking as it feeds through
+      const sheetH = 4 + feed * 5;
+      ctx.fillStyle = "#e9e3d2";
+      ctx.fillRect(sx + 2.5, base - 16.4 - sheetH, 4, sheetH);
+      ctx.fillStyle = "#cfc9b6";
+      ctx.fillRect(sx + 2.5, base - 16.4 - sheetH, 4, 0.6);
+      // confetti strips spilling out below the head into the bin window
+      for (let i = 0; i < 6; i++) {
+        const fx = sx + 1.8 + i * 1.05;
+        const fy = base - 14.5 + ((this.frame * 0.9 + i * 4) % 10);
+        ctx.fillStyle = i % 2 ? "#e9e3d2" : "#d8d2bf";
+        ctx.fillRect(fx, fy, 0.7, 1.6);
+      }
+    }
+    ctx.restore();
+  }
+
   private drawDesks(ctx: CanvasRenderingContext2D, r: Room, row: number) {
     const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
     if (eFurn <= 0 || !r.plan) return;
@@ -3435,6 +3498,24 @@ class PixelCrew {
         ctx.fillRect(bx, by - 1.4, 4, 1.4);
         ctx.fillStyle = `hsl(${hue} 45% 56%)`;
         ctx.fillRect(bx, by - 1.4, 4, 0.4);
+      }
+    }
+
+    // the stack of context papers a dev carries to the shredder on /clear. It
+    // leaves the desk with a full stack ("out") that thins as it feeds it in
+    // ("feed"); on the way back ("back") its arms are empty.
+    if (tn.shred && tn.shred.phase !== "back") {
+      const sheets = tn.shred.phase === "feed"
+        ? Math.ceil(clamp(tn.shred.t / SHRED_FEED, 0, 1) * 4)
+        : 4;
+      const dir = tn.targetX >= tn.x ? 1 : -1; // held in the direction of travel
+      const bx = x - 2 + (dir > 0 ? 1.4 : -0.4);
+      for (let k = 0; k < sheets; k++) {
+        const by = ty + 3 - k * 1.2;
+        ctx.fillStyle = "#e9e3d2"; // white paper
+        ctx.fillRect(bx, by - 1.2, 4, 1.2);
+        ctx.fillStyle = "#cfc9b6"; // edge shadow line
+        ctx.fillRect(bx, by - 0.3, 4, 0.3);
       }
     }
   }

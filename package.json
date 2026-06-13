@@ -2,7 +2,7 @@
   "name": "DevTower",
   "displayName": "DevTower",
   "description": "A pixel office tower for your coding agents - watch Claude sessions work, stack new floors, spawn devs into worktrees, review diffs and PRs.",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "preview": true,
   "publisher": "BradenTerry",
   "license": "MIT",
