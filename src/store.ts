@@ -51,6 +51,18 @@ export interface Agent {
    *  terminal). DevTower must not open/resume a terminal for it — it's managed
    *  in its own session. */
   external?: boolean;
+  /** Set when this agent was dispatched to review a PR. Links the agent to the
+   *  PR so the scene can render the diegetic review (desk + verdict stamp) and
+   *  the verdict can be derived from the polled PR decision. */
+  reviewOf?: ReviewTarget;
+}
+
+/** The PR an agent was dispatched to review. */
+export interface ReviewTarget {
+  prId: string;
+  number: number;
+  repo: string;
+  url?: string;
 }
 
 /** A single event line in the generic state.jsonl feed. */
@@ -71,6 +83,7 @@ export interface StateEvent {
   /** Skills seen in this poll's transcript window; unioned into the agent. */
   skills?: string[];
   external?: boolean;
+  reviewOf?: ReviewTarget;
 }
 
 export const STATE_LABEL: Record<AgentState, string> = {
@@ -142,7 +155,10 @@ export class DevTowerStore {
       name: ev.name ?? existing?.name ?? ev.id,
       model: ev.model ?? existing?.model ?? "unknown",
       repo: ev.repo ?? existing?.repo ?? "workspace",
-      worktree: ev.worktree ?? existing?.worktree ?? ".",
+      // no fallback to "." — a worktree-less agent has no checkout to attach to,
+      // so it stays unplaced (layout/seatPlan skip empty worktrees) instead of
+      // silently collapsing into the workspace-root "main" room
+      worktree: ev.worktree ?? existing?.worktree ?? "",
       branch: ev.branch ?? existing?.branch ?? "HEAD",
       state: ev.state ?? existing?.state ?? "idle",
       task: ev.task ?? existing?.task ?? "",
@@ -158,6 +174,7 @@ export class DevTowerStore {
       // even as individual Skill calls scroll out of the transcript tail
       skills: mergeSkills(existing?.skills, ev.skills),
       external: ev.external ?? existing?.external,
+      reviewOf: ev.reviewOf ?? existing?.reviewOf,
     };
     this.agents.set(ev.id, merged);
     this._onChange.fire();

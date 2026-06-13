@@ -4,8 +4,8 @@ import { TerminalManager } from "./terminals";
 import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
-import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
-import { PrService } from "./prs";
+import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
+import { PrService, PrInfo } from "./prs";
 import { ClaudeDiscovery } from "./claude";
 import * as fs from "fs";
 import * as os from "os";
@@ -249,11 +249,18 @@ export class ConsolePanel {
       case "ready":
         this.postState();
         this.postUsage();
-        // push the persisted efficiency-mode setting (defaults off)
-        this.panel.webview.postMessage({
-          type: "config",
-          eco: vscode.workspace.getConfiguration("devtower").get<boolean>("efficiencyMode", false),
-        });
+        // push the persisted efficiency-mode setting (defaults off) plus the
+        // review-dispatch options (selectable skills + saved defaults)
+        {
+          const cfg = vscode.workspace.getConfiguration("devtower");
+          this.panel.webview.postMessage({
+            type: "config",
+            eco: cfg.get<boolean>("efficiencyMode", false),
+            reviewSkills: cfg.get<string[]>("reviewSkills", []),
+            reviewDefaults: cfg.get<object>("reviewDefaults", {}),
+            reviewAgents: this.discoverReviewAgents(),
+          });
+        }
         void this.refreshState(); // fill in each island's worktree rooms
         break;
       case "setEco":
@@ -289,7 +296,15 @@ export class ConsolePanel {
         if (typeof m.island === "string") await this.addWorktree(m.island);
         break;
       case "assignReview":
-        if (m.pr && typeof m.pr === "object") await this.assignReview(m.pr);
+        if (m.pr && typeof m.pr === "object") {
+          await this.assignReview(m.pr, {
+            skills: Array.isArray(m.skills) ? m.skills.filter((s: any) => typeof s === "string") : undefined,
+            effort: typeof m.effort === "string" ? m.effort : undefined,
+            instructions: typeof m.instructions === "string" ? m.instructions : undefined,
+            agent: typeof m.agent === "string" ? m.agent : undefined,
+            saveDefault: !!m.saveDefault,
+          });
+        }
         break;
       case "removeRoom":
         // note: must not truthiness-check — a legacy room can have name ""
@@ -683,64 +698,142 @@ export class ConsolePanel {
     }
   }
 
-  /** Spawn a reviewer agent for a PR. Prompts for review focus, then drops a
-   *  dev into the PR's repo with a Claude session seeded to review it. */
-  private async assignReview(pr: {
-    number?: number;
-    repo?: string;
-    branch?: string;
-    url?: string;
-    title?: string;
-  }): Promise<void> {
+  /** Spawn a reviewer agent for a PR, configured by the Review Dispatch card:
+   *  drops a dev into the PR's repo, tags it with reviewOf (so the scene draws
+   *  the diegetic review), then seeds its Claude session — checkout the PR, run
+   *  each chosen skill as its own slash command, and append any free-text focus.
+   *  With no skills selected it falls back to a generic full review. */
+  private async assignReview(
+    pr: { number?: number; repo?: string; branch?: string; url?: string; title?: string },
+    opts: { skills?: string[]; effort?: string; instructions?: string; agent?: string; saveDefault?: boolean } = {}
+  ): Promise<void> {
     if (typeof pr.number !== "number" || !pr.repo) return;
     const key = `review-${pr.number}-${pr.repo}`.replace(/[^A-Za-z0-9_-]+/g, "-");
     if (this.addingRooms.has(key)) return; // guard double-clicks
     this.addingRooms.add(key);
     try {
-      const focus = await vscode.window.showInputBox({
-        title: `Assign a dev to review ${pr.repo} #${pr.number}`,
-        prompt: pr.title,
-        placeHolder: "What should the reviewer focus on? (optional, leave blank for a full review)",
-        ignoreFocusOut: true,
-      });
-      if (focus === undefined) return; // cancelled
-
-      const dir = this.dirForRepo(pr.repo);
-      if (!dir) {
+      const repoDir = this.dirForRepo(pr.repo);
+      if (!repoDir) {
         vscode.window.showWarningMessage(`DevTower: no local directory known for "${pr.repo}".`);
         return;
       }
+
+      const cfg = vscode.workspace.getConfiguration("devtower");
+      const skills = (opts.skills ?? []).map((s) => s.trim()).filter(Boolean);
+      const effort = (opts.effort ?? "").trim();
+      const instructions = (opts.instructions ?? "").trim();
+      const agentMd = (opts.agent ?? "").trim();
+
+      // persist the operator's choices as the new default dispatch when asked
+      if (opts.saveDefault) {
+        await cfg.update(
+          "reviewDefaults",
+          { skills, effort: effort || undefined, instructions: instructions || undefined, agent: agentMd || undefined },
+          vscode.ConfigurationTarget.Workspace
+        );
+      }
+
+      // review the PR in its OWN worktree so the main checkout is never disturbed.
+      // The worktree is added detached; `gh pr checkout` (below) brings the PR
+      // branch (incl. forks) into it. Falls back to the repo dir if not a git repo.
+      const island = this.getRooms().find((r) => r.name === pr.repo || r.name === pr.repo!.split("/").pop())?.name
+        ?? pr.repo.split("/").pop() ?? pr.repo;
+      let cwd = repoDir;
+      let wtCreated = false;
+      if (await isRepo(repoDir)) {
+        try {
+          const wt = await worktreeForPr(repoDir, pr.number);
+          cwd = wt.wtPath;
+          wtCreated = true;
+          // register it as a worktree room so the reviewer gets its own building
+          const rows = this.getWorktreeRooms().filter((w) => w.path !== wt.wtPath);
+          rows.push({ island, path: wt.wtPath, branch: pr.branch || `pr/${pr.number}`, base: wt.base });
+          await this.saveWorktreeRooms(rows);
+        } catch (e) {
+          vscode.window.showWarningMessage(`DevTower: couldn't create a review worktree — reviewing in the main checkout instead. ${String(e).slice(0, 120)}`);
+        }
+      }
+
       this.store.apply({
         id: key,
         name: `review #${pr.number}`,
         model: "—",
-        repo: pr.repo,
-        worktree: dir,
+        repo: island,
+        worktree: cwd,
         branch: pr.branch || `pr/${pr.number}`,
         state: "active",
         task: `Reviewing PR #${pr.number}: ${pr.title ?? ""}`.trim(),
         elapsed: "new",
+        reviewOf: { prId: `${pr.repo}#${pr.number}`, number: pr.number, repo: pr.repo, url: pr.url },
       });
       this.store.setSelected(key);
+      if (wtCreated) { this.postState(); void this.refreshState(); } // render the new room + board
 
-      const extra = focus.trim() ? ` Focus on: ${focus.trim()}.` : "";
-      const prompt =
-        `Please review pull request #${pr.number} in ${pr.repo} (${pr.url}). ` +
-        `Use \`gh pr view ${pr.number}\` and \`gh pr diff ${pr.number}\` to read the change, ` +
-        `then give a thorough code review with concrete, actionable feedback.${extra}`;
+      // effort flag only applies to the review skills that take one
+      const EFFORT_SKILLS = new Set(["code-review", "review"]);
+      const skillLine = (s: string): string => `/${s}${effort && EFFORT_SKILLS.has(s) ? ` ${effort}` : ""}`;
 
-      const cfg = vscode.workspace.getConfiguration("devtower");
       const launch = cfg.get<string>("launchCommand", "").trim();
       const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim() || "claude";
-      if (launch) {
-        this.terminals.reveal(key); // launchCommand runs on first open
-        this.terminals.send(key, prompt);
+      // a chosen agent md becomes the reviewer's system prompt (non-launch path)
+      const sysFlag = agentMd && !launch ? ` --append-system-prompt "$(cat ${shellQuote(agentMd)})"` : "";
+
+      if (skills.length) {
+        // interactive session: check out the PR branch into this worktree, then
+        // fire each chosen skill as its own slash command against that diff.
+        if (launch) this.terminals.reveal(key); // launchCommand runs on first open
+        else this.terminals.send(key, `${claudeCmd}${sysFlag}`);
+        if (wtCreated) this.terminals.send(key, `gh pr checkout ${pr.number}`);
+        for (const s of skills) this.terminals.send(key, skillLine(s));
+        if (instructions) this.terminals.send(key, instructions);
       } else {
-        this.terminals.send(key, `${claudeCmd} ${shellQuote(prompt)}`);
+        // no skills → generic one-shot review prompt (prior behavior)
+        const extra = instructions ? ` Focus on: ${instructions}.` : "";
+        const prompt =
+          `Please review pull request #${pr.number} in ${pr.repo} (${pr.url}). ` +
+          (wtCreated
+            ? `Run \`gh pr checkout ${pr.number}\` to bring the change into this worktree, then review the diff `
+            : `Use \`gh pr view ${pr.number}\` and \`gh pr diff ${pr.number}\` to read the change, then review it `) +
+          `with concrete, actionable feedback.${extra}`;
+        if (launch) {
+          this.terminals.reveal(key);
+          this.terminals.send(key, prompt);
+        } else {
+          this.terminals.send(key, `${claudeCmd}${sysFlag} ${shellQuote(prompt)}`);
+        }
       }
     } finally {
       this.addingRooms.delete(key);
     }
+  }
+
+  /** Discover reviewer agent definitions: markdown files under `.claude/agents`
+   *  in each workspace folder plus the user's global `~/.claude/agents`. Returns
+   *  {label, path} — label is the file stem (or a `name:` frontmatter value). */
+  private discoverReviewAgents(): { label: string; path: string }[] {
+    const dirs: string[] = [];
+    for (const f of vscode.workspace.workspaceFolders ?? []) dirs.push(path.join(f.uri.fsPath, ".claude", "agents"));
+    dirs.push(path.join(os.homedir(), ".claude", "agents"));
+    const out: { label: string; path: string }[] = [];
+    const seen = new Set<string>();
+    for (const d of dirs) {
+      let files: string[] = [];
+      try { files = fs.readdirSync(d); } catch { continue; }
+      for (const fn of files) {
+        if (!fn.endsWith(".md")) continue;
+        const p = path.join(d, fn);
+        if (seen.has(p)) continue;
+        seen.add(p);
+        let label = fn.replace(/\.md$/, "");
+        try {
+          const head = fs.readFileSync(p, "utf8").slice(0, 600);
+          const m = /^name:\s*(.+)$/m.exec(head);
+          if (m) label = m[1].trim().replace(/^["']|["']$/g, "");
+        } catch { /* keep the stem */ }
+        out.push({ label, path: p });
+      }
+    }
+    return out;
   }
 
   /** Best-effort working directory for a repo: a reserved room, an agent already
@@ -965,9 +1058,21 @@ export class ConsolePanel {
         .map((w) => ({ path: w.path, branch: this.branchByPath.get(w.path) ?? w.branch }));
       return { ...r, worktrees: [...main, ...assigned] };
     });
+    // a reviewer's verdict is derived (not stored) from the PR decision the
+    // PrService already polls: once the reviewer posts a review, the PR's
+    // reviewDecision flips and the scene stamps approved / changes.
+    const prById = new Map<string, PrInfo>();
+    for (const p of [...this.prs.getCrew(), ...this.prs.getReview()]) prById.set(p.id, p);
+    const verdict = (review: PrInfo["review"]): "approved" | "changes" | "pending" =>
+      review === "approved" ? "approved" : review === "changes" ? "changes" : "pending";
+    const agents = this.store.list().map((a) => {
+      if (!a.reviewOf) return a;
+      const pr = prById.get(a.reviewOf.prId);
+      return { ...a, reviewVerdict: pr ? verdict(pr.review) : "pending" };
+    });
     this.panel.webview.postMessage({
       type: "state",
-      agents: this.store.list(),
+      agents,
       selectedId: this.store.getSelectedId(),
       rooms,
       boards: Object.fromEntries(this.boardsByPath),
@@ -1082,8 +1187,8 @@ export class ConsolePanel {
     <button class="iconbtn" id="themebtn" title="Toggle theme">☾</button>
   </header>
 
-  <!-- PR board (left) -->
-  <aside class="prboard" id="prboard" hidden></aside>
+  <!-- review dispatch card (modal) -->
+  <div class="rd-scrim" id="reviewdispatch" hidden></div>
 
   <!-- arrivals / departures feed -->
   <div class="feed" id="feed"></div>

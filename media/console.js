@@ -9,7 +9,7 @@
   const esc = (s) => String(s).replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
 
   let agents = [], selectedId = null, theme = "dark", panelOpen = false;
-  let firstState = true, prboardOpen = false;
+  let firstState = true;
   let prs = { crew: [], review: [] };
   const prevStates = new Map();
   const get = (id) => agents.find((a) => a.id === id);
@@ -38,18 +38,21 @@
     window.DevTowerCrew.onCd((id, target) =>
       vscode.postMessage({ type: "cdAgent", id, room: target.room, ghost: target.ghost })
     );
+    window.DevTowerCrew.onAssignReview((pr) => openReviewDispatch(pr));
+    window.DevTowerCrew.onRefreshPrs(() => vscode.postMessage({ type: "refreshPrs" }));
+    window.DevTowerCrew.onOpenPr((url) => vscode.postMessage({ type: "action", act: "openPr", url }));
     window.DevTowerCrew.start();
   }
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 
   function updateInsets() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setInsets(prboardOpen ? 404 : 0, panelOpen ? 392 : 0);
+    window.DevTowerCrew.setInsets(0, panelOpen ? 392 : 0);
   }
 
   /* ---------- selection ---------- */
@@ -159,62 +162,116 @@
     return prs.crew.find((p) => p.agentId === agentId);
   }
 
+  // count of PRs awaiting the operator's review, shown on the HUD PR button
   function renderPrBadge() {
     const n = prs.review.length;
     const b = $("#pr-badge");
     b.hidden = n === 0;
     b.textContent = n;
-    $("#prbtn").classList.toggle("on", prboardOpen);
   }
 
-  function prRowHTML(p, attn) {
-    const checks = p.checks !== "none" ? `<span class="pr-stat ${p.checks}"><span class="pdot"></span>${CHECK_LABEL[p.checks]}</span>` : "";
-    const review = p.review !== "none" ? `<span class="pr-stat ${p.review}"><span class="pdot"></span>${REVIEW_LABEL[p.review]}</span>` : "";
-    const author = p.author && p.author !== "you" ? `<span class="pr-author">by ${esc(p.author)}</span>` : "";
-    return `<div class="pr-row ${attn ? "attn" : ""}" data-url="${esc(p.url)}">
-      <div class="pr-r1"><span class="pr-num">#${p.number}</span><span class="pr-title">${esc(p.title)}</span>${p.isDraft ? `<span class="pr-draft">Draft</span>` : ""}</div>
-      <div class="pr-r2"><span class="repo">${esc(p.repo)}</span>${author}<span class="spacer"></span>${checks}${review}<button class="pr-review" title="Assign a dev to review this PR" data-number="${p.number}" data-repo="${esc(p.repo)}" data-branch="${esc(p.branch || "")}" data-url="${esc(p.url)}" data-title="${esc(p.title)}">Review</button></div>
-    </div>`;
-  }
+  /* ---------- review dispatch card ---------- */
+  let reviewSkills = ["code-review", "security-review", "review", "simplify", "verify"];
+  let reviewDefaults = {};
+  let reviewAgents = []; // {label, path} discovered from .claude/agents
+  const EFFORT_LEVELS = ["low", "medium", "high", "max"];
+  const EFFORT_SKILLS = new Set(["code-review", "review"]);
 
-  function renderPrBoard() {
-    renderPrBadge();
-    const board = $("#prboard");
-    if (!prboardOpen) { board.hidden = true; return; }
-    board.hidden = false;
-    const section = (title, list, attn) =>
-      `<div class="pr-section">
-        <div class="pr-sec-title ${attn ? "attn" : ""}">${title}<span class="cnt">${list.length}</span><span class="ln"></span></div>
-        ${list.length ? list.map((p) => prRowHTML(p, attn)).join("") : `<div class="prb-empty">${attn ? "Nothing waiting on you." : "No open crew PRs yet."}</div>`}
+  function openReviewDispatch(pr) {
+    const scrim = $("#reviewdispatch");
+    const sel = new Set((reviewDefaults.skills || []).filter((s) => reviewSkills.includes(s)));
+    let effort = reviewDefaults.effort || "high";
+    const instr = reviewDefaults.instructions || "";
+    let agent = reviewAgents.some((a) => a.path === reviewDefaults.agent) ? reviewDefaults.agent : "";
+
+    const chips = reviewSkills
+      .map((s) => `<span class="rd-chip ${sel.has(s) ? "on" : ""}" data-skill="${esc(s)}">${esc(s)}</span>`)
+      .join("");
+    const seg = EFFORT_LEVELS
+      .map((l) => `<button data-effort="${l}" class="${l === effort ? "on" : ""}">${l}</button>`)
+      .join("");
+    const agentOpts = [`<option value="" ${agent === "" ? "selected" : ""}>None (default prompt)</option>`]
+      .concat(reviewAgents.map((a) => `<option value="${esc(a.path)}" ${a.path === agent ? "selected" : ""}>${esc(a.label)}</option>`))
+      .join("");
+    const agentField = reviewAgents.length
+      ? `<div class="rd-field">
+          <span class="rd-label">Agent</span>
+          <select class="rd-select" id="rd-agent">${agentOpts}</select>
+        </div>`
+      : "";
+
+    scrim.innerHTML = `
+      <div class="rd-card" role="dialog" aria-modal="true">
+        <div class="rd-head">
+          <span class="rd-ic">⇄</span>
+          <div class="rd-t">
+            <div class="rd-kicker">Dispatch review</div>
+            <h2>${esc(pr.title || "")}</h2>
+            <div class="rd-sub">${esc(pr.repo)} · #${pr.number}</div>
+          </div>
+          <button class="rd-close" id="rd-close" title="Close (Esc)">✕</button>
+        </div>
+        <div class="rd-field">
+          <span class="rd-label">Skills</span>
+          <div class="rd-chips" id="rd-chips">${chips}</div>
+        </div>
+        <div class="rd-field" id="rd-effort-field">
+          <span class="rd-label">Effort</span>
+          <div class="rd-seg" id="rd-effort">${seg}</div>
+        </div>
+        ${agentField}
+        <div class="rd-field">
+          <span class="rd-label">Instructions</span>
+          <textarea class="rd-ta" id="rd-instr" placeholder="What should the reviewer focus on? (optional)">${esc(instr)}</textarea>
+        </div>
+        <div class="rd-foot">
+          <label class="rd-default"><input type="checkbox" id="rd-default" /> Save as default</label>
+          <span class="spacer"></span>
+          <button class="rd-btn" id="rd-cancel">Cancel</button>
+          <button class="rd-btn primary" id="rd-go">Dispatch</button>
+        </div>
       </div>`;
-    board.innerHTML = `
-      <div class="prb-head"><span class="ic">⇄</span>Pull Requests
-        <span class="right">
-          <button class="prb-btn" id="prb-refresh" title="Refresh">↻</button>
-          <button class="prb-btn" id="prb-close" title="Close">✕</button>
-        </span>
-      </div>
-      <div class="prb-body">
-        ${section("Needs your review", prs.review, true)}
-        ${section("Crew PRs", prs.crew, false)}
-      </div>`;
-    $("#prb-close", board).onclick = () => { prboardOpen = false; renderPrBoard(); updateInsets(); };
-    $("#prb-refresh", board).onclick = () => vscode.postMessage({ type: "refreshPrs" });
-    $$(".pr-row", board).forEach((r) => (r.onclick = () => vscode.postMessage({ type: "action", act: "openPr", url: r.dataset.url })));
-    $$(".pr-review", board).forEach((b) => (b.onclick = (e) => {
-      e.stopPropagation(); // don't also open the PR
+    scrim.hidden = false;
+
+    const effortField = $("#rd-effort-field", scrim);
+    const syncEffort = () => {
+      // effort only matters when a skill that takes one is selected
+      effortField.hidden = ![...sel].some((s) => EFFORT_SKILLS.has(s));
+    };
+    syncEffort();
+
+    $$(".rd-chip", scrim).forEach((c) => (c.onclick = () => {
+      const s = c.dataset.skill;
+      if (sel.has(s)) sel.delete(s); else sel.add(s);
+      c.classList.toggle("on");
+      syncEffort();
+    }));
+    $$("#rd-effort button", scrim).forEach((b) => (b.onclick = () => {
+      effort = b.dataset.effort;
+      $$("#rd-effort button", scrim).forEach((x) => x.classList.toggle("on", x === b));
+    }));
+
+    const close = () => { scrim.hidden = true; scrim.innerHTML = ""; };
+    $("#rd-close", scrim).onclick = close;
+    $("#rd-cancel", scrim).onclick = close;
+    scrim.onclick = (e) => { if (e.target === scrim) close(); };
+    $("#rd-go", scrim).onclick = () => {
+      const agentEl = $("#rd-agent", scrim);
       vscode.postMessage({
         type: "assignReview",
-        pr: {
-          number: Number(b.dataset.number),
-          repo: b.dataset.repo,
-          branch: b.dataset.branch,
-          url: b.dataset.url,
-          title: b.dataset.title,
-        },
+        pr,
+        skills: [...sel],
+        effort,
+        instructions: $("#rd-instr", scrim).value.trim(),
+        agent: agentEl ? agentEl.value : "",
+        saveDefault: $("#rd-default", scrim).checked,
       });
-    }));
+      close();
+    };
   }
+
+  function reviewDispatchOpen() { return !$("#reviewdispatch").hidden; }
+  function closeReviewDispatch() { const s = $("#reviewdispatch"); s.hidden = true; s.innerHTML = ""; }
 
   function prChipHTML(a) {
     const p = prFor(a.id);
@@ -325,11 +382,11 @@
   };
 
   /* ---------- global wiring ---------- */
+  // the HUD PR button flies the camera to the review billboard in the scene
+  // (and refreshes the PR list) rather than opening a side panel
   $("#prbtn").onclick = () => {
-    prboardOpen = !prboardOpen;
-    if (prboardOpen) vscode.postMessage({ type: "refreshPrs" });
-    renderPrBoard();
-    updateInsets();
+    vscode.postMessage({ type: "refreshPrs" });
+    if (window.DevTowerCrew) window.DevTowerCrew.focusReviewBoard();
   };
   $("#themebtn").onclick = () => {
     theme = theme === "dark" ? "light" : "dark";
@@ -338,8 +395,8 @@
   };
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (panelOpen) closePanel();
-      else if (prboardOpen) { prboardOpen = false; renderPrBoard(); updateInsets(); }
+      if (reviewDispatchOpen()) closeReviewDispatch();
+      else if (panelOpen) closePanel();
     }
   });
 
@@ -358,17 +415,24 @@
       renderPanel();
     } else if (m.type === "prs") {
       prs = { crew: m.crew || [], review: m.review || [] };
-      renderPrBoard();
+      renderPrBadge();
       if (panelOpen) renderPanel();
       // tell the tower which branches have an open PR (shown on each board)
       if (window.DevTowerCrew) {
         const branches = [...prs.crew, ...prs.review].map((p) => p.branch).filter(Boolean);
         window.DevTowerCrew.setPrBranches(branches);
+        // feed the central billboard the PRs waiting on the operator's review
+        window.DevTowerCrew.setReviewPrs(prs.review.map((p) => ({
+          number: p.number, repo: p.repo, title: p.title, branch: p.branch, url: p.url,
+        })));
       }
     } else if (m.type === "usage") {
       renderUsage(m.usage);
     } else if (m.type === "config") {
       applyEco(!!m.eco); // saved efficiency-mode preference (default off)
+      if (Array.isArray(m.reviewSkills) && m.reviewSkills.length) reviewSkills = m.reviewSkills;
+      if (m.reviewDefaults && typeof m.reviewDefaults === "object") reviewDefaults = m.reviewDefaults;
+      if (Array.isArray(m.reviewAgents)) reviewAgents = m.reviewAgents;
     }
   });
 
