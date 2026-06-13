@@ -3237,7 +3237,7 @@ class PixelCrew {
     const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
     if (eFurn <= 0) return;
     const base = r.baseY;
-    const sx = r.x0 + 3; // bin tucked into the front-left corner, left of where the dev stands
+    const sx = r.x0 + SHRED_REACH + 3; // bin sits just past where the dev stands
     // remaining feed fraction if a dev is shredding into THIS room's bin (0 = idle)
     let feed = 0;
     for (const tn of this.toons.values()) {
@@ -3581,7 +3581,8 @@ class PixelCrew {
       const sheets = tn.shred.phase === "feed"
         ? Math.ceil(clamp(tn.shred.t / SHRED_FEED, 0, 1) * 4)
         : 4;
-      const bx = x - 4.4; // stack held to the dev's left, toward the shredder bin
+      const dir = tn.targetX >= tn.x ? 1 : -1; // held in the direction of travel
+      const bx = x - 2 + (dir > 0 ? 1.4 : -0.4);
       for (let k = 0; k < sheets; k++) {
         const by = ty + 3 - k * 1.2;
         ctx.fillStyle = "#e9e3d2"; // white paper
