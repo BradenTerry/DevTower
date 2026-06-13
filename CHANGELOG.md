@@ -7,6 +7,8 @@ are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-13
+
 ### Changed
 
 - PR status polling now uses **ETag conditional requests** for settled PRs: an unchanged PR is
