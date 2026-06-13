@@ -1758,7 +1758,7 @@ class PixelCrew {
       if (this.inRect(mx, my, r.x0 + ROOM_W - 10, base - ROOM_H + 2, 8, 8)) {
         return r.isMain ? { removeBtn: r.island } : { removeWtBtn: r.name, island: r.island };
       }
-      if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
+      if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 2, 16, 8)) {
         return { addDev: { island: r.island, key: r.name } };
       }
       const btns = this.commitButtons(r);
@@ -2045,39 +2045,22 @@ class PixelCrew {
     /* ---- screen-space pass ---- */
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = "center";
-    const xBtn = (r: Room, title: string) => {
-      const base = r.baseY;
-      const hov = this.hov("remove:" + (r.isMain ? r.island : r.name));
-      const c1 = this.screenOf(r.x0 + ROOM_W - 10, base - ROOM_H + 2);
-      const c2 = this.screenOf(r.x0 + ROOM_W - 2, base - ROOM_H + 10);
-      ctx.fillStyle = hov ? "rgba(255,96,85,0.30)" : "rgba(10,15,18,0.8)"; // hover tint
-      ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-      ctx.strokeStyle = hov ? "#ff6055" : "rgba(255,96,85,0.7)";
-      ctx.lineWidth = hov ? 1.6 : 1;
-      ctx.strokeRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-      ctx.fillStyle = hov ? "#ffd2ce" : "#ff6055";
-      ctx.font = `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`;
-      ctx.textAlign = "center";
-      ctx.fillText(title, (c1.x + c2.x) / 2, (c1.y + c2.y) / 2 + 3);
-    };
     for (const r of this.rooms.values()) {
       if (r.built < 0.95) continue;
       const base = r.baseY;
+      const top = base - ROOM_H + 2; // shared top so + DEV and ✕ line up vertically
       // "+ DEV" on every room — drop an agent into this room's worktree
+      const d1 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, top);
+      const d2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, top + 8);
       const devHov = this.hov("addDev:" + r.name);
-      const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
-      const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
-      ctx.fillStyle = devHov ? "rgba(62,224,137,0.28)" : "rgba(10,15,18,0.8)"; // hover tint
-      ctx.fillRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-      ctx.strokeStyle = "#3ee089";
-      ctx.lineWidth = devHov ? 1.6 : 1;
-      ctx.strokeRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-      ctx.fillStyle = devHov ? "#aef5cf" : "#3ee089";
-      ctx.font = `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`;
-      ctx.textAlign = "center";
-      ctx.fillText("+ DEV", (b.x + b2.x) / 2, (b.y + b2.y) / 2 + 3);
+      this.drawRoomButton(ctx, d1.x, d1.y, d2.x - d1.x, d2.y - d1.y, "+ DEV",
+        devHov ? "#aef5cf" : "#3ee089", `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`, devHov);
       // ✕ — main nukes the whole directory, a worktree removes just itself
-      xBtn(r, "✕");
+      const x1 = this.screenOf(r.x0 + ROOM_W - 10, top);
+      const x2 = this.screenOf(r.x0 + ROOM_W - 2, top + 8);
+      const xHov = this.hov("remove:" + (r.isMain ? r.island : r.name));
+      this.drawRoomButton(ctx, x1.x, x1.y, x2.x - x1.x, x2.y - x1.y, "✕",
+        xHov ? "#ffd2ce" : "#ff6055", `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`, xHov);
     }
     // ghost labels: +building (create a worktree room) vs +island (reserve a dir)
     for (const g of this.ghosts) {
@@ -2699,6 +2682,30 @@ class PixelCrew {
     ctx.lineTo(cx + g * 0.9, cy - g * 1.5);
     ctx.stroke();
     ctx.restore();
+  }
+
+  /** A room chrome button (+ DEV, ✕) drawn to match the HUD glass icon buttons:
+   *  a rounded translucent chip with a neutral light border and a colored glyph,
+   *  brightening on hover. `sx,sy,sw,sh` are screen-space. */
+  private drawRoomButton(
+    ctx: CanvasRenderingContext2D,
+    sx: number, sy: number, sw: number, sh: number,
+    icon: string, color: string, font: string, hovered: boolean
+  ) {
+    const rad = Math.min(sw, sh) * 0.26;
+    ctx.beginPath();
+    ctx.roundRect(sx, sy, sw, sh, rad);
+    ctx.fillStyle = hovered ? "rgba(20,28,33,0.92)" : "rgba(10,15,18,0.72)"; // --glass / --glass-2
+    ctx.fill();
+    ctx.lineWidth = hovered ? 1.3 : 1;
+    ctx.strokeStyle = hovered ? "rgba(255,255,255,0.30)" : "rgba(255,255,255,0.14)"; // --edge
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = font;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(icon, sx + sw / 2, sy + sh / 2 + 0.2);
+    ctx.textBaseline = "alphabetic";
   }
 
   private drawBoard(ctx: CanvasRenderingContext2D, r: Room, base: number) {

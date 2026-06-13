@@ -307,8 +307,11 @@
         ? "fine-grained token"
         : `scopes: ${caps.scopes && caps.scopes.length ? esc(caps.scopes.join(", ")) : "none"}`;
       status = `<div class="s-status ok">
-          <b>Connected as ${esc(caps.login || "?")}</b>
-          <span class="s-ttype">${esc(scopeline)}</span>
+          <div class="s-status-info">
+            <b>Connected as ${esc(caps.login || "?")}</b>
+            <span class="s-ttype">${esc(scopeline)}</span>
+          </div>
+          <button class="s-clear" id="s-clear" title="Remove this token">Remove</button>
         </div>
         <ul class="s-feats">${feats}</ul>`;
     }
@@ -348,8 +351,7 @@
       <div class="s-field">
         <input type="password" id="s-token" placeholder="ghp_… or github_pat_…" autocomplete="off" spellcheck="false" />
         <button class="s-save" id="s-save">Save token</button>
-      </div>
-      ${caps && caps.connected ? `<button class="s-clear" id="s-clear">Remove token</button>` : ""}`;
+      </div>`;
   }
 
   // ---- General tab ----
@@ -589,6 +591,8 @@
       renderSettings(); // refresh the overlay if it is open
     } else if (m.type === "openSettings") {
       openSettings();
+    } else if (m.type === "focusAgent" && m.id) {
+      selectAgent(m.id, true); // host (or harness) asks to open an agent's panel
     }
   });
 
