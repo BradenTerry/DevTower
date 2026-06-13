@@ -178,6 +178,11 @@
           "default": false,
           "description": "Also show recent Claude sessions that have no running process (as idle, resumable rooms). Off = only sessions actually running right now."
         },
+        "devtower.debugLog": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write a structured debug log of agent discovery, session binding, external/internal classification, terminals, and scene events to the \"DevTower Debug\" output channel and .devtower/debug.log. For diagnosing agent issues; leave off in normal use."
+        },
         "devtower.efficiencyMode": {
           "type": "boolean",
           "default": false,

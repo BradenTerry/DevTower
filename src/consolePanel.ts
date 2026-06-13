@@ -9,6 +9,7 @@ import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, chang
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { ClaudeDiscovery } from "./claude";
+import { dlog } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
 
@@ -141,6 +142,11 @@ export class ConsolePanel {
     this.prs.onChange(() => this.postPrs(), null, this.disposables);
     this.prs.onChange(() => void this.refreshState(), null, this.disposables); // PR → board column
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    // mirror a live devtower.debugLog toggle into the scene so shred/toon events
+    // start (or stop) without reopening the console
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("devtower.debugLog")) this.postConfig();
+    }, null, this.disposables);
     this.startUsage();
     // a saved file is a working-tree (unstaged) change → refresh promptly
     vscode.workspace.onDidSaveTextDocument(() => this.onGitChange(), null, this.disposables);
@@ -254,16 +260,7 @@ export class ConsolePanel {
         this.postUsage();
         // push the persisted efficiency-mode setting (defaults off) plus the
         // review-dispatch options (selectable skills + saved defaults)
-        {
-          const cfg = vscode.workspace.getConfiguration("devtower");
-          this.panel.webview.postMessage({
-            type: "config",
-            eco: cfg.get<boolean>("efficiencyMode", false),
-            reviewSkills: cfg.get<string[]>("reviewSkills", []),
-            reviewDefaults: cfg.get<object>("reviewDefaults", {}),
-            reviewAgents: this.discoverReviewAgents(),
-          });
-        }
+        this.postConfig();
         void this.refreshState(); // fill in each island's worktree rooms
         break;
       case "setEco":
@@ -355,7 +352,27 @@ export class ConsolePanel {
         }
         if (id) await this.handleAction(id, m.act, m.path);
         break;
+      case "debug":
+        // scene-side debug events (shred swaps, toon spawn/leave, ghost render)
+        // forwarded so the extension + webview share one ordered timeline
+        if (typeof m.event === "string") dlog(`scene.${m.event}`, m.data && typeof m.data === "object" ? m.data : undefined);
+        break;
     }
+  }
+
+  /** Push the persisted efficiency-mode + debug-log prefs and review-dispatch
+   *  options to the webview. Sent on ready and re-sent when debugLog toggles so
+   *  the scene's debug emission tracks the setting without a reopen. */
+  private postConfig(): void {
+    const cfg = vscode.workspace.getConfiguration("devtower");
+    this.panel.webview.postMessage({
+      type: "config",
+      eco: cfg.get<boolean>("efficiencyMode", false),
+      debug: cfg.get<boolean>("debugLog", false),
+      reviewSkills: cfg.get<string[]>("reviewSkills", []),
+      reviewDefaults: cfg.get<object>("reviewDefaults", {}),
+      reviewAgents: this.discoverReviewAgents(),
+    });
   }
 
   private postPrs(): void {
@@ -564,6 +581,7 @@ export class ConsolePanel {
       const n = this.store.list().filter((a) => a.repo === island).length + 1;
       const branch = await currentBranch(worktree);
       const id = `${island}-a${n}`;
+      dlog("panel.addDev", { island, worktree, id });
       this.store.apply({
         id,
         name: `${island}-${n}`,
@@ -653,6 +671,8 @@ export class ConsolePanel {
     // path can carry the flag; a custom launchCommand falls back to the
     // launch-time/worktree heuristic in discovery.
     const sessionId = randomUUID();
+    const mode = !launch && claudeCmd ? "claude" : launch ? "launchCommand" : "reveal";
+    dlog("panel.launchSession", { id, mode, sessionId: mode === "claude" ? sessionId : undefined });
     if (!launch && claudeCmd) {
       this.discovery?.expectSession(id, sessionId);
       this.terminals.send(id, `${claudeCmd} --session-id ${sessionId}`);

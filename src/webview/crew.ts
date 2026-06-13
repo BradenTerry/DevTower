@@ -487,6 +487,9 @@ class PixelCrew {
   private onAssignReviewCb: (pr: { number: number; repo: string; title: string; branch?: string; url?: string }) => void = () => {};
   private onRefreshPrsCb: () => void = () => {};
   private onOpenPrCb: (url: string) => void = () => {};
+  // debug event sink (forwarded to the extension's debug log when enabled)
+  private onDebugCb: (event: string, data?: unknown) => void = () => {};
+  private debugOn = false;
 
   private resizeT: ReturnType<typeof setTimeout> | undefined;
 
@@ -643,6 +646,12 @@ class PixelCrew {
   }
   onRefreshPrs(cb: () => void) { this.onRefreshPrsCb = cb; }
   onOpenPr(cb: (url: string) => void) { this.onOpenPrCb = cb; }
+  onDebug(cb: (event: string, data?: unknown) => void) { this.onDebugCb = cb; }
+  setDebug(on: boolean) { this.debugOn = on; }
+  /** Emit a scene debug event (no-op unless devtower.debugLog is on). */
+  private dbg(event: string, data?: Record<string, unknown>) {
+    if (this.debugOn) this.onDebugCb(event, data);
+  }
   private newToonIds = new Set<string>();
 
   /* ============ DATA ============ */
@@ -735,6 +744,7 @@ class PixelCrew {
         if (!next) continue;
         // re-key the toon to the new session, keeping its persona/seat/position so
         // it reads as the SAME dev continuing after wiping its context.
+        this.dbg("shred.swap", { from: id, to: next.id, worktree: key, wasExternal: !!tn.agent.external, nowExternal: !!next.external });
         this.toons.delete(id);
         tn.agent = next;
         tn.shred = { phase: "out", t: 0 };
@@ -752,6 +762,7 @@ class PixelCrew {
         // one-refresh blip (e.g. a PR refresh momentarily drops it). Park its spot
         // so a quick return resumes here; meanwhile it walks out, and if it comes
         // back the recreate below cancels that exit.
+        this.dbg("toon.leave", { id, worktree: tn.agent.worktree, external: !!tn.agent.external });
         this.parkToon(id, tn);
         tn.leaving = true;
         this.leaving.push(tn);
@@ -789,7 +800,10 @@ class PixelCrew {
           ph: (hash(a.id) % 628) / 100,
         };
         this.toons.set(a.id, tn);
-        if (!resume) this.newToonIds.add(a.id);
+        if (!resume) {
+          this.newToonIds.add(a.id);
+          this.dbg("toon.spawn", { id: a.id, worktree: a.worktree, external: !!a.external });
+        }
       }
       // a reviewer's decision resolving (pending → approved/changes) thuds the
       // verdict stamp in; record the frame so the overlay can animate it once
@@ -3665,5 +3679,11 @@ class PixelCrew {
   },
   setInsets(left: number, right: number) {
     this._instance?.setInsets(left, right);
+  },
+  setDebug(on: boolean) {
+    this._instance?.setDebug(on);
+  },
+  onDebug(cb: (event: string, data?: unknown) => void) {
+    this._instance?.onDebug(cb);
   },
 };

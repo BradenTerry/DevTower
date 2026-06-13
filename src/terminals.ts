@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { DevTowerStore } from "./store";
 import { resolveCwd } from "./git";
+import { dlog } from "./debugLog";
 
 /**
  * Binds one NATIVE integrated terminal per agent, rooted in the agent's real
@@ -24,7 +25,9 @@ export class TerminalManager {
         // (transcriptPath set) are left to ClaudeDiscovery, which removes them
         // once the underlying process exits.
         const agent = this.store.get(id);
-        if (agent && !agent.transcriptPath) this.store.remove(id);
+        const dropped = !!(agent && !agent.transcriptPath);
+        dlog("terminal.closed", { agentId: id, droppedPlaceholder: dropped });
+        if (dropped) this.store.remove(id);
         break;
       }
     });
@@ -43,6 +46,7 @@ export class TerminalManager {
         message: `DevTower session — ${agent.repo} ⌥ ${agent.branch}`,
       });
       this.terminals.set(agentId, term);
+      dlog("terminal.create", { agentId, name: agent.name, cwd, external: !!agent.external, hasTranscript: !!agent.transcriptPath });
 
       const cfg = vscode.workspace.getConfiguration("devtower");
       // a session running outside DevTower is managed in its own terminal — never
@@ -75,6 +79,7 @@ export class TerminalManager {
   send(agentId: string, text: string): void {
     const term = this.ensure(agentId);
     if (!term) return;
+    dlog("terminal.send", { agentId, text });
     term.show(true);
     term.sendText(text, true);
   }

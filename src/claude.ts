@@ -5,6 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo } from "./git";
+import { dlog } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -91,6 +92,7 @@ export class ClaudeDiscovery {
     // a pinned --session-id lets discovery bind THIS exact transcript to THIS
     // placeholder, so multiple placeholders in one worktree never cross-wire
     if (sessionId) this.expecting.set(sessionId, agentId);
+    dlog("discovery.expectSession", { agentId, sessionId });
   }
 
   start(intervalMs = 8_000): void {
@@ -280,6 +282,7 @@ export class ClaudeDiscovery {
           this.adopted.set(f.id, want);
           this.expecting.delete(f.sessionId);
           this.launchPending.delete(want);
+          dlog("discovery.bind.session", { sessionId: f.sessionId, placeholder: want, cwd: f.cwd });
         }
       }
       // (2) HEURISTIC bind (no pinned id — custom launchCommand, or a session
@@ -297,6 +300,7 @@ export class ClaudeDiscovery {
           targetId = cand;
           this.adopted.set(f.id, cand);
           this.launchPending.delete(cand);
+          dlog("discovery.bind.worktree", { sessionId: f.sessionId, placeholder: cand, cwd: f.cwd });
         }
       }
       const id = targetId ?? f.id;
@@ -312,7 +316,10 @@ export class ClaudeDiscovery {
       if (!isAdopted && !this.mine.has(f.id)) {
         const ph = placeholderByWorktree.get(f.launchCwd) ?? placeholderByWorktree.get(f.cwd);
         const launchedAt = ph ? this.launchPending.get(ph) : undefined;
-        if (launchedAt !== undefined && f.mtime < launchedAt - ClaudeDiscovery.ADOPT_SLACK_MS) continue;
+        if (launchedAt !== undefined && f.mtime < launchedAt - ClaudeDiscovery.ADOPT_SLACK_MS) {
+          dlog("discovery.suppress.stale", { sessionId: f.sessionId, placeholder: ph, cwd: f.cwd, mtimeAgoMs: Date.now() - f.mtime });
+          continue;
+        }
       }
       if (isAdopted) claimedPlaceholders.add(id);
       present.add(id);
@@ -399,6 +406,12 @@ export class ClaudeDiscovery {
         this.store.remove(id);
       }
     }
+    });
+    dlog("discovery.refresh", {
+      found: found.length,
+      present: [...present],
+      external: this.store.list().filter((a) => a.external).map((a) => a.id),
+      placeholders: this.store.list().filter((a) => !a.transcriptPath).map((a) => a.id),
     });
     return found.length;
   }

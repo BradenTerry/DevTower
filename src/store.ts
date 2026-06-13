@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { dlog } from "./debugLog";
 
 export type AgentState = "active" | "waiting" | "complete" | "error" | "idle";
 
@@ -210,11 +211,31 @@ export class DevTowerStore {
       reviewOf: ev.reviewOf ?? existing?.reviewOf,
     };
     this.agents.set(ev.id, merged);
+    // log only meaningful transitions, not every poll's no-op re-apply
+    if (
+      !existing ||
+      existing.external !== merged.external ||
+      !!existing.transcriptPath !== !!merged.transcriptPath ||
+      existing.state !== merged.state ||
+      existing.worktree !== merged.worktree
+    ) {
+      dlog(existing ? "store.update" : "store.create", {
+        id: merged.id,
+        name: merged.name,
+        external: !!merged.external,
+        hasTranscript: !!merged.transcriptPath,
+        state: merged.state,
+        worktree: merged.worktree,
+      });
+    }
     this.emit();
   }
 
   remove(id: string): void {
-    if (this.agents.delete(id)) this.emit();
+    if (this.agents.delete(id)) {
+      dlog("store.remove", { id });
+      this.emit();
+    }
   }
 
   /** Manual state change from the UI (quick actions / send). */
