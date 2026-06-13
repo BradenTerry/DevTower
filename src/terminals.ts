@@ -45,8 +45,12 @@ export class TerminalManager {
       this.terminals.set(agentId, term);
 
       const cfg = vscode.workspace.getConfiguration("devtower");
-      const cmd = cfg.get<string>("launchCommand", "").trim();
-      if (cmd) {
+      // a session running outside DevTower is managed in its own terminal — never
+      // resume/relaunch it here (that would fork a second, conflicting session)
+      const cmd = agent.external ? "" : cfg.get<string>("launchCommand", "").trim();
+      if (agent.external) {
+        /* plain shell in the worktree; no claude --resume */
+      } else if (cmd) {
         const resolved = cmd
           .replace(/\$\{worktree\}/g, cwd ?? ".")
           .replace(/\$\{branch\}/g, agent.branch)

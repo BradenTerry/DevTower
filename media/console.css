@@ -413,6 +413,10 @@ button{ font-family:inherit; }
 .pa:hover{ border-color:var(--text-faint); color:var(--text); background:var(--glass-2); }
 .pa.primary{ color:var(--on-amber); background:var(--amber); border-color:var(--amber); font-weight:700; }
 .pa.primary:hover{ filter:brightness(1.1); }
+/* external session: an info chip, not an actionable button */
+.pa.ext-note{ cursor:default; border-style:dashed; color:var(--text-faint); }
+.pa.ext-note:hover{ border-color:var(--edge); color:var(--text-faint); background:transparent; }
+.acts.ext-note{ font-size:10px; color:var(--text-faint); font-style:italic; }
 
 .chg-section{ padding:12px 18px 16px; }
 .chg-section .chg-title{

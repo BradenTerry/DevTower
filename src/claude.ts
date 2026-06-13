@@ -227,6 +227,7 @@ export class ClaudeDiscovery {
           transcriptPath: f.file,
           question: f.question,
           contextTokens: f.contextTokens,
+          external: false, // DevTower launched/owns this one
         });
       } else {
         // a discovered agent (or a just-confirmed /cd) is placed at its real cwd.
@@ -245,6 +246,9 @@ export class ClaudeDiscovery {
           transcriptPath: f.file,
           question: f.question,
           contextTokens: f.contextTokens,
+          // a purely discovered session (not adopted into a DevTower placeholder)
+          // is running in its own terminal outside DevTower
+          external: !isAdopted,
         });
       }
     }

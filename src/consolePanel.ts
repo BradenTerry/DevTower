@@ -60,6 +60,7 @@ interface BoardData {
     approvals: number;
     changesRequested: number;
     reviewersPending: number;
+    comments: number;
   };
 }
 
@@ -193,7 +194,9 @@ export class ConsolePanel {
     if (this.gitDebounce) clearTimeout(this.gitDebounce);
     this.gitDebounce = setTimeout(() => {
       void this.refreshState();
-      void this.prs.refresh(); // a commit/push can change the matched PR
+      // NOTE: deliberately NOT refreshing PRs here — .git fires on every commit/
+      // ref write during a build, and a gh call per event blows the GitHub API
+      // rate limit. PR status comes from the adaptive poll in PrService instead.
     }, 300);
   }
 
@@ -342,15 +345,15 @@ export class ConsolePanel {
 
   /** Worktree rooms the user has explicitly assigned to an island. Worktrees do
    *  NOT auto-appear from git — only these (and rooms an agent is live in) show. */
-  private getWorktreeRooms(): { island: string; path: string; branch: string }[] {
-    const raw = this.context.workspaceState.get<{ island: string; path: string; branch: string }[]>(
+  private getWorktreeRooms(): { island: string; path: string; branch: string; base?: string }[] {
+    const raw = this.context.workspaceState.get<{ island: string; path: string; branch: string; base?: string }[]>(
       "devtower.worktreeRooms",
       []
     );
     return (raw || []).filter((w) => w && typeof w.path === "string" && w.path && typeof w.island === "string");
   }
 
-  private async saveWorktreeRooms(rows: { island: string; path: string; branch: string }[]): Promise<void> {
+  private async saveWorktreeRooms(rows: { island: string; path: string; branch: string; base?: string }[]): Promise<void> {
     await this.context.workspaceState.update("devtower.worktreeRooms", rows);
   }
 
@@ -529,11 +532,11 @@ export class ConsolePanel {
       });
       if (!pick) return;
 
-      let row: { island: string; path: string; branch: string };
+      let row: { island: string; path: string; branch: string; base?: string };
       if (pick.id === "__new__") {
         try {
           const wt = await worktreeAdd(dir, island, assigned.length + 2);
-          row = { island, path: wt.wtPath, branch: wt.branch };
+          row = { island, path: wt.wtPath, branch: wt.branch, base: wt.base };
         } catch (e) {
           vscode.window.showErrorMessage(`DevTower: worktree creation failed — ${String(e).slice(0, 160)}`);
           return;
@@ -571,8 +574,9 @@ export class ConsolePanel {
     const pairs = new Map<string, string>();
     const islandPaths = new Set<string>();
     const worktreePaths = new Set<string>();
+    const forkBase = new Map<string, string>(); // roomKey → fork-point sha (worktrees)
     for (const isl of this.getRooms()) if (isl.path) { pairs.set(isl.path, isl.path); islandPaths.add(isl.path); }
-    for (const w of this.getWorktreeRooms()) { pairs.set(w.path, w.path); worktreePaths.add(w.path); }
+    for (const w of this.getWorktreeRooms()) { pairs.set(w.path, w.path); worktreePaths.add(w.path); if (w.base) forkBase.set(w.path, w.base); }
     for (const a of this.store.list()) {
       if (a.worktree && a.worktree.trim()) pairs.set(a.worktree, resolveCwd(a) ?? a.worktree);
     }
@@ -602,7 +606,7 @@ export class ConsolePanel {
       }
       try {
         if (!(await isRepo(p))) continue; // git is found by walking up to the repo root
-        const sum = await branchSummary(p);
+        const sum = await branchSummary(p, forkBase.get(roomKey));
         if (!sum) continue;
         const branch = await currentBranch(p);
         branches.set(roomKey, branch);
@@ -632,6 +636,7 @@ export class ConsolePanel {
                 checksRunning: pr.checksRunning, checksTotal: pr.checksTotal,
                 review: pr.review, approvals: pr.approvals,
                 changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
+                comments: pr.comments,
               }
             : undefined,
         });

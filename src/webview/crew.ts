@@ -185,6 +185,7 @@ interface Room {
   statPulse: number; // 0..1 board glow that decays after a change
   cellPulse: { unstaged: number; staged: number; commits: number; pr: number }; // per-column flash
   numAnim: Record<string, { from: string; to: string; t: number }>; // per-number flip transitions
+  marqueeStart?: number; // frame the PR-title marquee (re)started, so it restarts on zoom-in
   swapPending?: boolean; // a beam is in flight; update the screen when it arrives
   swapClock?: number; // seconds since the beam was fired
 }
@@ -223,6 +224,7 @@ interface BoardData {
     approvals: number;
     changesRequested: number;
     reviewersPending: number;
+    comments: number;
   };
 }
 
@@ -365,6 +367,7 @@ class PixelCrew {
 
   private focusRoom_: string | null = null;
   private focusAgentId: string | null = null; // when set, the camera tracks this dev (not the room)
+  private focusIsland_: string | null = null; // when set, frame this whole directory (its tower)
   private prBranches = new Set<string>(); // branches (lowercased) with an open PR
   private focus = { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 };
   private cam = { x: 0, y: -ROOM_H / 2, z: 4 };
@@ -381,6 +384,7 @@ class PixelCrew {
   private lastNow = 0;
   private acc = 0;
   private frame = 0;
+  private marqueeOn = false; // a PR title marquee is scrolling → keep the loop awake
   private dirty = true;
   private eco = false;
   // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
@@ -1020,6 +1024,8 @@ class PixelCrew {
         this.focus.x = r.x0 + ROOM_W / 2;
         this.focus.y = r.baseY - ROOM_H / 2;
       }
+    } else if (this.focusIsland_) {
+      if (!this.frameIsland(this.focusIsland_)) this.focusIsland_ = null; // island gone
     } else if (!this.hasFitted) {
       this.clearFocus(true, false);
       this.hasFitted = true;
@@ -1036,6 +1042,7 @@ class PixelCrew {
     if (!r) r = [...this.rooms.values()].find((b) => b.island === name);
     if (!r) return;
     this.focusAgentId = null; // centering on a building releases any dev zoom
+    this.focusIsland_ = null;
     this.focusRoom_ = r.name;
     this.focus.x = r.x0 + ROOM_W / 2;
     this.focus.y = r.baseY - ROOM_H / 2;
@@ -1047,6 +1054,40 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** Set the focus box to frame a whole directory (island): all its stacked
+   *  buildings plus the platform/signpost. Returns false if the island is gone. */
+  private frameIsland(islandName: string): boolean {
+    const rooms = [...this.rooms.values()].filter((b) => b.island === islandName && !b.dying);
+    if (!rooms.length) return false;
+    let minX = Infinity, maxX = -Infinity, topY = Infinity, botY = -Infinity;
+    for (const b of rooms) {
+      const rx = cellX0(b.col), ry = floorBase(b.floor);
+      minX = Math.min(minX, rx);
+      maxX = Math.max(maxX, rx + ROOM_W);
+      topY = Math.min(topY, ry - ROOM_H);
+      botY = Math.max(botY, ry + SLAB);
+    }
+    botY += 34; // room for the platform + directory name below
+    this.focus.x = (minX + maxX) / 2;
+    this.focus.y = (topY + botY) / 2;
+    this.focus.spanW = maxX - minX + 46;
+    this.focus.spanH = botY - topY + 40;
+    return true;
+  }
+
+  /** Zoom out from a room to an overview of just THAT directory (its tower),
+   *  rather than the whole campus. */
+  focusIslandView(islandName: string) {
+    this.focusAgentId = null;
+    this.focusRoom_ = null;
+    this.focusIsland_ = islandName;
+    if (!this.frameIsland(islandName)) { this.focusIsland_ = null; this.clearFocus(); return; }
+    this.panX = 0;
+    this.panY = 0;
+    this.zoomMul = 1;
+    this.invalidate();
+  }
+
   /** Tight zoom onto one agent (their corner of the room). On the initial click
    *  (resetZoom) we recentre; periodic re-layouts call it with resetZoom=false to
    *  keep tracking the dev without fighting the operator's pan/zoom. */
@@ -1055,6 +1096,7 @@ class PixelCrew {
     if (!tn) return;
     const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
     this.focusAgentId = id;
+    this.focusIsland_ = null;
     this.focusRoom_ = room?.name ?? null;
     this.focus.x = tn.targetX;
     this.focus.y = tn.base - ROOM_H / 2 + 6;
@@ -1071,6 +1113,7 @@ class PixelCrew {
   clearFocus(resetZoom = true, preservePan = false) {
     this.focusRoom_ = null;
     this.focusAgentId = null;
+    this.focusIsland_ = null;
     this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
     this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
     this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
@@ -1183,12 +1226,14 @@ class PixelCrew {
   /** True when nothing needs animating, so the loop can park until woken. */
   private sceneIdle(): boolean {
     if (this.particles.length || this.leaving.length || this.packets.length) return false;
+    if (this.marqueeOn) return false; // a PR title is scrolling
     for (const r of this.rooms.values()) {
       if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending) return false;
       const cp = r.cellPulse;
       if (cp.unstaged > 0.02 || cp.staged > 0.02 || cp.commits > 0.02 || cp.pr > 0.02) return false;
       for (const _k in r.numAnim) return false; // a number is mid-flip
       if (r.boardShown && r.boardShown.prReady === false) return false; // PR spinner still spinning
+      if (r.boardShown?.pr && r.boardShown.pr.checksRunning > 0) return false; // CI dot pulsing
       // still sliding toward its packed cell (collapse animation)
       if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5) return false;
     }
@@ -1515,14 +1560,24 @@ class PixelCrew {
     } else if (hit.room) {
       // from a dev zoom, clicking the building centers it; clicking the already
       // centered building toggles back out
-      if (!this.focusAgentId && this.focusRoom_ === hit.room) this.clearFocus();
+      // already centered on this room → zoom out to an overview of just this
+      // directory (its tower), not the whole campus
+      if (!this.focusAgentId && this.focusRoom_ === hit.room) this.focusIslandView(hit.island ?? "");
       else this.focusOn(hit.room);
-    } else this.clearFocus();
+    } else {
+      // clicking empty space steps out one level: room / dev → its directory
+      // overview → the whole campus
+      const key = this.focusRoom_ ?? (this.focusAgentId ? this.toons.get(this.focusAgentId)?.bkey : undefined);
+      const r = key ? this.rooms.get(key) : undefined;
+      if (r) this.focusIslandView(r.island);
+      else this.clearFocus();
+    }
   }
 
   /* ============ DRAW ============ */
 
   private draw() {
+    this.marqueeOn = false; // set true by drawBoard while a PR title is scrolling
     const ctx = this.ctx;
     const dpr = Math.min(window.devicePixelRatio, 2);
     const cw = this.container.clientWidth, ch = this.container.clientHeight;
@@ -2111,7 +2166,7 @@ class PixelCrew {
     if (b.w < 20 || b.h < 14) return null;
     const pad = 4;
     const innerL = b.x + pad, innerR = b.x + b.w - pad;
-    const prW = Math.min(74, (innerR - innerL) * 0.34);
+    const prW = Math.min(96, (innerR - innerL) * 0.42);
     const gitR = innerR - prW - 4;
     const cw = (gitR - innerL) / 3;
     const cx = innerL + 2 * cw; // COMMITS cell
@@ -2218,13 +2273,11 @@ class PixelCrew {
     // The board is wide and short, so stats run HORIZONTALLY: three git cells
     // (unstaged · staged · commits), each a count + line churn + a green/red
     // diffstat bar, then a wider PR cell on the right.
-    const review = { approved: "approved", changes: "changes req", required: "review req", none: "" };
-    const checkTxt = { pass: "checks ✓", fail: "checks ✗", pending: "checks…", none: "" };
     const bodyTop = b.y + 12;
     const bodyBot = b.y + b.h - 2;
     const innerL = b.x + pad;
     const innerR = b.x + b.w - pad;
-    const prW = Math.min(74, (innerR - innerL) * 0.34);
+    const prW = Math.min(96, (innerR - innerL) * 0.42); // wider PR cell for review detail
     const gitR = innerR - prW - 4; // right edge of the git region
     const cw = (gitR - innerL) / 3; // one git cell
     // truncate a string to a pixel width, adding a trailing ellipsis when cut
@@ -2323,17 +2376,23 @@ class PixelCrew {
     ctx.fillStyle = "rgba(170,182,190,0.7)";
     ctx.fillText("PR", px, py);
     const loadingPr = !bd.pr && !bd.prReady; // first GitHub lookup still in flight
-    if (bd.pr) {
-      ctx.font = "bold 5.5px 'Martian Mono', monospace";
-      ctx.fillStyle = "#b98cff";
+    const pr = bd.pr;
+    if (pr) {
+      if (pr.draft) { // draft badge by the PR label
+        ctx.font = "bold 2.8px 'Martian Mono', monospace";
+        ctx.fillStyle = "rgba(180,190,198,0.85)";
+        ctx.fillText("DRAFT", px + 7, py);
+      }
+      ctx.font = "bold 6px 'Martian Mono', monospace";
+      ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
       ctx.textAlign = "right";
-      ctx.fillText(`#${bd.pr.number}`, innerR, py + 0.2);
+      ctx.fillText(`#${pr.number}`, innerR, py + 0.4);
       ctx.textAlign = "left";
     } else if (loadingPr) {
       this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
     }
     py += 6;
-    if (!bd.pr) {
+    if (!pr) {
       ctx.font = "3.4px 'IBM Plex Mono', monospace";
       if (loadingPr) {
         ctx.fillStyle = "rgba(185,140,255,0.7)";
@@ -2343,54 +2402,79 @@ class PixelCrew {
         ctx.fillText("no open PR", px, py);
       }
     } else {
-      ctx.font = "3.4px 'IBM Plex Mono', monospace";
-      const line = (text: string, color: string) => {
-        if (py > bodyBot) return;
-        ctx.fillStyle = color;
-        ctx.fillText(fit(text, prW), px, py);
-        py += 4.6;
-      };
-      // GH Actions breakdown: passed ✓ / failed ✗ / still-running ⟳, each counted
-      const checkCol = bd.pr.checks === "pass" ? "#3ee089" : bd.pr.checks === "fail" ? "#ff6055" : "#ffb13d";
-      if (bd.pr.checksTotal > 0) {
-        if (py <= bodyBot) {
-          let sx = px;
-          const seg = (t: string, c: string) => {
-            ctx.fillStyle = c;
-            ctx.fillText(t, sx, py);
-            sx += ctx.measureText(t).width + 3.5;
-          };
-          if (bd.pr.checksPass > 0) seg(`${bd.pr.checksPass}✓`, "#3ee089");
-          if (bd.pr.checksFailed > 0) seg(`${bd.pr.checksFailed}✗`, "#ff6055");
-          if (bd.pr.checksRunning > 0) seg(`${bd.pr.checksRunning}⟳`, "#ffb13d");
-          py += 4.6;
+      // ---- title at the TOP, up to 2 lines (2nd line marquees if it overflows) ----
+      ctx.font = "bold 3.4px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "rgba(228,236,240,0.95)";
+      const words = pr.title.split(/\s+/).filter(Boolean);
+      let l1 = "", wi = 0;
+      for (; wi < words.length; wi++) {
+        const next = l1 ? `${l1} ${words[wi]}` : words[wi];
+        if (ctx.measureText(next).width > prW && l1) break;
+        l1 = next;
+      }
+      const rest = words.slice(wi).join(" ");
+      ctx.fillText(l1, px, py);
+      py += 4.4;
+      if (rest) {
+        const rw = ctx.measureText(rest).width;
+        if (rw <= prW) {
+          ctx.fillText(rest, px, py);
+        } else {
+          ctx.save();
+          ctx.beginPath(); ctx.rect(px, py - 4, prW, 5.5); ctx.clip();
+          const gap = 14, period = rw + gap;
+          const zoomedIn = this.cam.z > 3; // only animate when it's actually readable
+          if (zoomedIn) { this.marqueeOn = true; if (r.marqueeStart === undefined) r.marqueeStart = this.frame; }
+          else r.marqueeStart = undefined;
+          const scroll = zoomedIn ? ((this.frame - (r.marqueeStart ?? this.frame)) * 0.75) % period : 0;
+          ctx.fillText(rest, px - scroll, py);
+          ctx.fillText(rest, px - scroll + period, py); // seamless wrap
+          ctx.restore();
         }
-      } else if (bd.pr.checks !== "none") {
-        line(checkTxt[bd.pr.checks], checkCol);
       }
-      // reviewers: approvals / changes / still-pending, e.g. "2 approved · 1 pending"
-      const rparts: string[] = [];
-      if (bd.pr.approvals > 0) rparts.push(`${bd.pr.approvals} approved`);
-      if (bd.pr.changesRequested > 0) rparts.push(`${bd.pr.changesRequested} changes`);
-      if (bd.pr.reviewersPending > 0) rparts.push(`${bd.pr.reviewersPending} pending`);
-      const revCol = bd.pr.changesRequested > 0 ? "#ff6055" : bd.pr.approvals > 0 ? "#3ee089" : "#ffb13d";
-      if (rparts.length) line(rparts.join(" · "), revCol);
-      else if (bd.pr.review !== "none") line(review[bd.pr.review], bd.pr.review === "approved" ? "#3ee089" : bd.pr.review === "changes" ? "#ff6055" : "#ffb13d");
-      if (bd.pr.draft) line("draft", "rgba(200,210,216,0.7)");
-      py += 1;
+      py += 4.5;
+      // divider between the title and the chart
       ctx.fillStyle = "rgba(120,150,170,0.16)";
-      ctx.fillRect(px, py - 3, prW, 0.7);
-      py += 2;
-      ctx.fillStyle = "rgba(225,233,238,0.85)";
-      const words = bd.pr.title.split(/\s+/).filter(Boolean);
-      let lineStr = "";
-      for (const w of words) {
-        if (py > bodyBot) break;
-        const next = lineStr ? `${lineStr} ${w}` : w;
-        if (ctx.measureText(next).width > prW && lineStr) { ctx.fillText(lineStr, px, py); py += 4.4; lineStr = w; }
-        else lineStr = next;
+      ctx.fillRect(px, py - 2.5, prW, 0.6);
+      py += 3.5;
+      // ---- chart: checks (✓ pass / ✗ fail / pulsing dot while running) ----
+      if (pr.checksTotal > 0) {
+        ctx.font = "bold 4px 'Martian Mono', monospace";
+        let sx = px;
+        if (pr.checksPass > 0) { ctx.fillStyle = "#3ee089"; const t = `${pr.checksPass}✓`; ctx.fillText(t, sx, py); sx += ctx.measureText(t).width + 3; }
+        if (pr.checksFailed > 0) { ctx.fillStyle = "#ff6055"; const t = `${pr.checksFailed}✗`; ctx.fillText(t, sx, py); sx += ctx.measureText(t).width + 3; }
+        if (pr.checksRunning > 0) {
+          const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+          ctx.globalAlpha = pa; ctx.fillStyle = "#ffb13d";
+          ctx.beginPath(); ctx.arc(sx + 1.4, py - 1.3, 1.4, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1; ctx.fillStyle = "#ffb13d";
+          ctx.fillText(`${pr.checksRunning}`, sx + 3.6, py);
+        }
+      } else {
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(150,160,168,0.55)";
+        ctx.fillText("no checks", px, py);
       }
-      if (py <= bodyBot && lineStr) ctx.fillText(fit(lineStr, prW), px, py);
+      py += 5;
+      // ---- chart: reviewers compressed onto one line (0 if none) ----
+      if (pr.draft && pr.approvals === 0 && pr.changesRequested === 0) {
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "#ffb13d";
+        ctx.fillText("reviewers pending", px, py);
+      } else {
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        let sx = px;
+        const seg = (label: string, n: number, on: string) => {
+          ctx.fillStyle = n > 0 ? on : "rgba(150,162,170,0.5)";
+          const t = `${n} ${label}`;
+          ctx.fillText(t, sx, py);
+          sx += ctx.measureText(t).width + 3;
+        };
+        seg("appr", pr.approvals, "#3ee089");
+        seg("chg", pr.changesRequested, "#ff6055");
+        seg("req", pr.reviewersPending, "#56c7ff");
+        seg("cmt", pr.comments, "rgba(210,218,224,0.85)");
+      }
     }
     ctx.restore();
     // (column-level flashes are drawn per cell above via cellGlow; no full-board

@@ -212,7 +212,7 @@ async function ensureExcluded(dir: string, pattern: string): Promise<void> {
   }
 }
 
-export async function worktreeAdd(dir: string, name: string, n: number): Promise<{ wtPath: string; branch: string }> {
+export async function worktreeAdd(dir: string, name: string, n: number): Promise<{ wtPath: string; branch: string; base: string }> {
   // worktrees live under <repo>/.claude/worktrees/ (kept out of git status via
   // .git/info/exclude) rather than littering the parent directory
   const top = await topLevel(dir).catch(() => dir);
@@ -228,8 +228,11 @@ export async function worktreeAdd(dir: string, name: string, n: number): Promise
     wtPath = path.join(wtRoot, `${name}-${i}`);
     branch = `devtower/${name}-${i}`;
   }
+  // record the fork point (current HEAD) so the board can count only the commits
+  // made IN this worktree, not the ones it inherits from the branch it's cut from
+  const base = (await runGit(dir, ["rev-parse", "HEAD"]).catch(() => "")).trim();
   await runGit(dir, ["worktree", "add", wtPath, "-b", branch]);
-  return { wtPath, branch };
+  return { wtPath, branch, base };
 }
 
 export interface BranchSummary {
@@ -271,26 +274,29 @@ async function numstatTotals(cwd: string, args: string[]): Promise<{ add: number
 
 /** Per-checkout summary for the room board: modified vs staged file counts (kept
  *  separate so staging doesn't muddy the numbers), commits ahead + recent log. */
-export async function branchSummary(cwd: string): Promise<BranchSummary | null> {
+export async function branchSummary(cwd: string, forkBase?: string): Promise<BranchSummary | null> {
   const st = await status(cwd).catch(() => null);
   if (!st) return null;
-  // Count commits against the BASE branch a PR would target (the remote default
-  // branch), not the branch's own upstream — once the feature branch is pushed,
-  // `@{upstream}..HEAD` is 0 even though the PR still has commits. origin/HEAD is
-  // the remote default (usually origin/main); fall back to common names, then to
-  // the upstream/local default as a last resort.
-  let ahead = 0;
-  let baseRef = ""; // the base the ahead/committed churn is measured against
+  // Resolve the BASE branch a PR would target (the remote default branch), used
+  // for the header name and — for a normal checkout — the commit count. origin/HEAD
+  // is the remote default (usually origin/main); fall back to common names.
+  let prBaseRef = "";
   for (const base of ["origin/HEAD", "origin/main", "origin/master", "@{upstream}", "main", "master"]) {
     try {
-      const n = parseInt((await runGit(cwd, ["rev-list", "--count", `${base}..HEAD`])).trim(), 10);
-      if (Number.isNaN(n)) continue;
-      ahead = n;
-      baseRef = base;
+      if (Number.isNaN(parseInt((await runGit(cwd, ["rev-list", "--count", `${base}..HEAD`])).trim(), 10))) continue;
+      prBaseRef = base;
       break;
     } catch {
       /* ref doesn't exist here — try the next */
     }
+  }
+  // The commit count + committed churn are measured from the worktree's FORK
+  // POINT when known (its OWN commits — a fresh worktree reads 0, not the commits
+  // it inherited from the branch it was cut from), else from the PR base branch.
+  const countBase = forkBase || prBaseRef;
+  let ahead = 0;
+  if (countBase) {
+    ahead = parseInt((await runGit(cwd, ["rev-list", "--count", `${countBase}..HEAD`]).catch(() => "0")).trim(), 10) || 0;
   }
   let commits: string[] = [];
   try {
@@ -303,17 +309,15 @@ export async function branchSummary(cwd: string): Promise<BranchSummary | null> 
   // additions aren't counted here — the file COUNT still reflects them.)
   const unstaged = await numstatTotals(cwd, ["diff", "--numstat"]);
   const stagedLines = await numstatTotals(cwd, ["diff", "--cached", "--numstat"]);
-  // committed churn: total +/- across the commits ahead of the base. No base
-  // (no upstream) → nothing to compare against, so it stays zero.
-  const committed = baseRef
-    ? await numstatTotals(cwd, ["diff", "--numstat", `${baseRef}..HEAD`])
+  const committed = countBase
+    ? await numstatTotals(cwd, ["diff", "--numstat", `${countBase}..HEAD`])
     : { add: 0, del: 0 };
   // friendly base branch name for the board header (what this branch targets)
-  let base = baseRef;
-  if (baseRef === "origin/HEAD") {
-    base = (await runGit(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).catch(() => "")).trim() || baseRef;
-  } else if (baseRef === "@{upstream}") {
-    base = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "@{upstream}"]).catch(() => "")).trim() || baseRef;
+  let base = prBaseRef;
+  if (prBaseRef === "origin/HEAD") {
+    base = (await runGit(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).catch(() => "")).trim() || prBaseRef;
+  } else if (prBaseRef === "@{upstream}") {
+    base = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "@{upstream}"]).catch(() => "")).trim() || prBaseRef;
   }
   base = base.replace(/^origin\//, "");
   // push/pull state vs the branch's OWN remote (origin/<branch>): how many local

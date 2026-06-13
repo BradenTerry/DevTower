@@ -269,11 +269,13 @@
       <div class="callout">
         <div class="ct"><i></i>${a.question ? "Agent is asking" : "Paused"}</div>
         <div class="q">${esc(a.question || "Waiting in its terminal — likely a permission prompt.")}</div>
-        <div class="acts"><button class="qa go" data-tool="terminal">⌗ Respond in terminal</button></div>
+        ${a.external ? `<div class="acts ext-note">Respond in its own terminal session.</div>` : `<div class="acts"><button class="qa go" data-tool="terminal">⌗ Respond in terminal</button></div>`}
       </div>` : ""}
 
       <div class="p-actions">
-        <button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>
+        ${a.external
+          ? `<div class="pa ext-note" title="This session runs outside DevTower — manage it in its own terminal">⌗ Runs in its own session</div>`
+          : `<button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>`}
         <button class="pa" data-tool="pr">⇄ ${prFor(a.id) ? "PR" : "Create PR"}</button>
       </div>`;
 

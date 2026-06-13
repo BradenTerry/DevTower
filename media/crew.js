@@ -168,6 +168,8 @@
       __publicField(this, "focusRoom_", null);
       __publicField(this, "focusAgentId", null);
       // when set, the camera tracks this dev (not the room)
+      __publicField(this, "focusIsland_", null);
+      // when set, frame this whole directory (its tower)
       __publicField(this, "prBranches", /* @__PURE__ */ new Set());
       // branches (lowercased) with an open PR
       __publicField(this, "focus", { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 });
@@ -184,6 +186,8 @@
       __publicField(this, "lastNow", 0);
       __publicField(this, "acc", 0);
       __publicField(this, "frame", 0);
+      __publicField(this, "marqueeOn", false);
+      // a PR title marquee is scrolling → keep the loop awake
       __publicField(this, "dirty", true);
       __publicField(this, "eco", false);
       // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
@@ -849,6 +853,9 @@
           this.focus.x = r.x0 + ROOM_W / 2;
           this.focus.y = r.baseY - ROOM_H / 2;
         }
+      } else if (this.focusIsland_) {
+        if (!this.frameIsland(this.focusIsland_))
+          this.focusIsland_ = null;
       } else if (!this.hasFitted) {
         this.clearFocus(true, false);
         this.hasFitted = true;
@@ -865,6 +872,7 @@
       if (!r)
         return;
       this.focusAgentId = null;
+      this.focusIsland_ = null;
       this.focusRoom_ = r.name;
       this.focus.x = r.x0 + ROOM_W / 2;
       this.focus.y = r.baseY - ROOM_H / 2;
@@ -876,6 +884,43 @@
         this.zoomMul = 1;
       this.invalidate();
     }
+    /** Set the focus box to frame a whole directory (island): all its stacked
+     *  buildings plus the platform/signpost. Returns false if the island is gone. */
+    frameIsland(islandName) {
+      const rooms = [...this.rooms.values()].filter((b) => b.island === islandName && !b.dying);
+      if (!rooms.length)
+        return false;
+      let minX = Infinity, maxX = -Infinity, topY = Infinity, botY = -Infinity;
+      for (const b of rooms) {
+        const rx = cellX0(b.col), ry = floorBase(b.floor);
+        minX = Math.min(minX, rx);
+        maxX = Math.max(maxX, rx + ROOM_W);
+        topY = Math.min(topY, ry - ROOM_H);
+        botY = Math.max(botY, ry + SLAB);
+      }
+      botY += 34;
+      this.focus.x = (minX + maxX) / 2;
+      this.focus.y = (topY + botY) / 2;
+      this.focus.spanW = maxX - minX + 46;
+      this.focus.spanH = botY - topY + 40;
+      return true;
+    }
+    /** Zoom out from a room to an overview of just THAT directory (its tower),
+     *  rather than the whole campus. */
+    focusIslandView(islandName) {
+      this.focusAgentId = null;
+      this.focusRoom_ = null;
+      this.focusIsland_ = islandName;
+      if (!this.frameIsland(islandName)) {
+        this.focusIsland_ = null;
+        this.clearFocus();
+        return;
+      }
+      this.panX = 0;
+      this.panY = 0;
+      this.zoomMul = 1;
+      this.invalidate();
+    }
     /** Tight zoom onto one agent (their corner of the room). On the initial click
      *  (resetZoom) we recentre; periodic re-layouts call it with resetZoom=false to
      *  keep tracking the dev without fighting the operator's pan/zoom. */
@@ -885,6 +930,7 @@
         return;
       const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
       this.focusAgentId = id;
+      this.focusIsland_ = null;
       this.focusRoom_ = room?.name ?? null;
       this.focus.x = tn.targetX;
       this.focus.y = tn.base - ROOM_H / 2 + 6;
@@ -900,6 +946,7 @@
     clearFocus(resetZoom = true, preservePan = false) {
       this.focusRoom_ = null;
       this.focusAgentId = null;
+      this.focusIsland_ = null;
       this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
       this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
       this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
@@ -1001,6 +1048,8 @@
     sceneIdle() {
       if (this.particles.length || this.leaving.length || this.packets.length)
         return false;
+      if (this.marqueeOn)
+        return false;
       for (const r of this.rooms.values()) {
         if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending)
           return false;
@@ -1010,6 +1059,8 @@
         for (const _k in r.numAnim)
           return false;
         if (r.boardShown && r.boardShown.prReady === false)
+          return false;
+        if (r.boardShown?.pr && r.boardShown.pr.checksRunning > 0)
           return false;
         if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5)
           return false;
@@ -1335,14 +1386,21 @@
         this.focusAgent(hit.agent);
       } else if (hit.room) {
         if (!this.focusAgentId && this.focusRoom_ === hit.room)
-          this.clearFocus();
+          this.focusIslandView(hit.island ?? "");
         else
           this.focusOn(hit.room);
-      } else
-        this.clearFocus();
+      } else {
+        const key = this.focusRoom_ ?? (this.focusAgentId ? this.toons.get(this.focusAgentId)?.bkey : void 0);
+        const r = key ? this.rooms.get(key) : void 0;
+        if (r)
+          this.focusIslandView(r.island);
+        else
+          this.clearFocus();
+      }
     }
     /* ============ DRAW ============ */
     draw() {
+      this.marqueeOn = false;
       const ctx = this.ctx;
       const dpr = Math.min(window.devicePixelRatio, 2);
       const cw = this.container.clientWidth, ch = this.container.clientHeight;
@@ -1904,7 +1962,7 @@
         return null;
       const pad = 4;
       const innerL = b.x + pad, innerR = b.x + b.w - pad;
-      const prW = Math.min(74, (innerR - innerL) * 0.34);
+      const prW = Math.min(96, (innerR - innerL) * 0.42);
       const gitR = innerR - prW - 4;
       const cw = (gitR - innerL) / 3;
       const cx = innerL + 2 * cw;
@@ -2009,13 +2067,11 @@
         placeholder("dir missing", "rgba(255,154,147,0.85)");
         return;
       }
-      const review = { approved: "approved", changes: "changes req", required: "review req", none: "" };
-      const checkTxt = { pass: "checks \u2713", fail: "checks \u2717", pending: "checks\u2026", none: "" };
       const bodyTop = b.y + 12;
       const bodyBot = b.y + b.h - 2;
       const innerL = b.x + pad;
       const innerR = b.x + b.w - pad;
-      const prW = Math.min(74, (innerR - innerL) * 0.34);
+      const prW = Math.min(96, (innerR - innerL) * 0.42);
       const gitR = innerR - prW - 4;
       const cw = (gitR - innerL) / 3;
       const fit = (s, maxW) => {
@@ -2117,17 +2173,23 @@
       ctx.fillStyle = "rgba(170,182,190,0.7)";
       ctx.fillText("PR", px, py);
       const loadingPr = !bd.pr && !bd.prReady;
-      if (bd.pr) {
-        ctx.font = "bold 5.5px 'Martian Mono', monospace";
-        ctx.fillStyle = "#b98cff";
+      const pr = bd.pr;
+      if (pr) {
+        if (pr.draft) {
+          ctx.font = "bold 2.8px 'Martian Mono', monospace";
+          ctx.fillStyle = "rgba(180,190,198,0.85)";
+          ctx.fillText("DRAFT", px + 7, py);
+        }
+        ctx.font = "bold 6px 'Martian Mono', monospace";
+        ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
         ctx.textAlign = "right";
-        ctx.fillText(`#${bd.pr.number}`, innerR, py + 0.2);
+        ctx.fillText(`#${pr.number}`, innerR, py + 0.4);
         ctx.textAlign = "left";
       } else if (loadingPr) {
         this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
       }
       py += 6;
-      if (!bd.pr) {
+      if (!pr) {
         ctx.font = "3.4px 'IBM Plex Mono', monospace";
         if (loadingPr) {
           ctx.fillStyle = "rgba(185,140,255,0.7)";
@@ -2137,68 +2199,96 @@
           ctx.fillText("no open PR", px, py);
         }
       } else {
-        ctx.font = "3.4px 'IBM Plex Mono', monospace";
-        const line = (text, color) => {
-          if (py > bodyBot)
-            return;
-          ctx.fillStyle = color;
-          ctx.fillText(fit(text, prW), px, py);
-          py += 4.6;
-        };
-        const checkCol = bd.pr.checks === "pass" ? "#3ee089" : bd.pr.checks === "fail" ? "#ff6055" : "#ffb13d";
-        if (bd.pr.checksTotal > 0) {
-          if (py <= bodyBot) {
-            let sx = px;
-            const seg = (t, c) => {
-              ctx.fillStyle = c;
-              ctx.fillText(t, sx, py);
-              sx += ctx.measureText(t).width + 3.5;
-            };
-            if (bd.pr.checksPass > 0)
-              seg(`${bd.pr.checksPass}\u2713`, "#3ee089");
-            if (bd.pr.checksFailed > 0)
-              seg(`${bd.pr.checksFailed}\u2717`, "#ff6055");
-            if (bd.pr.checksRunning > 0)
-              seg(`${bd.pr.checksRunning}\u27F3`, "#ffb13d");
-            py += 4.6;
-          }
-        } else if (bd.pr.checks !== "none") {
-          line(checkTxt[bd.pr.checks], checkCol);
-        }
-        const rparts = [];
-        if (bd.pr.approvals > 0)
-          rparts.push(`${bd.pr.approvals} approved`);
-        if (bd.pr.changesRequested > 0)
-          rparts.push(`${bd.pr.changesRequested} changes`);
-        if (bd.pr.reviewersPending > 0)
-          rparts.push(`${bd.pr.reviewersPending} pending`);
-        const revCol = bd.pr.changesRequested > 0 ? "#ff6055" : bd.pr.approvals > 0 ? "#3ee089" : "#ffb13d";
-        if (rparts.length)
-          line(rparts.join(" \xB7 "), revCol);
-        else if (bd.pr.review !== "none")
-          line(review[bd.pr.review], bd.pr.review === "approved" ? "#3ee089" : bd.pr.review === "changes" ? "#ff6055" : "#ffb13d");
-        if (bd.pr.draft)
-          line("draft", "rgba(200,210,216,0.7)");
-        py += 1;
-        ctx.fillStyle = "rgba(120,150,170,0.16)";
-        ctx.fillRect(px, py - 3, prW, 0.7);
-        py += 2;
-        ctx.fillStyle = "rgba(225,233,238,0.85)";
-        const words = bd.pr.title.split(/\s+/).filter(Boolean);
-        let lineStr = "";
-        for (const w of words) {
-          if (py > bodyBot)
+        ctx.font = "bold 3.4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(228,236,240,0.95)";
+        const words = pr.title.split(/\s+/).filter(Boolean);
+        let l1 = "", wi = 0;
+        for (; wi < words.length; wi++) {
+          const next = l1 ? `${l1} ${words[wi]}` : words[wi];
+          if (ctx.measureText(next).width > prW && l1)
             break;
-          const next = lineStr ? `${lineStr} ${w}` : w;
-          if (ctx.measureText(next).width > prW && lineStr) {
-            ctx.fillText(lineStr, px, py);
-            py += 4.4;
-            lineStr = w;
-          } else
-            lineStr = next;
+          l1 = next;
         }
-        if (py <= bodyBot && lineStr)
-          ctx.fillText(fit(lineStr, prW), px, py);
+        const rest = words.slice(wi).join(" ");
+        ctx.fillText(l1, px, py);
+        py += 4.4;
+        if (rest) {
+          const rw = ctx.measureText(rest).width;
+          if (rw <= prW) {
+            ctx.fillText(rest, px, py);
+          } else {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(px, py - 4, prW, 5.5);
+            ctx.clip();
+            const gap = 14, period = rw + gap;
+            const zoomedIn = this.cam.z > 3;
+            if (zoomedIn) {
+              this.marqueeOn = true;
+              if (r.marqueeStart === void 0)
+                r.marqueeStart = this.frame;
+            } else
+              r.marqueeStart = void 0;
+            const scroll = zoomedIn ? (this.frame - (r.marqueeStart ?? this.frame)) * 0.75 % period : 0;
+            ctx.fillText(rest, px - scroll, py);
+            ctx.fillText(rest, px - scroll + period, py);
+            ctx.restore();
+          }
+        }
+        py += 4.5;
+        ctx.fillStyle = "rgba(120,150,170,0.16)";
+        ctx.fillRect(px, py - 2.5, prW, 0.6);
+        py += 3.5;
+        if (pr.checksTotal > 0) {
+          ctx.font = "bold 4px 'Martian Mono', monospace";
+          let sx = px;
+          if (pr.checksPass > 0) {
+            ctx.fillStyle = "#3ee089";
+            const t = `${pr.checksPass}\u2713`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          }
+          if (pr.checksFailed > 0) {
+            ctx.fillStyle = "#ff6055";
+            const t = `${pr.checksFailed}\u2717`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          }
+          if (pr.checksRunning > 0) {
+            const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+            ctx.globalAlpha = pa;
+            ctx.fillStyle = "#ffb13d";
+            ctx.beginPath();
+            ctx.arc(sx + 1.4, py - 1.3, 1.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = "#ffb13d";
+            ctx.fillText(`${pr.checksRunning}`, sx + 3.6, py);
+          }
+        } else {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = "rgba(150,160,168,0.55)";
+          ctx.fillText("no checks", px, py);
+        }
+        py += 5;
+        if (pr.draft && pr.approvals === 0 && pr.changesRequested === 0) {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = "#ffb13d";
+          ctx.fillText("reviewers pending", px, py);
+        } else {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          let sx = px;
+          const seg = (label, n, on) => {
+            ctx.fillStyle = n > 0 ? on : "rgba(150,162,170,0.5)";
+            const t = `${n} ${label}`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          };
+          seg("appr", pr.approvals, "#3ee089");
+          seg("chg", pr.changesRequested, "#ff6055");
+          seg("req", pr.reviewersPending, "#56c7ff");
+          seg("cmt", pr.comments, "rgba(210,218,224,0.85)");
+        }
       }
       ctx.restore();
     }
