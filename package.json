@@ -2,7 +2,7 @@
   "name": "DevTower",
   "displayName": "DevTower",
   "description": "A pixel office tower for your coding agents - watch Claude sessions work, stack new floors, spawn devs into worktrees, review diffs and PRs.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "preview": true,
   "publisher": "BradenTerry",
   "license": "MIT",
@@ -186,7 +186,7 @@
         "devtower.efficiencyMode": {
           "type": "boolean",
           "default": false,
-          "description": "Reduce animation/particle work in the tower to save CPU. Toggle from the \u26a1 button in the tower; your choice is saved here."
+          "description": "Reduce animation/particle work in the tower to save CPU. Toggle from the ⚡ button in the tower; your choice is saved here."
         },
         "devtower.claudeCommand": {
           "type": "string",

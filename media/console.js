@@ -278,8 +278,8 @@
 
   /* ---------- settings overlay (tabbed: GitHub / General) ---------- */
   let settings = null; // last { caps, scopeHelp } pushed by the extension
-  let settingsTab = "github"; // active left-rail tab
-  const SETTINGS_TABS = [{ id: "github", label: "GitHub" }, { id: "general", label: "General" }];
+  let settingsTab = "general"; // active left-rail tab
+  const SETTINGS_TABS = [{ id: "general", label: "General" }, { id: "github", label: "GitHub" }];
   function settingsOpen() { return !$("#settings").hidden; }
   function closeSettings() { const s = $("#settings"); s.hidden = true; s.innerHTML = ""; }
   function openSettings() {

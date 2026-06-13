@@ -7,6 +7,35 @@ are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-13
+
+### Added
+
+- **External-agent indicator.** Claude sessions running outside DevTower (e.g. one you started in
+  your own terminal) now render **ghosted** - translucent, desaturated persona, dimmed name with a
+  dashed underline - so they read as "not one of ours" at a glance.
+- **Debug log.** A new `devtower.debugLog` setting (off by default, toggled live) writes a structured
+  JSONL event log of agent discovery, session binding, the external/internal classification,
+  terminals, and scene events to a "DevTower Debug" output channel and `.devtower/debug.log`. For
+  diagnosing agent issues.
+
+### Changed
+
+- **Deterministic agent-session binding.** Adding a dev launches Claude with an explicit
+  `--session-id`, so each placeholder binds to exactly the session it started. Several devs can share
+  one worktree (one `+ DEV` per dev) and each binds to its own session regardless of the order you
+  prompt them, with no cross-wired terminals or duplicate agents.
+- **HUD.** Removed the `DEVTOWER` brand block; moved the 5h / weekly plan-usage meters from the top
+  bar to the bottom-right.
+- **Settings.** The **General** tab is now first and selected by default.
+
+### Fixed
+
+- **`/clear` desk swap.** The shred restart no longer re-keys an **external** agent's toon, which had
+  dragged an unrelated agent through the shred trip and swapped desks with the new dev.
+- A live external agent sharing a worktree with a freshly added dev is no longer culled when the dev
+  is added.
+
 ## [0.3.1] - 2026-06-13
 
 ### Changed
