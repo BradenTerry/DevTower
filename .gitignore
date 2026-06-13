@@ -4,3 +4,8 @@ out/
 .DS_Store
 .devtower/
 .fleet/
+
+# screenshot harness (throwaway captures)
+screenshots/out/
+screenshots/.harness.html
+test-results/

@@ -45,21 +45,21 @@ button{ font-family:inherit; }
 .hud-top > *{ pointer-events:auto; }
 .brand{
   display:flex; align-items:center; gap:9px;
-  font-family:var(--label); font-weight:700; font-size:12px; letter-spacing:.3em; color:var(--text);
+  font-family:var(--label); font-weight:700; font-size:14px; letter-spacing:.3em; color:var(--text);
   background:var(--glass); border:1px solid var(--edge); border-radius:12px;
-  padding:9px 16px 9px 13px; backdrop-filter:var(--blur); box-shadow:var(--shadow);
+  padding:11px 18px 11px 15px; backdrop-filter:var(--blur); box-shadow:var(--shadow);
 }
-.brand .spark{ color:var(--amber); font-size:14px; }
+.brand .spark{ color:var(--amber); font-size:16px; }
 .telemetry{
   display:flex; align-items:center; gap:0;
   background:var(--glass); border:1px solid var(--edge); border-radius:12px;
   backdrop-filter:var(--blur); box-shadow:var(--shadow); overflow:hidden;
 }
-.tstat{ display:flex; align-items:center; gap:7px; font-size:12px; color:var(--text-dim); padding:9px 14px; border-right:1px solid var(--edge-soft); }
+.tstat{ display:flex; align-items:center; gap:8px; font-size:14px; color:var(--text-dim); padding:11px 16px; border-right:1px solid var(--edge-soft); }
 .tstat:last-of-type{ border-right:none; }
-.tstat b{ color:var(--text); font-weight:600; font-size:13px; }
-.tstat .lbl{ font-family:var(--label); font-size:7.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--text); }
-.pip{ width:7px; height:7px; border-radius:50%; display:inline-block; }
+.tstat b{ color:var(--text); font-weight:600; font-size:15px; }
+.tstat .lbl{ font-family:var(--label); font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--text); }
+.pip{ width:8px; height:8px; border-radius:50%; display:inline-block; }
 .pip.active{ background:var(--active); box-shadow:0 0 8px var(--active); }
 .pip.waiting{ background:var(--waiting); box-shadow:0 0 8px var(--waiting); }
 .pip.error{ background:var(--error); box-shadow:0 0 8px var(--error); }
@@ -68,21 +68,21 @@ button{ font-family:inherit; }
   background:var(--glass); border:1px solid var(--edge); border-radius:12px;
   backdrop-filter:var(--blur); box-shadow:var(--shadow); overflow:hidden;
 }
-.umeter{ display:flex; align-items:center; gap:8px; padding:9px 13px; border-right:1px solid var(--edge-soft); }
+.umeter{ display:flex; align-items:center; gap:9px; padding:11px 15px; border-right:1px solid var(--edge-soft); }
 .umeter:last-of-type{ border-right:none; }
-.umeter .ulbl{ font-family:var(--label); font-size:7.5px; letter-spacing:.14em; text-transform:uppercase; color:#fff; }
-.umeter .ubar{ width:54px; height:5px; border-radius:3px; background:var(--edge-soft); overflow:hidden; }
+.umeter .ulbl{ font-family:var(--label); font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:#fff; }
+.umeter .ubar{ width:64px; height:6px; border-radius:3px; background:var(--edge-soft); overflow:hidden; }
 .umeter .ubar i{ display:block; height:100%; width:0; background:var(--active); box-shadow:0 0 8px var(--active); transition:width .4s ease; }
-.umeter .upct{ font-size:12px; font-weight:600; color:var(--text); min-width:30px; text-align:right; font-variant-numeric:tabular-nums; }
+.umeter .upct{ font-size:14px; font-weight:600; color:var(--text); min-width:34px; text-align:right; font-variant-numeric:tabular-nums; }
 .umeter.warn .ubar i{ background:var(--waiting); box-shadow:0 0 8px var(--waiting); }
 .umeter.warn .upct{ color:var(--waiting); }
 .umeter.crit .ubar i{ background:var(--error); box-shadow:0 0 8px var(--error); }
 .umeter.crit .upct{ color:var(--error); }
 .spacer{ flex:1; }
 .iconbtn{
-  width:36px; height:36px; cursor:pointer; display:flex; align-items:center; justify-content:center;
+  width:42px; height:42px; cursor:pointer; display:flex; align-items:center; justify-content:center;
   background:var(--glass); border:1px solid var(--edge); border-radius:12px; color:var(--amber);
-  font-size:14px; backdrop-filter:var(--blur); box-shadow:var(--shadow); transition:.16s;
+  font-size:16px; backdrop-filter:var(--blur); box-shadow:var(--shadow); transition:.16s;
 }
 .iconbtn:hover{ background:var(--glass-2); transform:translateY(-1px); }
 

@@ -2304,12 +2304,12 @@ class PixelCrew {
       ctx.font = "7px 'IBM Plex Mono', monospace";
       ctx.fillText(this.fitText(ctx, pr.title || "", w - 30), x + 6, y + 17);
       // open-in-GitHub button (↗)
-      ctx.fillStyle = "rgba(255,255,255,0.07)";
+      ctx.fillStyle = "rgba(127,184,223,0.18)"; // accent-tinted chip so it reads as a link
       ctx.fillRect(open.x, open.y, open.w, open.h);
-      ctx.fillStyle = "rgba(230,238,240,0.85)";
-      ctx.font = "7px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#9fd0f0"; // brighter accent arrow
+      ctx.font = "bold 8px 'IBM Plex Mono', monospace";
       ctx.textAlign = "center";
-      ctx.fillText("↗", open.x + open.w / 2, open.y + open.h - 2.5);
+      ctx.fillText("↗", open.x + open.w / 2, open.y + open.h - 2.2);
       ctx.textAlign = "left";
     }
     if (!rows.length) {
@@ -2808,12 +2808,12 @@ class PixelCrew {
       ctx.textAlign = "left";
       // open-in-GitHub button (↗) at the top-right of the PR cell
       const ob = { x: innerR - 6, y: bodyTop, w: 6, h: 6 };
-      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillStyle = "rgba(127,184,223,0.20)"; // accent-tinted chip so it reads as a link
       ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
-      ctx.fillStyle = "rgba(220,228,234,0.9)";
-      ctx.font = "5px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#9fd0f0"; // brighter accent arrow
+      ctx.font = "bold 6px 'IBM Plex Mono', monospace";
       ctx.textAlign = "center";
-      ctx.fillText("↗", ob.x + ob.w / 2, ob.y + ob.h - 1.3);
+      ctx.fillText("↗", ob.x + ob.w / 2, ob.y + ob.h - 1.1);
       ctx.textAlign = "left";
     } else if (loadingPr) {
       this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
