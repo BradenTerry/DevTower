@@ -1,0 +1,53 @@
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
+
+// playwright is not a project dependency; resolve it from wherever it is
+// installed (project, global, or an `npx playwright` cache). Run via:
+//   npx playwright@latest node demo/shoot.mjs
+// or install it first: npm i -D playwright && npx playwright install chromium
+let chromium;
+try {
+  ({ chromium } = await import("playwright"));
+} catch {
+  console.error("playwright not found. Run: npm i -D playwright && npx playwright install chromium");
+  process.exit(1);
+}
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const htmlUrl = "file://" + join(__dirname, "harness.html");
+
+async function launch() {
+  try { return await chromium.launch(); }
+  catch { return await chromium.launch({ channel: "chrome" }); }
+}
+
+const browser = await launch();
+const page = await browser.newPage({ viewport: { width: 1500, height: 950 }, deviceScaleFactor: 2 });
+page.on("console", (m) => console.log("[page]", m.type(), m.text()));
+page.on("pageerror", (e) => console.log("[pageerror]", e.message));
+
+await page.goto(htmlUrl, { waitUntil: "networkidle" });
+await page.waitForFunction(() => !!window.DevTowerCrew && !!window.DevTowerCrew._instance);
+await page.evaluate(() => window.__feed());
+// let the scene frame the tower and run a few animation frames
+await page.waitForTimeout(2500);
+await page.screenshot({ path: join(__dirname, "01-overview.png") });
+
+// fly the camera to the central review-requested billboard
+await page.evaluate(() => window.__focusBillboard());
+await page.waitForTimeout(2500);
+await page.screenshot({ path: join(__dirname, "02-billboard.png") });
+
+// open the review-dispatch card for PR #311 (what clicking a billboard row does)
+await page.evaluate(() => {
+  window.DevTowerCrew._instance.onAssignReviewCb({
+    number: 311, repo: "acme/atlas-api",
+    title: "Rate limiter cleanup + sliding window",
+    url: "https://github.com/acme/atlas-api/pull/311",
+  });
+});
+await page.waitForTimeout(800);
+await page.screenshot({ path: join(__dirname, "03-dispatch.png") });
+
+await browser.close();
+console.log("done");

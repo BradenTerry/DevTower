@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link href="../media/console.css" rel="stylesheet" />
+<title>DevTower demo harness</title>
+</head>
+<body data-theme="dark">
+  <div id="crew-wrap" class="crew-wrap"><canvas id="crew-canvas"></canvas></div>
+  <header class="hud-top">
+    <div class="brand"><span class="spark">&#9670;</span>DEVTOWER</div>
+    <div class="telemetry">
+      <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
+      <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
+      <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
+      <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
+    </div>
+    <div class="usage" id="usage" hidden></div>
+    <div class="spacer"></div>
+    <button class="iconbtn" id="prbtn" title="Pull requests">&#8644;<span class="nbadge" id="pr-badge" hidden>0</span></button>
+    <button class="iconbtn" id="ecobtn" title="Efficiency mode">&#9889;</button>
+    <button class="iconbtn" id="themebtn" title="Toggle theme">&#9790;</button>
+  </header>
+  <div class="rd-scrim" id="reviewdispatch" hidden></div>
+  <div class="feed" id="feed"></div>
+  <aside class="panel" id="panel" hidden></aside>
+
+  <!-- stub the VS Code webview API before the bundles run -->
+  <script>
+    window.__sent = [];
+    window.acquireVsCodeApi = () => ({
+      postMessage: (m) => { window.__sent.push(m); },
+      getState: () => ({}),
+      setState: () => {},
+    });
+  </script>
+  <script src="../media/crew.js"></script>
+  <script src="../media/console.js"></script>
+
+  <script>
+  // ---- mock data mirroring src/prs.ts MOCK_* and the postState/postPrs shapes ----
+  const REPOS = "/repos";
+  const rooms = [
+    { name: "atlas-web", path: REPOS + "/atlas-web", floor: 0, col: 0,
+      worktrees: [{ path: REPOS + "/atlas-web", branch: "feat/agent-cockpit" }] },
+    { name: "atlas-api", path: REPOS + "/atlas-api", floor: 0, col: 1,
+      worktrees: [
+        { path: REPOS + "/atlas-api", branch: "main" },
+        { path: REPOS + "/atlas-api-sse", branch: "feat/streaming-sse" },
+        { path: REPOS + "/atlas-api-auth", branch: "fix/auth-refresh-race" },
+      ] },
+    { name: "infra", path: REPOS + "/infra", floor: 0, col: 2,
+      worktrees: [{ path: REPOS + "/infra", branch: "main" }] },
+  ];
+
+  const blankBoard = (branch, base = "main") => ({
+    branch, base, modified: 0, staged: 0, modifiedFiles: [], stagedFiles: [],
+    unstagedAdd: 0, unstagedDel: 0, stagedAdd: 0, stagedDel: 0,
+    committedAdd: 0, committedDel: 0, ahead: 0, unpushed: 0, behind: 0,
+    commits: [], prReady: true,
+  });
+
+  const boards = {
+    [REPOS + "/atlas-web"]: Object.assign(blankBoard("feat/agent-cockpit"), {
+      staged: 3, stagedAdd: 120, stagedDel: 18, ahead: 4, unpushed: 0,
+      committedAdd: 540, committedDel: 96, commits: ["cockpit tree", "diff panel", "polish", "tests"],
+      pr: { number: 142, title: "Agent cockpit: tree + diff panel",
+        url: "https://github.com/acme/atlas-web/pull/142", draft: false,
+        checks: "pass", checksPass: 5, checksFailed: 0, checksRunning: 0, checksTotal: 5,
+        review: "approved", approvals: 2, changesRequested: 0, reviewersPending: 0, comments: 1 },
+    }),
+    [REPOS + "/atlas-api"]: blankBoard("main"),
+    [REPOS + "/atlas-api-sse"]: Object.assign(blankBoard("feat/streaming-sse"), {
+      modified: 2, unstagedAdd: 60, unstagedDel: 4, ahead: 3,
+      committedAdd: 210, committedDel: 30, commits: ["sse scaffold", "flush", "wip"],
+      pr: { number: 318, title: "SSE streaming for /v1/messages",
+        url: "https://github.com/acme/atlas-api/pull/318", draft: true,
+        checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5,
+        review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2, comments: 0 },
+    }),
+    [REPOS + "/atlas-api-auth"]: Object.assign(blankBoard("fix/auth-refresh-race"), {
+      ahead: 2, committedAdd: 88, committedDel: 44, commits: ["lock window", "test race"],
+      pr: { number: 316, title: "Fix refresh-token rotation race",
+        url: "https://github.com/acme/atlas-api/pull/316", draft: false,
+        checks: "fail", checksPass: 4, checksFailed: 1, checksRunning: 1, checksTotal: 6,
+        review: "changes", approvals: 1, changesRequested: 1, reviewersPending: 0, comments: 4 },
+    }),
+    [REPOS + "/infra"]: blankBoard("main"),
+  };
+
+  const agents = [
+    { id: "a3", name: "Nova", state: "complete", repo: "atlas-web", model: "opus",
+      worktree: REPOS + "/atlas-web", branch: "feat/agent-cockpit", skills: ["typescript", "react"] },
+    { id: "a1", name: "Echo", state: "active", repo: "atlas-api", model: "opus",
+      worktree: REPOS + "/atlas-api-sse", branch: "feat/streaming-sse", skills: ["rust", "http"] },
+    { id: "a2", name: "Sol", state: "error", repo: "atlas-api", model: "sonnet",
+      worktree: REPOS + "/atlas-api-auth", branch: "fix/auth-refresh-race", skills: ["auth"] },
+    { id: "rev", name: "Iris", state: "active", repo: "atlas-api", model: "opus",
+      worktree: REPOS + "/atlas-api", branch: "main",
+      reviewOf: { prId: "acme/atlas-api#311", number: 311, repo: "acme/atlas-api",
+        url: "https://github.com/acme/atlas-api/pull/311" }, reviewVerdict: "pending" },
+  ];
+
+  const crewPrs = [
+    { id: "atlas-web#142", number: 142, title: "Agent cockpit: tree + diff panel",
+      repo: "atlas-web", branch: "feat/agent-cockpit", url: "https://github.com/acme/atlas-web/pull/142",
+      isDraft: false, checks: "pass", checksPass: 5, checksFailed: 0, checksRunning: 0, checksTotal: 5,
+      review: "approved", approvals: 2, changesRequested: 0, reviewersPending: 0, comments: 1, author: "you", agentId: "a3" },
+    { id: "atlas-api#318", number: 318, title: "SSE streaming for /v1/messages",
+      repo: "atlas-api", branch: "feat/streaming-sse", url: "https://github.com/acme/atlas-api/pull/318",
+      isDraft: true, checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5,
+      review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2, comments: 0, author: "you", agentId: "a1" },
+    { id: "atlas-api#316", number: 316, title: "Fix refresh-token rotation race",
+      repo: "atlas-api", branch: "fix/auth-refresh-race", url: "https://github.com/acme/atlas-api/pull/316",
+      isDraft: false, checks: "fail", checksPass: 4, checksFailed: 1, checksRunning: 1, checksTotal: 6,
+      review: "changes", approvals: 1, changesRequested: 1, reviewersPending: 0, comments: 4, author: "you", agentId: "a2" },
+  ];
+  const reviewPrs = [
+    { id: "acme/atlas-api#311", number: 311, title: "Rate limiter cleanup + sliding window",
+      repo: "acme/atlas-api", url: "https://github.com/acme/atlas-api/pull/311",
+      isDraft: false, checks: "none", checksPass: 0, checksFailed: 0, checksRunning: 0, checksTotal: 0,
+      review: "required", approvals: 0, changesRequested: 0, reviewersPending: 1, comments: 0, author: "jchen" },
+    { id: "acme/infra#87", number: 87, title: "Terraform: split staging state",
+      repo: "acme/infra", url: "https://github.com/acme/infra/pull/87",
+      isDraft: false, checks: "none", checksPass: 0, checksFailed: 0, checksRunning: 0, checksTotal: 0,
+      review: "required", approvals: 0, changesRequested: 0, reviewersPending: 1, comments: 0, author: "mrivera" },
+  ];
+
+  const send = (data) => window.dispatchEvent(new MessageEvent("message", { data }));
+  window.__feed = () => {
+    send({ type: "config", eco: false,
+      reviewSkills: ["code-review", "security-review"],
+      reviewDefaults: { skill: "code-review", model: "opus" },
+      reviewAgents: ["claude"] });
+    send({ type: "state", agents, selectedId: null, rooms, boards });
+    send({ type: "prs", crew: crewPrs, review: reviewPrs });
+  };
+  window.__focusBillboard = () => window.DevTowerCrew && window.DevTowerCrew.focusReviewBoard();
+  // auto-feed on load
+  window.__feed();
+  </script>
+</body>
+</html>
