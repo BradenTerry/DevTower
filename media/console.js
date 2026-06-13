@@ -42,7 +42,7 @@
     window.DevTowerCrew.onAssignReview((pr) => openReviewDispatch(pr));
     window.DevTowerCrew.onRefreshPrs(() => vscode.postMessage({ type: "refreshPrs" }));
     window.DevTowerCrew.onOpenPr((url) => vscode.postMessage({ type: "action", act: "openPr", url }));
-    DevTowerCrew.onDebug((event, data) => vscode.postMessage({ type: "debug", event, data }));
+    if (DevTowerCrew.onDebug) DevTowerCrew.onDebug((event, data) => vscode.postMessage({ type: "debug", event, data }));
     window.DevTowerCrew.start();
   }
 
@@ -583,7 +583,8 @@
     } else if (m.type === "usage") {
       renderUsage(m.usage);
     } else if (m.type === "config") {
-      applyEco(!!m.eco); // saved efficiency-mode preference (default off)      DevTowerCrew.setDebug(!!m.debug); // mirror devtower.debugLog into the scene
+      applyEco(!!m.eco); // saved efficiency-mode preference (default off)
+      if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(!!m.debug); // mirror devtower.debugLog into the scene
       if (Array.isArray(m.reviewSkills) && m.reviewSkills.length) reviewSkills = m.reviewSkills;
       if (m.reviewDefaults && typeof m.reviewDefaults === "object") reviewDefaults = m.reviewDefaults;
       if (Array.isArray(m.reviewAgents)) reviewAgents = m.reviewAgents;
