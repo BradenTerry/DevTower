@@ -62,6 +62,52 @@ describe("DevTowerStore.apply", () => {
   });
 });
 
+describe("DevTowerStore.batch", () => {
+  it("coalesces many mutations into a single onChange", async () => {
+    const s = newStore();
+    s.apply({ id: "old", worktree: "/repo" });
+    let fired = 0;
+    s.onChange(() => fired++);
+    // a /clear-style swap: new session applied, old removed, in one batch
+    await s.batch(async () => {
+      s.apply({ id: "new", worktree: "/repo" });
+      s.remove("old");
+    });
+    expect(fired).toBe(1); // one atomic snapshot, not two posts
+    expect(s.get("new")).toBeTruthy();
+    expect(s.get("old")).toBeUndefined();
+  });
+
+  it("emits even when the batch body only removes", async () => {
+    const s = newStore();
+    s.apply({ id: "a1" });
+    let fired = 0;
+    s.onChange(() => fired++);
+    await s.batch(async () => s.remove("a1"));
+    expect(fired).toBe(1);
+  });
+
+  it("does not fire when the batch body changes nothing", async () => {
+    const s = newStore();
+    let fired = 0;
+    s.onChange(() => fired++);
+    await s.batch(async () => s.remove("missing"));
+    expect(fired).toBe(0);
+  });
+
+  it("collapses nested batches into one fire (outermost only)", async () => {
+    const s = newStore();
+    let fired = 0;
+    s.onChange(() => fired++);
+    await s.batch(async () => {
+      s.apply({ id: "a1" });
+      await s.batch(async () => s.apply({ id: "a2" }));
+      s.apply({ id: "a3" });
+    });
+    expect(fired).toBe(1);
+  });
+});
+
 describe("DevTowerStore selection + removal", () => {
   it("tracks and fires selection", () => {
     const s = newStore();

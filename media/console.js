@@ -47,7 +47,7 @@
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, external: a.external, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 

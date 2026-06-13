@@ -59,8 +59,19 @@ export class ClaudeDiscovery {
   private launchPending = new Map<string, number>();
   // slack for clock skew / mtime granularity when comparing launch vs transcript
   private static readonly ADOPT_SLACK_MS = 10_000;
+  // session uuid → placeholder agent id, when DevTower launched `claude` with an
+  // explicit --session-id. This is the DETERMINISTIC binding: the launched
+  // transcript filename IS that uuid, so its session binds to exactly the
+  // placeholder that started it — even when several placeholders share one
+  // worktree (where the worktree/time heuristic below can't tell them apart).
+  private expecting = new Map<string, string>();
 
-  constructor(private store: DevTowerStore) {}
+  constructor(
+    private store: DevTowerStore,
+    // tests inject a fake transcripts root and process-liveness source; in the
+    // extension both default to the real home dir + `ps`/`lsof`.
+    private deps: { projectsRoot?: string; liveCounts?: () => Promise<LiveCounts> } = {}
+  ) {}
 
   /** Record that an agent was sent `/cd <dir>`. The move is NOT applied until a
    *  scan sees the transcript report `dir` as the live cwd — only then is the
@@ -75,8 +86,11 @@ export class ClaudeDiscovery {
    *  `agentId`. Only a transcript written at/after this moment may be adopted
    *  into it, so a pre-existing transcript in the same worktree can't be
    *  mis-bound and then churned out when the real launched session appears. */
-  expectSession(agentId: string): void {
+  expectSession(agentId: string, sessionId?: string): void {
     this.launchPending.set(agentId, Date.now());
+    // a pinned --session-id lets discovery bind THIS exact transcript to THIS
+    // placeholder, so multiple placeholders in one worktree never cross-wire
+    if (sessionId) this.expecting.set(sessionId, agentId);
   }
 
   start(intervalMs = 8_000): void {
@@ -157,7 +171,7 @@ export class ClaudeDiscovery {
 
   /** Scan + sync into the store. Returns how many sessions were found. */
   async refresh(): Promise<number> {
-    const root = path.join(os.homedir(), ".claude", "projects");
+    const root = this.deps.projectsRoot ?? path.join(os.homedir(), ".claude", "projects");
     const showRecent = vscode.workspace
       .getConfiguration("devtower")
       .get<boolean>("showRecentSessions", false);
@@ -174,7 +188,7 @@ export class ClaudeDiscovery {
     // has an unclaimed running process. Claiming per slot (not per dir) is what
     // stops a CLOSED session whose dir was later reused/renamed from borrowing a
     // newer session's live process at the same path (the phantom-agent bug).
-    const liveCounts = await this.liveCwdCounts();
+    const liveCounts = await (this.deps.liveCounts ?? (() => this.liveCwdCounts()))();
     const kept: Found[] = [];
     const keptCwd = new Set<string>();
     const asRecent = (f: Found): Found => ({ ...f, state: "idle", task: `(recent) ${f.task}` });
@@ -239,6 +253,13 @@ export class ClaudeDiscovery {
     const seenSessions = new Set<string>();
     const claimedPlaceholders = new Set<string>();
     const present = new Set<string>();
+    // Coalesce this entire refresh (new-session applies + old-session removes)
+    // into ONE webview update. A /clear applies the new session and removes the
+    // old one in the same pass; without batching those reach the scene as two
+    // separate posts, so it reads as one dev leaving and another entering — and
+    // the shred trip only fires when the swap arrives as a single atomic
+    // snapshot (old gone AND new present together).
+    await this.store.batch(async () => {
     for (const f of found) {
       seenSessions.add(f.id);
       // which store agent this session drives: a prior adoption, a fresh adopt
@@ -248,9 +269,23 @@ export class ClaudeDiscovery {
         this.adopted.delete(f.id);
         targetId = undefined;
       }
-      // only a genuinely NEW session may adopt a placeholder — a session we are
-      // already tracking keeps its own id, so an existing dev sharing the cwd
-      // can't hijack the placeholder (which would churn it out + back in)
+      // (1) DETERMINISTIC bind: this transcript's uuid is one DevTower launched
+      // with --session-id, so it belongs to exactly that placeholder regardless
+      // of cwd, mtime, or how many placeholders share the worktree. This is what
+      // lets the operator spin up several devs in one room and prompt each one.
+      if (!targetId && !this.mine.has(f.id)) {
+        const want = this.expecting.get(f.sessionId);
+        if (want && this.store.get(want) && !this.store.get(want)!.transcriptPath) {
+          targetId = want;
+          this.adopted.set(f.id, want);
+          this.expecting.delete(f.sessionId);
+          this.launchPending.delete(want);
+        }
+      }
+      // (2) HEURISTIC bind (no pinned id — custom launchCommand, or a session
+      // started outside DevTower in a placeholder's worktree): only a genuinely
+      // NEW session may adopt, and a transcript older than the launch is refused
+      // as a stale predecessor. One placeholder per worktree here.
       if (!targetId && !this.mine.has(f.id)) {
         const cand = placeholderByWorktree.get(f.launchCwd) ?? placeholderByWorktree.get(f.cwd);
         // a transcript older than the placeholder's launch is a stale prior
@@ -266,6 +301,19 @@ export class ClaudeDiscovery {
       }
       const id = targetId ?? f.id;
       const isAdopted = id !== f.id;
+      // A session APPEARING FOR THE FIRST TIME in a worktree where the user just
+      // spawned a dev, but older than that launch, is the stale predecessor of
+      // the session the placeholder is about to adopt (a brand-new session writes
+      // no cwd until its first prompt, so it can't be matched yet) — hide it
+      // rather than surface a separate external twin. The `!mine` guard is what
+      // protects a genuine, already-tracked external agent (e.g. one you're
+      // debugging in its own terminal) that simply shares the worktree: it has
+      // been seen on prior scans, so adding a dev beside it never culls it.
+      if (!isAdopted && !this.mine.has(f.id)) {
+        const ph = placeholderByWorktree.get(f.launchCwd) ?? placeholderByWorktree.get(f.cwd);
+        const launchedAt = ph ? this.launchPending.get(ph) : undefined;
+        if (launchedAt !== undefined && f.mtime < launchedAt - ClaudeDiscovery.ADOPT_SLACK_MS) continue;
+      }
       if (isAdopted) claimedPlaceholders.add(id);
       present.add(id);
       this.mine.add(id);
@@ -336,6 +384,12 @@ export class ClaudeDiscovery {
       const a = this.store.get(id);
       if (!a || a.transcriptPath) this.launchPending.delete(id);
     }
+    // likewise forget a pinned session-id expectation once its placeholder is
+    // gone or has already bound a transcript
+    for (const [sid, agentId] of [...this.expecting]) {
+      const a = this.store.get(agentId);
+      if (!a || a.transcriptPath) this.expecting.delete(sid);
+    }
     // forget adoptions whose session has gone away
     for (const [sid] of [...this.adopted]) if (!seenSessions.has(sid)) this.adopted.delete(sid);
     // sessions that aged out or were deleted leave the tower
@@ -345,6 +399,7 @@ export class ClaudeDiscovery {
         this.store.remove(id);
       }
     }
+    });
     return found.length;
   }
 
@@ -373,6 +428,7 @@ export class ClaudeDiscovery {
           age < 120_000 ? "active" : meta.lastRole === "assistant" && meta.question ? "waiting" : "idle";
         out.push({
           id: "cc-" + fn.slice(0, 8),
+          sessionId: fn.slice(0, -6), // strip ".jsonl"
           file,
           cwd: meta.cwd,
           launchCwd: meta.launchCwd ?? meta.cwd,
@@ -393,6 +449,7 @@ export class ClaudeDiscovery {
 
 interface Found {
   id: string;
+  sessionId: string; // transcript uuid (filename without .jsonl) — the real session id
   file: string;
   cwd: string; // latest cwd (transcript tail) — used for the room/label
   launchCwd: string; // dir claude started in (transcript head) — used for liveness

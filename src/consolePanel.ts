@@ -4,6 +4,7 @@ import { TerminalManager } from "./terminals";
 import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
+import { randomUUID } from "crypto";
 import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
@@ -645,11 +646,20 @@ export class ConsolePanel {
     const cfg = vscode.workspace.getConfiguration("devtower");
     const launch = cfg.get<string>("launchCommand", "").trim();
     const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim();
-    // mark the launch so discovery only adopts the session we start here, not a
-    // stale prior transcript already sitting in this worktree
-    this.discovery?.expectSession(id);
-    if (!launch && claudeCmd) this.terminals.send(id, claudeCmd);
-    else this.terminals.reveal(id);
+    // Pin an explicit session id so discovery binds THIS transcript to THIS
+    // placeholder deterministically — essential when several placeholders share
+    // one worktree (one + DEV per dev), where a worktree/time heuristic can't
+    // tell which placeholder launched which session. Only the default `claude`
+    // path can carry the flag; a custom launchCommand falls back to the
+    // launch-time/worktree heuristic in discovery.
+    const sessionId = randomUUID();
+    if (!launch && claudeCmd) {
+      this.discovery?.expectSession(id, sessionId);
+      this.terminals.send(id, `${claudeCmd} --session-id ${sessionId}`);
+    } else {
+      this.discovery?.expectSession(id);
+      this.terminals.reveal(id);
+    }
   }
 
   /** Recompute live git stats + branch per ROOM (keyed by the room's checkout

@@ -22,6 +22,7 @@ interface CrewAgent {
   worktree?: string; // git worktree path; groups desks within a room
   branch?: string; // branch name, shown on the cluster sign
   skills?: string[]; // skills this session has used (accumulated, first-use order)
+  external?: boolean; // a live session running OUTSIDE DevTower (not one we launched)
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
   reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
 }
@@ -57,6 +58,32 @@ const SKINS = ["#f2c8a0", "#e0a87e", "#c68642", "#8d5524", "#ffd9b3", "#a86b3c"]
 const HAIRS = ["#2e2620", "#4a342a", "#16100c", "#7a5230", "#b88a4a", "#55585e", "#6e3a28"];
 const ACCENTS = ["#ff6055", "#56c7ff", "#3ee089", "#ffb13d", "#b98cff", "#ff8fc7"];
 
+/** Desaturate + dim one persona color (hsl() or #hex) for the ghosted render of
+ *  an external session — strips the chroma so it reads as gray, not "ours". */
+function ghostColor(c: string): string {
+  const m = /^hsl\((\d+)\s+(\d+)%\s+(\d+)%\)$/.exec(c);
+  if (m) return `hsl(${m[1]} 7% ${Math.round(+m[3] * 0.82)}%)`;
+  const h = c.replace("#", "");
+  if (h.length < 6) return c;
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  const y = 0.3 * r + 0.59 * g + 0.11 * b;
+  const hx = (v: number) => Math.round(Math.min(255, (v * 0.2 + y * 0.8) * 0.82)).toString(16).padStart(2, "0");
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+/** A persona with every color desaturated, for an external (outside) session. */
+function ghostPersona(p: ReturnType<typeof persona>): ReturnType<typeof persona> {
+  return {
+    ...p,
+    shirt: ghostColor(p.shirt),
+    shirtDark: ghostColor(p.shirtDark),
+    pants: ghostColor(p.pants),
+    skin: ghostColor(p.skin),
+    hair: ghostColor(p.hair),
+    accColor: ghostColor(p.accColor),
+  };
+}
+
 function persona(id: string) {
   const h = hash(id);
   const hue = h % 360;
@@ -82,10 +109,11 @@ const DOOR_W = 18;
 // (one per skill it uses) and carries it back to stack on its desk.
 const SHELF_REACH = 16; // world x (from room left) a dev stands at to fetch a book
 const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
-// Paper shredder on the right of the room: when a session is /cleared the dev
-// carries its stack of context papers here, feeds them in, then walks back.
-const SHRED_REACH = 168; // world x (from room left) a dev stands at to shred
-const SHRED_FEED = 1.6;  // seconds spent feeding the stack into the shredder
+// Paper shredder in the front-left corner, left of the bookshelf: when a session
+// is /cleared the dev carries its stack of context papers here, feeds them in,
+// then walks back. The bookshelf's near end is pulled back to make room for it.
+const SHRED_REACH = 18; // world x (from room left) a dev stands at to shred (just right of the bin)
+const SHRED_FEED = 1.6; // seconds spent feeding the stack into the shredder
 // Room depth: the interior is a shallow one-point-perspective box. The far wall
 // is inset by DEPTH_X on each side and its floor line sits DEPTH_Y above the
 // near floor; the floor, ceiling and side walls are drawn as trapezoids between
@@ -2072,7 +2100,19 @@ class PixelCrew {
       const rowToons = seated.filter((t) => displayRow(t) === row);
       for (const tn of this.leaving) if (displayRow(tn) === row) rowToons.push(tn);
       rowToons.sort((a, b) => a.x - b.x);
-      for (const tn of rowToons) this.drawToon(ctx, tn);
+      for (const tn of rowToons) {
+        // a session running OUTSIDE DevTower is rendered ghosted — grayed and
+        // semi-transparent — so it reads as "not one of ours" at a glance
+        // outside-DevTower sessions render translucent (here) and desaturated
+        // (palette swap in drawToon) so they read as "not one of ours"
+        const ghost = tn.agent.external;
+        if (ghost) {
+          ctx.save();
+          ctx.globalAlpha *= 0.62;
+        }
+        this.drawToon(ctx, tn);
+        if (ghost) ctx.restore();
+      }
       for (const r of this.rooms.values()) this.drawDesks(ctx, r, row);
     }
     // particles
@@ -2155,8 +2195,21 @@ class PixelCrew {
       const box = { x0: s.x - nw / 2 - 2, x1: s.x + nw / 2 + 2, y0: s.y - 18, y1: s.y - 6 };
       if (sel || !nameOverlaps(box)) {
         claimed.push(box);
-        ctx.fillStyle = sel ? "#ffb13d" : "rgba(230,238,240,0.88)";
+        const ext = tn.agent.external;
+        ctx.fillStyle = sel ? "#ffb13d" : ext ? "rgba(150,162,170,0.7)" : "rgba(230,238,240,0.88)";
         ctx.fillText(tn.agent.name, s.x, s.y - 8);
+        if (ext && !sel) {
+          // dashed underline: the "running outside DevTower" marker
+          ctx.save();
+          ctx.strokeStyle = "rgba(160,172,180,0.8)";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2.5, 2]);
+          ctx.beginPath();
+          ctx.moveTo(s.x - nw / 2, s.y - 5);
+          ctx.lineTo(s.x + nw / 2, s.y - 5);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
       const glyph = st === "waiting" ? "?" : st === "complete" ? "✓" : st === "error" ? "✗" : "";
       if (glyph) {
@@ -3119,7 +3172,9 @@ class PixelCrew {
     // floor. The cabinet stands PROUD of the wall: `front` offsets a wall point
     // toward the room (and slightly down) to fake depth, the offset shrinking
     // toward the back wall so it reads in perspective.
-    const t0 = 0.05, t1 = 0.95, fTop = 0.68, fBot = 0.99;
+    // t0 starts back from the near opening so the front-left corner is clear for
+    // the paper shredder (see drawShredder); the cabinet is a touch less wide.
+    const t0 = 0.4, t1 = 0.95, fTop = 0.68, fBot = 0.99;
     const front = (t: number, f: number) => {
       const p = onWall(t, f);
       const d = 6 * (1 - t * 0.5); // protrusion: bigger up front, smaller at the back
@@ -3153,6 +3208,69 @@ class PixelCrew {
     shelfRow(0.835, 0.92, 7);   // lower shelf
     // plinth/base rail under the books
     quad(front(t0, 0.93), front(t1, 0.93), front(t1, fBot), front(t0, fBot), "#1a1108");
+    ctx.restore();
+  }
+
+  /** A floor-standing paper shredder right of the desks. A dev walks here when
+   *  its session is /cleared, feeds its stack of context papers in, then returns
+   *  to its seat (see the shred state machine in tick + the carried stack in
+   *  drawToon). It blinks red and spits confetti strips while a dev is feeding. */
+  private drawShredder(ctx: CanvasRenderingContext2D, r: Room) {
+    const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
+    if (eFurn <= 0) return;
+    const base = r.baseY;
+    const sx = r.x0 + 3; // bin tucked into the front-left corner, left of where the dev stands
+    // remaining feed fraction if a dev is shredding into THIS room's bin (0 = idle)
+    let feed = 0;
+    for (const tn of this.toons.values()) {
+      if (tn.shred?.phase === "feed" && this.rooms.get(tn.bkey ?? "") === r) {
+        feed = Math.max(feed, clamp(tn.shred.t / SHRED_FEED, 0, 1));
+      }
+    }
+    ctx.save();
+    ctx.globalAlpha = eFurn;
+    ctx.fillStyle = "rgba(0,0,0,0.3)"; // contact shadow
+    ctx.fillRect(sx - 1.5, base - 0.6, 12, 1.6);
+    // bin body
+    ctx.fillStyle = "#23282e";
+    ctx.fillRect(sx, base - 15, 9, 15);
+    ctx.fillStyle = "#2e343b"; // lit left face
+    ctx.fillRect(sx, base - 15, 2, 15);
+    ctx.fillStyle = "#171b20"; // right shadow
+    ctx.fillRect(sx + 7, base - 15, 2, 15);
+    // window onto the collected shreds
+    ctx.fillStyle = "#3a4148";
+    ctx.fillRect(sx + 2, base - 11, 5, 8);
+    for (let i = 0; i < 4; i++) {
+      ctx.fillStyle = i % 2 ? "#cfc9b6" : "#b4ae9b";
+      ctx.fillRect(sx + 2.4 + i * 1.1, base - 10.5, 0.7, 7);
+    }
+    // shredder head (motor unit) on top of the bin, wider than the body
+    ctx.fillStyle = "#3a4046";
+    ctx.fillRect(sx - 1, base - 19, 11, 4);
+    ctx.fillStyle = "#4a5158";
+    ctx.fillRect(sx - 1, base - 19, 11, 1); // top highlight
+    ctx.fillStyle = "#0f1318"; // intake slot
+    ctx.fillRect(sx + 0.5, base - 16.4, 8, 1);
+    // status LED: steady green idle, blinking red while shredding
+    const blink = this.frame % 6 < 3;
+    ctx.fillStyle = feed > 0 ? (blink ? "#ff5a52" : "#5a2522") : "#3ee089";
+    ctx.fillRect(sx + 8, base - 18.5, 1.2, 1.2);
+    if (feed > 0) {
+      // a sheet jutting from the slot, shrinking as it feeds through
+      const sheetH = 4 + feed * 5;
+      ctx.fillStyle = "#e9e3d2";
+      ctx.fillRect(sx + 2.5, base - 16.4 - sheetH, 4, sheetH);
+      ctx.fillStyle = "#cfc9b6";
+      ctx.fillRect(sx + 2.5, base - 16.4 - sheetH, 4, 0.6);
+      // confetti strips spilling out below the head into the bin window
+      for (let i = 0; i < 6; i++) {
+        const fx = sx + 1.8 + i * 1.05;
+        const fy = base - 14.5 + ((this.frame * 0.9 + i * 4) % 10);
+        ctx.fillStyle = i % 2 ? "#e9e3d2" : "#d8d2bf";
+        ctx.fillRect(fx, fy, 0.7, 1.6);
+      }
+    }
     ctx.restore();
   }
 
@@ -3246,7 +3364,7 @@ class PixelCrew {
   }
 
   private drawToon(ctx: CanvasRenderingContext2D, tn: Toon) {
-    const p = tn.p;
+    const p = tn.agent.external ? ghostPersona(tn.p) : tn.p;
     const st = tn.agent.state;
     const walking = Math.abs(tn.targetX - tn.x) > 1;
     const f = this.frame + Math.floor(tn.ph * 10);
@@ -3435,6 +3553,23 @@ class PixelCrew {
         ctx.fillRect(bx, by - 1.4, 4, 1.4);
         ctx.fillStyle = `hsl(${hue} 45% 56%)`;
         ctx.fillRect(bx, by - 1.4, 4, 0.4);
+      }
+    }
+
+    // the stack of context papers a dev carries to the shredder on /clear. It
+    // leaves the desk with a full stack ("out") that thins as it feeds it in
+    // ("feed"); on the way back ("back") its arms are empty.
+    if (tn.shred && tn.shred.phase !== "back") {
+      const sheets = tn.shred.phase === "feed"
+        ? Math.ceil(clamp(tn.shred.t / SHRED_FEED, 0, 1) * 4)
+        : 4;
+      const bx = x - 4.4; // stack held to the dev's left, toward the shredder bin
+      for (let k = 0; k < sheets; k++) {
+        const by = ty + 3 - k * 1.2;
+        ctx.fillStyle = "#e9e3d2"; // white paper
+        ctx.fillRect(bx, by - 1.2, 4, 1.2);
+        ctx.fillStyle = "#cfc9b6"; // edge shadow line
+        ctx.fillRect(bx, by - 0.3, 4, 0.3);
       }
     }
   }
