@@ -2,7 +2,7 @@
 
 # DevTower
 
-A pixel office tower (VS Code extension) for your coding agents. Each repo is a cutaway **room** in a 2D campus grid - build up, dig down, expand sideways. Live **Claude Code CLI sessions are auto-discovered** from `~/.claude/projects` and appear as pixel devs at their desks. Reserve empty cells for directories and spawn new agents into **git worktrees** or the project dir. Diffs open in the **native** VS Code diff editor; each agent gets a **native** integrated terminal rooted in its worktree; pull requests show on an in-scene **PR board** and you can dispatch a reviewer agent straight from a PR row.
+A pixel office tower (VS Code extension) for your coding agents. Each repo is a cutaway **room** whose worktrees stack into a tower, floor by floor. Live **Claude Code CLI sessions are auto-discovered** from `~/.claude/projects` and appear as pixel devs at their desks. Reserve empty cells for directories and spawn new agents into **git worktrees** or the project dir. Diffs open in the **native** VS Code diff editor; each agent gets a **native** integrated terminal rooted in its worktree; pull requests show on an in-scene **PR board** and you can dispatch a reviewer agent straight from a PR row.
 
 ![Inside a room: the cutaway board shows the worktree's branch, unstaged / staged / commit counts (with +/- line stats and a synced indicator), and the PR cell - #142 with its checks and review status.](media/room.png)
 
@@ -23,7 +23,7 @@ Ships with mock agents (`devtower.useMockData`) so you can try the whole loop wi
 
 ## What's in the tower
 
-- **The campus** (Canvas2D pixel scene): each repo is a cutaway office room - tinted walls, dusk window, whiteboard, desks/monitors, plant and hash-picked decor. Rooms share walls into one contiguous building; **ghost slots** at every empty neighbour cell let you build up, dig down, or expand left/right.
+- **The campus** (Canvas2D pixel scene): each repo is a cutaway office room - tinted walls, dusk window, whiteboard, desks/monitors, plant and hash-picked decor. Rooms stack into a tower, sharing floors and ceilings; a **ghost slot** on top of each tower lets you stack the next worktree, and a reserve slot lets you add another repo as its own tower.
 - **Pixel devs**: one sprite per agent with a deterministic persona (hair/shirt/cap/glasses from the id hash). State drives the animation - active types, waiting raises a hand, complete cheers, error slumps, idle breathes. Two or more active agents in a room huddle at the whiteboard.
 - **Arrivals/departures**: a joining agent walks in through the door (with a room construction animation on a new repo); a leaver walks to the edge, climbs a fire-escape ladder down, and an emptied room deconstructs after they exit.
 - **Click a dev** to select it (amber ring) and open the agent panel. Click a room to zoom to its crew, click away for the overview; scroll to zoom, click-drag to pan.

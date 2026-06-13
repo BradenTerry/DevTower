@@ -1,9 +1,9 @@
-/* DevTower Crew — pixel office tower / mine renderer (Canvas2D, no WebGL).
+/* DevTower Crew — pixel office tower renderer (Canvas2D, no WebGL).
  *
- * Mining-game layout: rooms stack vertically as floors. Above ground it's an
- * office tower; reserve floors below ground and you're digging a basement.
- * - Ghost slots at the top and bottom: click → pick a directory to reserve
- *   that floor for a repo/project.
+ * Tower layout: rooms stack vertically as floors and the building grows upward.
+ * Each repo is its own tower; reserving another repo stands a new tower nearby.
+ * - Ghost slots on top of each tower (stack the next worktree) and a reserve
+ *   slot past the last one: click → pick a directory to reserve for a repo.
  * - Bound rooms show a "+ DEV" button: spawn an agent there (the extension
  *   asks worktree vs project dir).
  *

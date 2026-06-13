@@ -16,7 +16,7 @@ Running several Claude Code sessions across worktrees gets hard to track in a fl
 
 ## What you get
 
-- **A living campus.** Each repo is an office room; rooms share walls into one contiguous building. Build up, dig down, or expand sideways into ghost slots. New repos animate themselves into existence.
+- **A living campus.** Each repo is an office room; rooms share walls into one contiguous building. Click a ghost slot to stack the next worktree on top, or reserve another repo as its own tower. New repos animate themselves into existence.
 - **Pixel devs per agent.** One sprite per session with a deterministic look. Animation follows state: active types, **waiting raises a hand**, complete cheers, error slumps, idle breathes. Crowded rooms huddle at the whiteboard.
 - **Auto-discovered Claude sessions.** Live Claude Code CLI sessions are found from `~/.claude/projects` and placed in the tower automatically - no setup. A phantom-session filter keeps only sessions whose process is actually running.
 - **Spawn a dev into a worktree.** Reserve an empty cell, pick a folder, hit **+ DEV**: DevTower creates a git worktree and a fresh branch (or runs in the project dir) and launches Claude in a native terminal rooted there.

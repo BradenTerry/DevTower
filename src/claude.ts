@@ -41,6 +41,14 @@ export class ClaudeDiscovery {
   // session id → the panel-created placeholder agent it was adopted into, so a
   // launched Claude session flows into that agent rather than spawning a dup.
   private adopted = new Map<string, string>();
+  // placeholder agent id → when DevTower launched its terminal. A placeholder
+  // may only adopt a session whose transcript is no older than this — otherwise
+  // a STALE prior transcript in the same worktree (you ran claude there earlier)
+  // gets bound to the placeholder, then churns out the moment the real launched
+  // session writes its own transcript and steals the live-process slot.
+  private launchPending = new Map<string, number>();
+  // slack for clock skew / mtime granularity when comparing launch vs transcript
+  private static readonly ADOPT_SLACK_MS = 10_000;
 
   constructor(private store: DevTowerStore) {}
 
@@ -51,6 +59,14 @@ export class ClaudeDiscovery {
   expectCd(agentId: string, dir: string, room?: string): void {
     this.cdPending.set(agentId, { dir, room, at: Date.now() });
     void this.refresh();
+  }
+
+  /** Record that DevTower just launched a Claude session into the placeholder
+   *  `agentId`. Only a transcript written at/after this moment may be adopted
+   *  into it, so a pre-existing transcript in the same worktree can't be
+   *  mis-bound and then churned out when the real launched session appears. */
+  expectSession(agentId: string): void {
+    this.launchPending.set(agentId, Date.now());
   }
 
   start(intervalMs = 8_000): void {
@@ -185,9 +201,15 @@ export class ClaudeDiscovery {
       // can't hijack the placeholder (which would churn it out + back in)
       if (!targetId && !this.mine.has(f.id)) {
         const cand = placeholderByWorktree.get(f.launchCwd) ?? placeholderByWorktree.get(f.cwd);
-        if (cand && !claimedPlaceholders.has(cand)) {
+        // a transcript older than the placeholder's launch is a stale prior
+        // session, NOT the one we just started — refuse it so the placeholder
+        // waits for its real session instead of binding to the old one
+        const launchedAt = cand ? this.launchPending.get(cand) : undefined;
+        const fresh = launchedAt === undefined || f.mtime >= launchedAt - ClaudeDiscovery.ADOPT_SLACK_MS;
+        if (cand && !claimedPlaceholders.has(cand) && fresh) {
           targetId = cand;
           this.adopted.set(f.id, cand);
+          this.launchPending.delete(cand);
         }
       }
       const id = targetId ?? f.id;
@@ -256,6 +278,12 @@ export class ClaudeDiscovery {
     }
     // drop pending /cd for agents that are no longer present
     for (const id of [...this.cdPending.keys()]) if (!present.has(id)) this.cdPending.delete(id);
+    // drop launch waits once the placeholder is gone (removed) or has adopted a
+    // session (present with a transcript → no longer an unbound placeholder)
+    for (const id of [...this.launchPending.keys()]) {
+      const a = this.store.get(id);
+      if (!a || a.transcriptPath) this.launchPending.delete(id);
+    }
     // forget adoptions whose session has gone away
     for (const [sid] of [...this.adopted]) if (!seenSessions.has(sid)) this.adopted.delete(sid);
     // sessions that aged out or were deleted leave the tower

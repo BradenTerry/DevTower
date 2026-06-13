@@ -7,6 +7,25 @@ are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-13
+
+### Fixed
+
+- Adding a dev and immediately prompting it no longer churns the agent out and back in as a
+  separate session. Session adoption now waits for the freshly launched Claude session instead
+  of binding to a stale transcript already sitting in the same worktree.
+
+### Changed
+
+- Reserved rooms and worktree assignments persist **globally**, so your campus is the same
+  regardless of which folder VS Code is opened at (migrated from per-workspace storage; existing
+  reservations carry over on first read).
+
+### Removed
+
+- Dropped the unimplemented "dig down / basement" and "expand sideways" language from the docs
+  and UI copy. Worktrees stack upward into a tower; reserving another repo adds its own tower.
+
 ## [0.1.0] - 2026-06-13
 
 First public preview.
@@ -14,8 +33,8 @@ First public preview.
 ### Added
 
 - **Pixel office campus** (Canvas2D): each repo is a cutaway room; rooms share walls into one
-  contiguous building with ghost slots to build up, dig down, and expand sideways. Room
-  construction and deconstruction animations on join/leave.
+  contiguous tower; worktrees stack upward into floors and reserving another repo adds its own
+  tower. Room construction and deconstruction animations on join/leave.
 - **Pixel devs per agent** with a deterministic persona and state-driven animation (active,
   waiting, complete, error, idle), whiteboard huddles, and arrival/departure walk sequences.
 - **Live Claude Code session discovery** from `~/.claude/projects`, with a phantom-session filter

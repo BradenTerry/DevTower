@@ -21,7 +21,7 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | State-driven animation (sit-and-type, raise hand, cheer, slump, idle) | ✅ | Typing taps, monitor flicker, confetti, smoke, coffee sips |
 | Repo grouping: office rooms; join = walk in via door, leave = walk out | ✅ | Construction animation on repo add |
 | Whiteboard collaboration (2+ active agents in a room huddle) | ✅ | Lead draws, others gesture; scribbles accumulate then wipe |
-| Mining-game building: build up, dig down, AND expand left/right | ✅ | 2D grid; rooms share walls (door-to-door, one contiguous building); ghost slots at every empty neighbor cell; ragged-skyline roofs |
+| Tower building: worktrees stack upward into floors | ✅ | rooms share floors/ceilings (one contiguous tower); a ghost slot on top stacks the next worktree, a reserve slot adds another repo as its own tower; ragged-skyline roofs |
 | Remove a reserved room (✕ button + modal confirm) | ✅ | Reservation only — directory and agents untouched |
 | Reserve a cell: click a ghost slot → native folder picker binds a directory | ✅ | Persisted per-workspace (`fleet.reservedRooms`, with column); vacant rooms sit dark |
 | "+ DEV" button on rooms: spawn an agent there | ✅ | QuickPick: create git worktree (`git worktree add` + `fleet/<name>-<n>` branch) or run in the project base directory; then launches `fleet.claudeCommand` in its terminal |

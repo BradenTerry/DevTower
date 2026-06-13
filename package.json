@@ -1,7 +1,7 @@
 {
   "name": "DevTower",
   "displayName": "DevTower",
-  "description": "A pixel office tower for your coding agents - watch Claude sessions work, dig new floors, spawn devs into worktrees, review diffs and PRs.",
+  "description": "A pixel office tower for your coding agents - watch Claude sessions work, stack new floors, spawn devs into worktrees, review diffs and PRs.",
   "version": "0.1.0",
   "preview": true,
   "publisher": "BradenTerry",

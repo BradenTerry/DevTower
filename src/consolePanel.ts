@@ -349,15 +349,21 @@ export class ConsolePanel {
     });
   }
 
-  /* ============ ROOMS (mining-game floors) ============ */
+  /* ============ ROOMS (tower floors) ============ */
 
   /** Load reservations, healing legacy/corrupt entries (empty names, missing
    *  cols, dropped paths) so every room has a unique, non-empty key. */
   private getRooms(): ReservedRoom[] {
-    const raw = this.context.workspaceState.get<ReservedRoom[]>(
+    // Stored GLOBALLY (not per-workspace) so your campus is the same no matter
+    // which folder VS Code is opened at. Falls back through the older
+    // per-workspace keys so existing reservations migrate in on first read.
+    const raw = this.context.globalState.get<ReservedRoom[]>(
       "devtower.reservedRooms",
-      // fall back to the pre-rename key so existing reservations survive the upgrade
-      this.context.workspaceState.get<ReservedRoom[]>("fleet.reservedRooms", [])
+      this.context.workspaceState.get<ReservedRoom[]>(
+        "devtower.reservedRooms",
+        // pre-rename key, kept so the earliest reservations still survive
+        this.context.workspaceState.get<ReservedRoom[]>("fleet.reservedRooms", [])
+      )
     );
     const seen = new Set<string>();
     const rooms: ReservedRoom[] = [];
@@ -378,21 +384,25 @@ export class ConsolePanel {
   }
 
   private async saveRooms(rooms: ReservedRoom[]): Promise<void> {
-    await this.context.workspaceState.update("devtower.reservedRooms", rooms);
+    await this.context.globalState.update("devtower.reservedRooms", rooms);
   }
 
   /** Worktree rooms the user has explicitly assigned to an island. Worktrees do
    *  NOT auto-appear from git — only these (and rooms an agent is live in) show. */
   private getWorktreeRooms(): { island: string; path: string; branch: string; base?: string }[] {
-    const raw = this.context.workspaceState.get<{ island: string; path: string; branch: string; base?: string }[]>(
+    // Global (see getRooms) with a one-read fallback to the old per-workspace key.
+    const raw = this.context.globalState.get<{ island: string; path: string; branch: string; base?: string }[]>(
       "devtower.worktreeRooms",
-      []
+      this.context.workspaceState.get<{ island: string; path: string; branch: string; base?: string }[]>(
+        "devtower.worktreeRooms",
+        []
+      )
     );
     return (raw || []).filter((w) => w && typeof w.path === "string" && w.path && typeof w.island === "string");
   }
 
   private async saveWorktreeRooms(rows: { island: string; path: string; branch: string; base?: string }[]): Promise<void> {
-    await this.context.workspaceState.update("devtower.worktreeRooms", rows);
+    await this.context.globalState.update("devtower.worktreeRooms", rows);
   }
 
   /** Click on an empty grid slot → pick a directory → reserve the room. */
@@ -598,6 +608,9 @@ export class ConsolePanel {
     const cfg = vscode.workspace.getConfiguration("devtower");
     const launch = cfg.get<string>("launchCommand", "").trim();
     const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim();
+    // mark the launch so discovery only adopts the session we start here, not a
+    // stale prior transcript already sitting in this worktree
+    this.discovery?.expectSession(id);
     if (!launch && claudeCmd) this.terminals.send(id, claudeCmd);
     else this.terminals.reveal(id);
   }
