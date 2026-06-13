@@ -1710,8 +1710,8 @@
       ctx.fillText(bt, b.x + pad, b.y + 7);
       if (suffix) {
         const branchW = ctx.measureText(bt).width;
-        ctx.font = "4px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = "rgba(150,170,190,0.6)";
+        ctx.font = "bold 4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(205,220,232,0.95)";
         ctx.fillText(suffix, b.x + pad + branchW + 3, b.y + 7);
       }
       ctx.fillStyle = glow > 0.02 ? `rgba(62,224,137,${0.35 + glow * 0.65})` : "rgba(90,100,108,0.5)";
