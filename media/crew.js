@@ -205,6 +205,9 @@
       });
       __publicField(this, "onSyncCb", () => {
       });
+      /** room key → time a sync was requested, so the board change it causes flashes
+       *  without firing a beam (the agent didn't do that work). */
+      __publicField(this, "syncSuppress", /* @__PURE__ */ new Map());
       __publicField(this, "onCdCb", () => {
       });
       __publicField(this, "resizeT");
@@ -558,6 +561,17 @@
         applyKey: snap ? r.name : void 0,
         applySnap: snap
       });
+    }
+    /** True while a just-requested sync's resulting board change should flash but
+     *  not beam (15s window covers the pull-then-push sequence). */
+    syncSuppressed(room) {
+      const t = this.syncSuppress.get(room);
+      if (t === void 0)
+        return false;
+      if (Date.now() - t < 15e3)
+        return true;
+      this.syncSuppress.delete(room);
+      return false;
     }
     /** A beam reached the screen: show the snapshot it carried, and flash only the
      *  column(s) that differ from what was on the TV (so it's clear what moved). */
@@ -1088,6 +1102,7 @@
             delete r.numAnim[k];
         }
         const b = r.board;
+        const o = r.boardShown;
         const sig = boardSig(b);
         if (r.statSig === "") {
           r.statSig = sig;
@@ -1097,8 +1112,11 @@
         if (sig === r.statSig)
           continue;
         r.statSig = sig;
-        if (b && r.built > 0.6) {
+        const localChanged = !o || !b ? !!b : o.modified !== b.modified || o.staged !== b.staged || o.unstagedAdd !== b.unstagedAdd || o.unstagedDel !== b.unstagedDel || o.stagedAdd !== b.stagedAdd || o.stagedDel !== b.stagedDel || o.ahead !== b.ahead || o.committedAdd !== b.committedAdd || o.committedDel !== b.committedDel || o.commits.length !== b.commits.length || o.unpushed !== b.unpushed;
+        if (b && r.built > 0.6 && localChanged && !this.syncSuppressed(r.name)) {
           this.emitPacket(r, 0, b);
+        } else if (b) {
+          this.applyBoardSnapshot(r.name, b);
         } else {
           r.boardShown = b;
         }
@@ -1298,9 +1316,10 @@
     }
     onClick(e) {
       const hit = this.pick(e);
-      if (hit.syncRoom)
+      if (hit.syncRoom) {
+        this.syncSuppress.set(hit.syncRoom, Date.now());
         this.onSyncCb(hit.syncRoom);
-      else if (hit.removeWtBtn)
+      } else if (hit.removeWtBtn)
         this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
       else if (hit.removeBtn)
         this.onRemoveRoomCb(hit.removeBtn);

@@ -396,6 +396,9 @@ class PixelCrew {
   private onRemoveRoomCb: (room: string) => void = () => {};
   private onRemoveWorktreeCb: (worktree: string, island: string) => void = () => {};
   private onSyncCb: (room: string) => void = () => {};
+  /** room key → time a sync was requested, so the board change it causes flashes
+   *  without firing a beam (the agent didn't do that work). */
+  private syncSuppress = new Map<string, number>();
   private onCdCb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void =
     () => {};
 
@@ -736,6 +739,16 @@ class PixelCrew {
       ph: Math.random() * Math.PI * 2, // flicker/pulse phase
       applyKey: snap ? r.name : undefined, applySnap: snap,
     });
+  }
+
+  /** True while a just-requested sync's resulting board change should flash but
+   *  not beam (15s window covers the pull-then-push sequence). */
+  private syncSuppressed(room: string): boolean {
+    const t = this.syncSuppress.get(room);
+    if (t === undefined) return false;
+    if (Date.now() - t < 15000) return true;
+    this.syncSuppress.delete(room);
+    return false;
   }
 
   /** A beam reached the screen: show the snapshot it carried, and flash only the
@@ -1239,10 +1252,10 @@ class PixelCrew {
       this.layout(); // free the cells → ghost slots reappear
     }
 
-    // boards: any change (git churn, commits, PR/checks) fires ONE beam carrying
-    // a SNAPSHOT of the board taken right now; the TV updates to that snapshot
-    // when the beam lands (see the packet loop), so there's no race with newer
-    // polls and the screen shows exactly what each beam was sent for
+    // boards: a change the AGENT made locally (edits, staging, commits, push)
+    // fires a beam from its computer carrying a board SNAPSHOT; the TV updates
+    // to that snapshot when the beam lands. Changes it did NOT cause — a sync you
+    // triggered, or external PR/CI/remote updates — just flash the column, no beam
     for (const r of this.rooms.values()) {
       if (r.statPulse > 0) r.statPulse = Math.max(0, r.statPulse - dt * 1.4);
       const cp = r.cellPulse;
@@ -1256,14 +1269,26 @@ class PixelCrew {
         if (an.t >= 1) delete r.numAnim[k];
       }
       const b = r.board;
+      const o = r.boardShown;
       const sig = boardSig(b);
       if (r.statSig === "") { r.statSig = sig; r.boardShown = b; continue; } // first sync shows at once
       if (sig === r.statSig) continue;
       r.statSig = sig;
-      if (b && r.built > 0.6) {
-        this.emitPacket(r, 0, b); // beam carries this exact snapshot to the TV
+      // did the AGENT change local state (working tree / staged / local commits /
+      // unpushed)? "behind", base, PR and checks are external — they never beam.
+      const localChanged = !o || !b ? !!b : (
+        o.modified !== b.modified || o.staged !== b.staged ||
+        o.unstagedAdd !== b.unstagedAdd || o.unstagedDel !== b.unstagedDel ||
+        o.stagedAdd !== b.stagedAdd || o.stagedDel !== b.stagedDel ||
+        o.ahead !== b.ahead || o.committedAdd !== b.committedAdd || o.committedDel !== b.committedDel ||
+        o.commits.length !== b.commits.length || o.unpushed !== b.unpushed
+      );
+      if (b && r.built > 0.6 && localChanged && !this.syncSuppressed(r.name)) {
+        this.emitPacket(r, 0, b); // agent did the work → beam carries the snapshot
+      } else if (b) {
+        this.applyBoardSnapshot(r.name, b); // external / synced → flash the column, no beam
       } else {
-        r.boardShown = b; // unbuilt / board removed → apply immediately, no beam
+        r.boardShown = b; // board removed
       }
     }
     for (let i = this.packets.length - 1; i >= 0; i--) {
@@ -1476,7 +1501,7 @@ class PixelCrew {
 
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
-    if (hit.syncRoom) this.onSyncCb(hit.syncRoom);
+    if (hit.syncRoom) { this.syncSuppress.set(hit.syncRoom, Date.now()); this.onSyncCb(hit.syncRoom); }
     else if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
     else if (hit.removeBtn) this.onRemoveRoomCb(hit.removeBtn);
     else if (hit.addDev) this.onAddDevCb(hit.addDev.island, hit.addDev.key);
