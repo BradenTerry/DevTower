@@ -34,9 +34,17 @@ for (const sc of SCENARIOS) {
       const post = (m: any) => window.postMessage(m, "*");
       if (s.config) post({ type: "config", eco: !!s.config.eco });
       post({ type: "state", ...s.state });
-      if (s.prs) post({ type: "prs", crew: s.prs.crew, review: s.prs.review });
+      if (s.prs) post({ type: "prs", crew: s.prs.crew, review: s.prs.review, connected: s.connected });
       if (s.usage) post({ type: "usage", usage: s.usage });
     }, sc as any);
+
+    // optionally open the settings overlay seeded with mock capabilities
+    if ((sc as any).settings) {
+      await page.evaluate((st) => {
+        window.postMessage({ type: "settings", caps: st.caps, scopeHelp: st.scopeHelp }, "*");
+        window.postMessage({ type: "openSettings" }, "*");
+      }, (sc as any).settings);
+    }
 
     // let fonts load and the canvas paint a settled frame
     await page.evaluate(() => (document as any).fonts?.ready);
@@ -45,6 +53,17 @@ for (const sc of SCENARIOS) {
     await page.screenshot({ path: path.join(OUT, `${sc.name}.png`) });
     const hud = page.locator(".hud-top");
     if (await hud.count()) await hud.screenshot({ path: path.join(OUT, `${sc.name}-hud.png`) });
-    console.log(`wrote ${sc.name}.png + ${sc.name}-hud.png`);
+    const card = page.locator(".settings-card");
+    if (await card.count()) {
+      await card.screenshot({ path: path.join(OUT, `${sc.name}-card.png`) });
+      // also capture each left-rail tab
+      for (const tab of await page.locator(".s-tab").all()) {
+        const name = (await tab.getAttribute("data-tab")) || "tab";
+        await tab.click();
+        await page.waitForTimeout(150);
+        await card.screenshot({ path: path.join(OUT, `${sc.name}-${name}.png`) });
+      }
+    }
+    console.log(`wrote ${sc.name}.png`);
   });
 }
