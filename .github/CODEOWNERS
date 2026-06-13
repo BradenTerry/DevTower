@@ -1,0 +1,10 @@
+# Code owners for DevTower.
+# These owners are requested for review on any PR that touches matching paths,
+# and (with "Require review from Code Owners" branch protection) must approve
+# before merge. Order matters: the last matching pattern wins.
+
+# Default owner for everything in the repo.
+*       @BradenTerry
+
+# Release + CI plumbing.
+/.github/        @BradenTerry
