@@ -2154,7 +2154,9 @@
             }
             if (sync) {
               ctx.fillStyle = bh > 0 ? "#56c7ff" : "#3ee089";
-              ctx.fillText("\u27F3", sx + 0.5, sy);
+              ctx.font = "5.5px 'Martian Mono', monospace";
+              ctx.fillText("\u27F3", sx + 1, sy + 0.4);
+              ctx.font = "3.6px 'Martian Mono', monospace";
             }
           } else {
             ctx.fillStyle = "rgba(120,200,255,0.5)";

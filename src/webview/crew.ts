@@ -2354,8 +2354,11 @@ class PixelCrew {
           if (up > 0) { ctx.fillStyle = "#ffb13d"; ctx.fillText(`⇡${up}`, sx, sy); sx += ctx.measureText(`⇡${up}`).width + 2.5; }
           if (bh > 0) { ctx.fillStyle = "#56c7ff"; ctx.fillText(`⇣${bh}`, sx, sy); sx += ctx.measureText(`⇣${bh}`).width + 2.5; }
           if (sync) {
+            // a clear, tappable sync glyph — sized to match the counts beside it
             ctx.fillStyle = bh > 0 ? "#56c7ff" : "#3ee089";
-            ctx.fillText("⟳", sx + 0.5, sy);
+            ctx.font = "5.5px 'Martian Mono', monospace";
+            ctx.fillText("⟳", sx + 1, sy + 0.4);
+            ctx.font = "3.6px 'Martian Mono', monospace";
           }
         } else {
           ctx.fillStyle = "rgba(120,200,255,0.5)";
