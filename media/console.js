@@ -292,24 +292,22 @@
   }
 
   /* ---------- efficiency mode ---------- */
-  let eco = false, ecoAuto = false;
-  function setEco(on, auto) {
-    eco = on;
-    ecoAuto = !!auto;
-    if (window.DevTowerCrew) window.DevTowerCrew.setEco(on);
-    $("#ecobtn").classList.toggle("on", on);
-    $("#ecobtn").title = on
-      ? `Efficiency mode on${ecoAuto ? " (auto: on battery)" : ""} — click to disable`
-      : "Efficiency mode (auto-on when on battery)";
+  // defaults off; the saved setting arrives via the "config" message, and each
+  // click persists the new choice back to settings
+  let eco = false;
+  function applyEco(on) {
+    eco = !!on;
+    if (window.DevTowerCrew) window.DevTowerCrew.setEco(eco);
+    $("#ecobtn").classList.toggle("on", eco);
+    $("#ecobtn").title = eco
+      ? "Efficiency mode on — click to disable"
+      : "Efficiency mode off — click to reduce animation/CPU";
   }
-  $("#ecobtn").onclick = () => setEco(!eco, false);
-  if (navigator.getBattery) {
-    navigator.getBattery().then((b) => {
-      const sync = () => { if (!eco || ecoAuto) setEco(!b.charging, true); };
-      sync();
-      b.addEventListener("chargingchange", sync);
-    }).catch(() => {});
-  }
+  applyEco(false);
+  $("#ecobtn").onclick = () => {
+    applyEco(!eco);
+    vscode.postMessage({ type: "setEco", on: eco });
+  };
 
   /* ---------- global wiring ---------- */
   $("#prbtn").onclick = () => {
@@ -354,6 +352,8 @@
       }
     } else if (m.type === "usage") {
       renderUsage(m.usage);
+    } else if (m.type === "config") {
+      applyEco(!!m.eco); // saved efficiency-mode preference (default off)
     }
   });
 

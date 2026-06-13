@@ -4,7 +4,7 @@ import { TerminalManager } from "./terminals";
 import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
-import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary } from "./git";
+import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
 import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
 import * as fs from "fs";
@@ -41,6 +41,9 @@ interface BoardData {
   /** Set when the room's directory no longer exists on disk (a worktree removed
    *  out from under us). The board renders a distinct "missing" state. */
   missing?: boolean;
+  /** False until the first GitHub PR poll completes, so the board can show a
+   *  spinner instead of an empty "no PR" placeholder on initial load. */
+  prReady: boolean;
   pr?: {
     number: number;
     title: string;
@@ -81,6 +84,10 @@ export class ConsolePanel {
   private branchByPath = new Map<string, string>();
   private statsTimer?: ReturnType<typeof setInterval>;
   private lastWtSignature = "";
+  /** fs.watch handles on each tracked repo's .git dir, so staging/committing is
+   *  reflected at once instead of waiting for the poll. Keyed by repo top-level. */
+  private gitWatchers = new Map<string, fs.FSWatcher>();
+  private gitDebounce?: ReturnType<typeof setTimeout>;
 
   static createOrShow(
     context: vscode.ExtensionContext,
@@ -124,10 +131,49 @@ export class ConsolePanel {
     this.prs.onChange(() => void this.refreshState(), null, this.disposables); // PR → board column
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.startUsage();
-    // poll each worktree's git stats so the back-wall boards stay live
+    // a saved file is a working-tree (unstaged) change → refresh promptly
+    vscode.workspace.onDidSaveTextDocument(() => this.onGitChange(), null, this.disposables);
+    // poll each worktree's git stats as a fallback (the .git watchers below catch
+    // stage/commit/push instantly; the poll covers edits made outside VS Code)
     this.statsTimer = setInterval(() => {
       if (this.panel.visible) void this.refreshState();
     }, 6_000);
+  }
+
+  /** Coalesce a flurry of git/file events into a single prompt refresh of the
+   *  board stats (unstaged/staged/commits) and the matched PR. */
+  private onGitChange(): void {
+    if (this.gitDebounce) clearTimeout(this.gitDebounce);
+    this.gitDebounce = setTimeout(() => {
+      void this.refreshState();
+      void this.prs.refresh(); // a commit/push can change the matched PR
+    }, 300);
+  }
+
+  /** Watch each tracked repo's .git directory so manual stage/commit/push (or any
+   *  external git op) updates the boards immediately. Re-synced each refresh as
+   *  rooms/worktrees come and go; watchers for vanished repos are dropped. */
+  private async syncGitWatchers(repoDirs: Set<string>): Promise<void> {
+    for (const [dir, w] of this.gitWatchers) {
+      if (!repoDirs.has(dir)) { w.close(); this.gitWatchers.delete(dir); }
+    }
+    for (const dir of repoDirs) {
+      if (this.gitWatchers.has(dir)) continue;
+      let gitDir: string;
+      try {
+        const out = (await runGit(dir, ["rev-parse", "--git-dir"])).trim();
+        gitDir = path.isAbsolute(out) ? out : path.join(dir, out);
+      } catch {
+        continue; // not a repo (yet)
+      }
+      try {
+        // recursive so index (staging), HEAD/refs (commits), FETCH_HEAD (push) all fire
+        const w = fs.watch(gitDir, { recursive: true }, () => this.onGitChange());
+        this.gitWatchers.set(dir, w);
+      } catch {
+        /* platform without recursive watch / dir gone — poll still covers it */
+      }
+    }
   }
 
   private async onMessage(m: any): Promise<void> {
@@ -136,7 +182,18 @@ export class ConsolePanel {
       case "ready":
         this.postState();
         this.postUsage();
+        // push the persisted efficiency-mode setting (defaults off)
+        this.panel.webview.postMessage({
+          type: "config",
+          eco: vscode.workspace.getConfiguration("devtower").get<boolean>("efficiencyMode", false),
+        });
         void this.refreshState(); // fill in each island's worktree rooms
+        break;
+      case "setEco":
+        // operator toggled efficiency mode → persist their choice
+        await vscode.workspace
+          .getConfiguration("devtower")
+          .update("efficiencyMode", !!m.on, vscode.ConfigurationTarget.Global);
         break;
       case "select":
         if (id) this.store.setSelected(id);
@@ -469,6 +526,10 @@ export class ConsolePanel {
     for (const a of this.store.list()) {
       if (a.worktree && a.worktree.trim()) pairs.set(a.worktree, resolveCwd(a) ?? a.worktree);
     }
+    // (re)watch each repo's .git so stage/commit/push reflects immediately
+    const repoDirs = new Set<string>();
+    for (const p of pairs.values()) if (fs.existsSync(p)) repoDirs.add(p);
+    void this.syncGitWatchers(repoDirs);
     const prs = [...this.prs.getCrew(), ...this.prs.getReview()];
     const boards = new Map<string, BoardData>();
     const branches = new Map<string, string>();
@@ -476,7 +537,8 @@ export class ConsolePanel {
     const emptyBoard = (over: Partial<BoardData>): BoardData => ({
       branch: "", modified: 0, staged: 0, modifiedFiles: [], stagedFiles: [],
       unstagedAdd: 0, unstagedDel: 0, stagedAdd: 0, stagedDel: 0,
-      committedAdd: 0, committedDel: 0, base: "", ahead: 0, commits: [], ...over,
+      committedAdd: 0, committedDel: 0, base: "", ahead: 0, commits: [],
+      prReady: this.prs.hasFetched(), ...over,
     });
     for (const [roomKey, p] of pairs) {
       // directory removed out from under us (e.g. a deleted worktree): a worktree
@@ -507,6 +569,7 @@ export class ConsolePanel {
           committedAdd: sum.committedAdd,
           committedDel: sum.committedDel,
           base: sum.base,
+          prReady: this.prs.hasFetched(),
           ahead: sum.ahead,
           commits: sum.commits,
           pr: pr
@@ -875,6 +938,9 @@ export class ConsolePanel {
     ConsolePanel.current = undefined;
     if (this.usageTimer) clearInterval(this.usageTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
+    if (this.gitDebounce) clearTimeout(this.gitDebounce);
+    for (const w of this.gitWatchers.values()) w.close();
+    this.gitWatchers.clear();
     this.usageWatcher?.close();
     this.panel.dispose();
     while (this.disposables.length) this.disposables.pop()?.dispose();

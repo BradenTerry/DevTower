@@ -750,11 +750,19 @@
           this.toons.delete(id);
         }
       }
-      if (this.focusAgentId && this.toons.has(this.focusAgentId))
-        this.focusAgent(this.focusAgentId, false);
-      else if (this.focusRoom_ && this.rooms.has(this.focusRoom_))
-        this.focusOn(this.focusRoom_, false);
-      else if (!this.hasFitted) {
+      if (this.focusAgentId) {
+        const tn = this.toons.get(this.focusAgentId);
+        if (tn) {
+          this.focus.x = tn.targetX;
+          this.focus.y = tn.base - ROOM_H / 2 + 6;
+        }
+      } else if (this.focusRoom_) {
+        const r = this.rooms.get(this.focusRoom_);
+        if (r) {
+          this.focus.x = r.x0 + ROOM_W / 2;
+          this.focus.y = r.baseY - ROOM_H / 2;
+        }
+      } else if (!this.hasFitted) {
         this.clearFocus(true, false);
         this.hasFitted = true;
       }
@@ -909,6 +917,8 @@
       for (const r of this.rooms.values()) {
         if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending)
           return false;
+        if (r.boardShown && r.boardShown.prReady === false)
+          return false;
         if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5)
           return false;
       }
@@ -995,9 +1005,7 @@
         if (sig !== r.statSig) {
           r.statSig = sig;
           if (b && r.built > 0.6) {
-            const burst = this.eco ? 1 : 5;
-            for (let i = 0; i < burst; i++)
-              this.emitPacket(r, i * 0.3);
+            this.emitPacket(r);
             r.swapPending = true;
             r.swapClock = 0;
           } else {
@@ -1011,6 +1019,8 @@
             r.statPulse = 1;
             r.swapPending = false;
           }
+        } else {
+          r.boardShown = r.board;
         }
       }
       for (let i = this.packets.length - 1; i >= 0; i--) {
@@ -1775,6 +1785,18 @@
     /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
      *  plus live git stats (files changed, lines +/-). It glows when the worktree's
      *  files change (see the packets fired from the desks in tick). */
+    /** A small spinning arc, e.g. while the first GitHub PR lookup is in flight. */
+    drawSpinner(ctx, cx, cy, rad, color) {
+      const a0 = this.frame * 0.35 % (Math.PI * 2);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 0.9;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad, a0, a0 + Math.PI * 1.4);
+      ctx.stroke();
+      ctx.restore();
+    }
     drawBoard(ctx, r, base) {
       const b = boardRect(r.x0, base);
       if (b.w < 20 || b.h < 14)
@@ -1904,16 +1926,26 @@
       ctx.font = "3px 'IBM Plex Mono', monospace";
       ctx.fillStyle = "rgba(170,182,190,0.7)";
       ctx.fillText("PR", px, py);
-      ctx.font = "bold 5.5px 'Martian Mono', monospace";
-      ctx.fillStyle = bd.pr ? "#b98cff" : "#ffb13d";
-      ctx.textAlign = "right";
-      ctx.fillText(bd.pr ? `#${bd.pr.number}` : "pending", innerR, py + 0.2);
-      ctx.textAlign = "left";
+      const loadingPr = !bd.pr && !bd.prReady;
+      if (bd.pr) {
+        ctx.font = "bold 5.5px 'Martian Mono', monospace";
+        ctx.fillStyle = "#b98cff";
+        ctx.textAlign = "right";
+        ctx.fillText(`#${bd.pr.number}`, innerR, py + 0.2);
+        ctx.textAlign = "left";
+      } else if (loadingPr) {
+        this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
+      }
       py += 6;
       if (!bd.pr) {
         ctx.font = "3.4px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = "rgba(185,140,255,0.8)";
-        ctx.fillText("no PR yet", px, py);
+        if (loadingPr) {
+          ctx.fillStyle = "rgba(185,140,255,0.7)";
+          ctx.fillText("checking\u2026", px, py);
+        } else {
+          ctx.fillStyle = "rgba(170,182,190,0.55)";
+          ctx.fillText("no open PR", px, py);
+        }
       } else {
         ctx.font = "3.4px 'IBM Plex Mono', monospace";
         const line = (text, color) => {
@@ -2028,7 +2060,7 @@
         }
         if (occupied) {
           const c = st === "error" ? "217,83,79" : "159,216,255";
-          const peak = st === "error" ? 0.3 : st === "active" && this.frame % 4 < 2 ? 0.4 : 0.24;
+          const peak = st === "error" ? 0.3 : st === "active" && this.frame % 8 < 4 ? 0.4 : 0.24;
           const gx = dx + 13, gy = db - 16;
           const grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, 7);
           grd.addColorStop(0, `rgba(${c},${peak})`);

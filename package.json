@@ -158,6 +158,11 @@
           "default": false,
           "description": "Also show recent Claude sessions that have no running process (as idle, resumable rooms). Off = only sessions actually running right now."
         },
+        "devtower.efficiencyMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reduce animation/particle work in the tower to save CPU. Toggle from the ⚡ button in the tower; your choice is saved here."
+        },
         "devtower.claudeCommand": {
           "type": "string",
           "default": "claude",

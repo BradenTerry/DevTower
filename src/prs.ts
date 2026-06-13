@@ -108,6 +108,8 @@ export class PrService {
   readonly onChange = this._onChange.event;
   private timer?: ReturnType<typeof setInterval>;
   private refreshing = false;
+  private fetched = false; // has at least one PR poll completed?
+  private lastSig = ""; // signature of the last emitted PR set, to skip no-op redraws
 
   constructor(private store: DevTowerStore) {}
 
@@ -116,6 +118,11 @@ export class PrService {
   }
   getReview(): PrInfo[] {
     return this.review;
+  }
+  /** True once the first PR fetch has finished (success or not), so the UI can
+   *  show a spinner only while the very first lookup is still in flight. */
+  hasFetched(): boolean {
+    return this.fetched;
   }
 
   start(intervalMs = 120_000, delayMs = 0): void {
@@ -131,10 +138,27 @@ export class PrService {
       const mock = vscode.workspace.getConfiguration("devtower").get<boolean>("useMockData", false);
       this.crew = crew.length || !mock ? crew : MOCK_CREW_PRS;
       this.review = review.length || !mock ? review : MOCK_REVIEW_PRS;
-      this._onChange.fire();
+      const firstFetch = !this.fetched;
+      this.fetched = true; // set before firing so refreshState reads it live
+      // only repaint when the PR data actually changed — otherwise every poll /
+      // git event flashes the PR panel even when nothing moved
+      const sig = this.signature();
+      if (firstFetch || sig !== this.lastSig) {
+        this.lastSig = sig;
+        this._onChange.fire();
+      }
     } finally {
       this.refreshing = false;
     }
+  }
+
+  /** Stable fingerprint of the display-relevant PR fields, sorted by id so a
+   *  reordered fetch doesn't read as a change. */
+  private signature(): string {
+    const key = (p: PrInfo) =>
+      [p.id, p.title, p.isDraft, p.checks, p.checksPass, p.checksTotal, p.review,
+        p.approvals, p.changesRequested, p.reviewersPending].join("¦");
+    return JSON.stringify([this.crew.map(key).sort(), this.review.map(key).sort()]);
   }
 
   private async fetchCrew(): Promise<PrInfo[]> {

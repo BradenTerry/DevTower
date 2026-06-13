@@ -58,7 +58,7 @@ button{ font-family:inherit; }
 .tstat{ display:flex; align-items:center; gap:7px; font-size:12px; color:var(--text-dim); padding:9px 14px; border-right:1px solid var(--edge-soft); }
 .tstat:last-of-type{ border-right:none; }
 .tstat b{ color:var(--text); font-weight:600; font-size:13px; }
-.tstat .lbl{ font-family:var(--label); font-size:7.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--text-faint); }
+.tstat .lbl{ font-family:var(--label); font-size:7.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--text); }
 .pip{ width:7px; height:7px; border-radius:50%; display:inline-block; }
 .pip.active{ background:var(--active); box-shadow:0 0 8px var(--active); }
 .pip.waiting{ background:var(--waiting); box-shadow:0 0 8px var(--waiting); }
