@@ -15,6 +15,8 @@ export interface PrInfo {
   checks: "pass" | "fail" | "pending" | "none";
   /** GitHub Actions / check-run counts behind the rollup */
   checksPass: number;
+  checksFailed: number;
+  checksRunning: number;
   checksTotal: number;
   /** review decision */
   review: "approved" | "changes" | "required" | "none";
@@ -53,15 +55,18 @@ function rollupChecks(rollup: any[]): PrInfo["checks"] {
   return pending ? "pending" : "pass";
 }
 
-/** Count passing vs total check runs behind the rollup (the GH Actions tally). */
-function checkCounts(rollup: any[]): { pass: number; total: number } {
-  if (!Array.isArray(rollup)) return { pass: 0, total: 0 };
-  let pass = 0;
+/** Break the rollup into passed / failed / still-running counts. A check run is
+ *  "running" when it hasn't concluded yet (queued / in_progress / pending). */
+function checkCounts(rollup: any[]): { pass: number; fail: number; running: number; total: number } {
+  if (!Array.isArray(rollup)) return { pass: 0, fail: 0, running: 0, total: 0 };
+  let pass = 0, fail = 0, running = 0;
   for (const c of rollup) {
-    const s = String(c.conclusion ?? c.state ?? "").toUpperCase();
-    if (CHECK_OK.includes(s)) pass++;
+    const concl = String(c.conclusion ?? c.state ?? "").toUpperCase();
+    if (CHECK_OK.includes(concl)) pass++;
+    else if (CHECK_BAD.includes(concl)) fail++;
+    else running++; // no conclusion yet → queued / in progress / pending
   }
-  return { pass, total: rollup.length };
+  return { pass, fail, running, total: rollup.length };
 }
 
 /** Tally the LATEST decision per reviewer (approve / changes), plus how many
@@ -156,8 +161,8 @@ export class PrService {
    *  reordered fetch doesn't read as a change. */
   private signature(): string {
     const key = (p: PrInfo) =>
-      [p.id, p.title, p.isDraft, p.checks, p.checksPass, p.checksTotal, p.review,
-        p.approvals, p.changesRequested, p.reviewersPending].join("¦");
+      [p.id, p.title, p.isDraft, p.checks, p.checksPass, p.checksFailed, p.checksRunning,
+        p.checksTotal, p.review, p.approvals, p.changesRequested, p.reviewersPending].join("¦");
     return JSON.stringify([this.crew.map(key).sort(), this.review.map(key).sort()]);
   }
 
@@ -189,6 +194,8 @@ export class PrService {
             isDraft: !!p.isDraft,
             checks: rollupChecks(p.statusCheckRollup),
             checksPass: cc.pass,
+            checksFailed: cc.fail,
+            checksRunning: cc.running,
             checksTotal: cc.total,
             review: mapDecision(p.reviewDecision),
             approvals: rc.approvals,
@@ -221,6 +228,8 @@ export class PrService {
         isDraft: !!p.isDraft,
         checks: "none" as const, // search API has no rollup; shown as neutral
         checksPass: 0,
+        checksFailed: 0,
+        checksRunning: 0,
         checksTotal: 0,
         review: "required" as const,
         approvals: 0,
@@ -247,7 +256,7 @@ const MOCK_CREW_PRS: PrInfo[] = [
     title: "Agent cockpit: tree + diff panel",
     repo: "atlas-web", branch: "feat/agent-cockpit",
     url: "https://github.com/acme/atlas-web/pull/142",
-    isDraft: false, checks: "pass", checksPass: 5, checksTotal: 5,
+    isDraft: false, checks: "pass", checksPass: 5, checksFailed: 0, checksRunning: 0, checksTotal: 5,
     review: "approved", approvals: 2, changesRequested: 0, reviewersPending: 0,
     author: "you", agentId: "a3",
   },
@@ -256,7 +265,7 @@ const MOCK_CREW_PRS: PrInfo[] = [
     title: "SSE streaming for /v1/messages",
     repo: "atlas-api", branch: "feat/streaming-sse",
     url: "https://github.com/acme/atlas-api/pull/318",
-    isDraft: true, checks: "pending", checksPass: 3, checksTotal: 5,
+    isDraft: true, checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5,
     review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2,
     author: "you", agentId: "a1",
   },
@@ -265,7 +274,7 @@ const MOCK_CREW_PRS: PrInfo[] = [
     title: "Fix refresh-token rotation race",
     repo: "atlas-api", branch: "fix/auth-refresh-race",
     url: "https://github.com/acme/atlas-api/pull/316",
-    isDraft: false, checks: "fail", checksPass: 4, checksTotal: 6,
+    isDraft: false, checks: "fail", checksPass: 4, checksFailed: 1, checksRunning: 1, checksTotal: 6,
     review: "changes", approvals: 1, changesRequested: 1, reviewersPending: 0,
     author: "you", agentId: "a2",
   },
@@ -277,7 +286,7 @@ const MOCK_REVIEW_PRS: PrInfo[] = [
     title: "Rate limiter cleanup + sliding window",
     repo: "acme/atlas-api",
     url: "https://github.com/acme/atlas-api/pull/311",
-    isDraft: false, checks: "none", checksPass: 0, checksTotal: 0,
+    isDraft: false, checks: "none", checksPass: 0, checksFailed: 0, checksRunning: 0, checksTotal: 0,
     review: "required", approvals: 0, changesRequested: 0, reviewersPending: 1,
     author: "jchen", updatedAt: "2026-06-10T18:22:00Z",
   },
@@ -286,7 +295,7 @@ const MOCK_REVIEW_PRS: PrInfo[] = [
     title: "Terraform: split staging state",
     repo: "acme/infra",
     url: "https://github.com/acme/infra/pull/87",
-    isDraft: false, checks: "none", checksPass: 0, checksTotal: 0,
+    isDraft: false, checks: "none", checksPass: 0, checksFailed: 0, checksRunning: 0, checksTotal: 0,
     review: "required", approvals: 0, changesRequested: 0, reviewersPending: 1,
     author: "mrivera", updatedAt: "2026-06-11T09:10:00Z",
   },

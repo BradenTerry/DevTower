@@ -120,6 +120,27 @@
     }
     return path[path.length - 1];
   }
+  function boardSig(b) {
+    if (!b)
+      return "none";
+    const pr = b.pr ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.title}` : "no";
+    return [
+      b.modified,
+      b.staged,
+      b.ahead,
+      b.unstagedAdd,
+      b.unstagedDel,
+      b.stagedAdd,
+      b.stagedDel,
+      b.committedAdd,
+      b.committedDel,
+      b.commits.length,
+      b.base,
+      b.prReady ? 1 : 0,
+      b.missing ? 1 : 0,
+      pr
+    ].join("|");
+  }
   var PixelCrew = class {
     constructor(container, canvas) {
       this.container = container;
@@ -181,6 +202,8 @@
       __publicField(this, "onRemoveRoomCb", () => {
       });
       __publicField(this, "onRemoveWorktreeCb", () => {
+      });
+      __publicField(this, "onSyncCb", () => {
       });
       __publicField(this, "onCdCb", () => {
       });
@@ -250,7 +273,7 @@
         }
         if (!this.drag.active) {
           const hit = this.pick(e);
-          this.container.style.cursor = hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn ? "pointer" : "default";
+          this.container.style.cursor = hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.syncRoom ? "pointer" : "default";
           return;
         }
         const dx = e.clientX - this.drag.lastX;
@@ -325,6 +348,9 @@
     }
     onRemoveWorktree(cb) {
       this.onRemoveWorktreeCb = cb;
+    }
+    onSync(cb) {
+      this.onSyncCb = cb;
     }
     onCd(cb) {
       this.onCdCb = cb;
@@ -511,7 +537,7 @@
     /** Fire a glowing light-ball from a working dev's computer along its network
      *  cable, through the port, and up into the screen — the "git changed" signal.
      *  Falls back to a room-centre → port route when no dev/seat is known. */
-    emitPacket(r, delay = 0) {
+    emitPacket(r, delay = 0, snap) {
       const plug = this.cablePlug(r);
       const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
       const seat = occ ? r.plan?.seats.get(occ.id) : void 0;
@@ -527,9 +553,54 @@
         t: -delay,
         path,
         color: Math.random() < 0.6 ? "#3ee089" : "#56c7ff",
-        ph: Math.random() * Math.PI * 2
+        ph: Math.random() * Math.PI * 2,
         // flicker/pulse phase
+        applyKey: snap ? r.name : void 0,
+        applySnap: snap
       });
+    }
+    /** A beam reached the screen: show the snapshot it carried, and flash only the
+     *  column(s) that differ from what was on the TV (so it's clear what moved). */
+    applyBoardSnapshot(key, snap) {
+      const r = key ? this.rooms.get(key) : void 0;
+      if (!r)
+        return;
+      const o = r.boardShown, cp = r.cellPulse;
+      if (o) {
+        const uChanged = o.modified !== snap.modified || o.unstagedAdd !== snap.unstagedAdd || o.unstagedDel !== snap.unstagedDel;
+        const sChanged = o.staged !== snap.staged || o.stagedAdd !== snap.stagedAdd || o.stagedDel !== snap.stagedDel;
+        const cChanged = o.ahead !== snap.ahead || o.committedAdd !== snap.committedAdd || o.committedDel !== snap.committedDel || o.commits.length !== snap.commits.length;
+        if (uChanged)
+          cp.unstaged = 1;
+        if (sChanged)
+          cp.staged = 1;
+        if (cChanged)
+          cp.commits = 1;
+        if (JSON.stringify(o.pr) !== JSON.stringify(snap.pr))
+          cp.pr = 1;
+        const pureMove = uChanged && sChanged && o.modified + o.staged === snap.modified + snap.staged && o.modified > snap.modified !== o.staged > snap.staged;
+        const num = (b) => ({
+          "u.count": `${b.modified} file${b.modified === 1 ? "" : "s"}`,
+          "u.add": `+${b.unstagedAdd}`,
+          "u.del": `-${b.unstagedDel}`,
+          "s.count": `${b.staged} file${b.staged === 1 ? "" : "s"}`,
+          "s.add": `+${b.stagedAdd}`,
+          "s.del": `-${b.stagedDel}`,
+          "c.count": `${b.ahead}`,
+          "c.add": `+${b.committedAdd}`,
+          "c.del": `-${b.committedDel}`
+        });
+        const oN = num(o), nN = num(snap);
+        for (const k of Object.keys(nN)) {
+          if (oN[k] === nN[k])
+            continue;
+          if (pureMove && (k[0] === "u" || k[0] === "s"))
+            continue;
+          r.numAnim[k] = { from: oN[k], to: nN[k], t: 0 };
+        }
+      }
+      r.boardShown = snap;
+      r.statPulse = 1;
     }
     /** Draw each occupied desk's network cable: computer → floor → a curved sweep
      *  to the central floor bus → up into the port below the screen. Static art;
@@ -637,7 +708,9 @@
             scribbles: [],
             decor: hash(key + "decor"),
             statSig: "",
-            statPulse: 0
+            statPulse: 0,
+            cellPulse: { unstaged: 0, staged: 0, commits: 0, pr: 0 },
+            numAnim: {}
           };
           this.rooms.set(key, room);
         }
@@ -917,6 +990,11 @@
       for (const r of this.rooms.values()) {
         if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending)
           return false;
+        const cp = r.cellPulse;
+        if (cp.unstaged > 0.02 || cp.staged > 0.02 || cp.commits > 0.02 || cp.pr > 0.02)
+          return false;
+        for (const _k in r.numAnim)
+          return false;
         if (r.boardShown && r.boardShown.prReady === false)
           return false;
         if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5)
@@ -991,36 +1069,38 @@
           this.rooms.delete(name);
         this.layout();
       }
-      const BEAM_TRAVEL = 1 / 0.55;
       for (const r of this.rooms.values()) {
         if (r.statPulse > 0)
           r.statPulse = Math.max(0, r.statPulse - dt * 1.4);
+        const cp = r.cellPulse;
+        if (cp.unstaged > 0)
+          cp.unstaged = Math.max(0, cp.unstaged - dt * 0.9);
+        if (cp.staged > 0)
+          cp.staged = Math.max(0, cp.staged - dt * 0.9);
+        if (cp.commits > 0)
+          cp.commits = Math.max(0, cp.commits - dt * 0.9);
+        if (cp.pr > 0)
+          cp.pr = Math.max(0, cp.pr - dt * 0.9);
+        for (const k in r.numAnim) {
+          const an = r.numAnim[k];
+          an.t += dt * 3;
+          if (an.t >= 1)
+            delete r.numAnim[k];
+        }
         const b = r.board;
-        const sig = b ? `${b.modified}|${b.staged}|${b.ahead}|${b.committedAdd}|${b.committedDel}|${b.commits.length}` : "none";
+        const sig = boardSig(b);
         if (r.statSig === "") {
           r.statSig = sig;
           r.boardShown = b;
           continue;
         }
-        if (sig !== r.statSig) {
-          r.statSig = sig;
-          if (b && r.built > 0.6) {
-            this.emitPacket(r);
-            r.swapPending = true;
-            r.swapClock = 0;
-          } else {
-            r.boardShown = b;
-          }
-        }
-        if (r.swapPending) {
-          r.swapClock = (r.swapClock ?? 0) + dt;
-          if (r.swapClock >= BEAM_TRAVEL) {
-            r.boardShown = r.board;
-            r.statPulse = 1;
-            r.swapPending = false;
-          }
+        if (sig === r.statSig)
+          continue;
+        r.statSig = sig;
+        if (b && r.built > 0.6) {
+          this.emitPacket(r, 0, b);
         } else {
-          r.boardShown = r.board;
+          r.boardShown = b;
         }
       }
       for (let i = this.packets.length - 1; i >= 0; i--) {
@@ -1036,8 +1116,11 @@
           p.x = p.sx + (p.tx - p.sx) * ease;
           p.y = p.sy + (p.ty - p.sy) * ease - Math.sin(ease * Math.PI) * 16;
         }
-        if (p.t >= 1)
+        if (p.t >= 1) {
+          if (p.applySnap)
+            this.applyBoardSnapshot(p.applyKey, p.applySnap);
           this.packets.splice(i, 1);
+        }
       }
       for (const tn of this.toons.values()) {
         if (!tn.leaving && !tn.entering)
@@ -1190,6 +1273,9 @@
         if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
           return { addDev: { island: r.island, key: r.name } };
         }
+        const sr = this.commitSyncRect(r);
+        if (sr && this.inRect(mx, my, sr.x, sr.y, sr.w, sr.h))
+          return { syncRoom: r.name };
       }
       for (const g of this.ghosts) {
         if (this.inRect(mx, my, g.x0, g.base - ROOM_H, ROOM_W, ROOM_H)) {
@@ -1212,7 +1298,9 @@
     }
     onClick(e) {
       const hit = this.pick(e);
-      if (hit.removeWtBtn)
+      if (hit.syncRoom)
+        this.onSyncCb(hit.syncRoom);
+      else if (hit.removeWtBtn)
         this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
       else if (hit.removeBtn)
         this.onRemoveRoomCb(hit.removeBtn);
@@ -1785,6 +1873,48 @@
     /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
      *  plus live git stats (files changed, lines +/-). It glows when the worktree's
      *  files change (see the packets fired from the desks in tick). */
+    /** World rect of the COMMITS-cell sync button when the branch is out of date
+     *  (has unpushed or behind commits); null otherwise. Shared by the renderer and
+     *  the hit-test so they always agree. Must mirror drawBoard's cell geometry. */
+    commitSyncRect(r) {
+      const bd = r.boardShown ?? r.board;
+      if (!bd || bd.missing || bd.unpushed <= 0 && bd.behind <= 0)
+        return null;
+      const b = boardRect(r.x0, r.baseY);
+      if (b.w < 20 || b.h < 14)
+        return null;
+      const pad = 4;
+      const innerL = b.x + pad, innerR = b.x + b.w - pad;
+      const prW = Math.min(74, (innerR - innerL) * 0.34);
+      const gitR = innerR - prW - 4;
+      const cw = (gitR - innerL) / 3;
+      const cx = innerL + 2 * cw;
+      return { x: cx - 1, y: b.y + b.h - 8, w: cw, h: 8 };
+    }
+    /** Draw a number, rolling the old value up and out while the new value rises in
+     *  when it just changed (a flip-board feel). Uses the caller's font + fillStyle.
+     *  `fontH` is the cap height, used to size the clip box and the roll distance. */
+    drawRoll(ctx, x, y, key, text, fontH, r) {
+      const an = r.numAnim[key];
+      if (!an || an.to !== text) {
+        ctx.fillText(text, x, y);
+        return;
+      }
+      const e = an.t * an.t * (3 - 2 * an.t);
+      const h = fontH * 1.2;
+      const w = Math.max(ctx.measureText(an.from).width, ctx.measureText(text).width) + 2;
+      const a0 = ctx.globalAlpha;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x - 1, y - fontH, w + 2, fontH + 2.5);
+      ctx.clip();
+      ctx.globalAlpha = a0 * (1 - e);
+      ctx.fillText(an.from, x, y - e * h);
+      ctx.globalAlpha = a0 * e;
+      ctx.fillText(text, x, y + (1 - e) * h);
+      ctx.restore();
+      ctx.globalAlpha = a0;
+    }
     /** A small spinning arc, e.g. while the first GitHub PR lookup is in flight. */
     drawSpinner(ctx, cx, cy, rad, color) {
       const a0 = this.frame * 0.35 % (Math.PI * 2);
@@ -1889,36 +2019,77 @@
         ctx.fillStyle = "#ff6055";
         ctx.fillRect(x + aw, yy, w - aw, 2);
       };
+      const cellGlow = (x, w, pulse) => {
+        if (pulse <= 0.02)
+          return;
+        const a = Math.min(1, pulse);
+        ctx.fillStyle = `rgba(62,224,137,${0.14 * a})`;
+        ctx.fillRect(x, bodyTop - 2, w, bodyBot - bodyTop + 4);
+        ctx.strokeStyle = `rgba(62,224,137,${0.9 * a})`;
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(x + 0.4, bodyTop - 1.6, w - 0.8, bodyBot - bodyTop + 3.2);
+      };
+      const cp = r.cellPulse;
       ctx.save();
       ctx.textBaseline = "alphabetic";
       const cells = [
         { label: "UNSTAGED", count: `${bd.modified} file${bd.modified === 1 ? "" : "s"}`, add: bd.unstagedAdd, del: bd.unstagedDel, tint: "#ffb13d" },
         { label: "STAGED", count: `${bd.staged} file${bd.staged === 1 ? "" : "s"}`, add: bd.stagedAdd, del: bd.stagedDel, tint: "#3ee089" },
-        { label: "COMMITS", count: bd.ahead > 0 ? `\u2191${bd.ahead}` : "0", add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" }
+        { label: "COMMITS", count: `${bd.ahead}`, add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" }
       ];
+      const sync = this.commitSyncRect(r);
+      const cellKeys = ["unstaged", "staged", "commits"];
       cells.forEach((c, i) => {
         const cx = innerL + i * cw;
         const cwIn = cw - 4;
+        cellGlow(cx - 1.5, cw - 1, cp[cellKeys[i]]);
         if (i > 0) {
           ctx.fillStyle = "rgba(120,150,170,0.12)";
           ctx.fillRect(cx - 2, bodyTop, 0.7, bodyBot - bodyTop);
         }
+        const pfx = ["u", "s", "c"][i];
         ctx.textAlign = "left";
         ctx.font = "3px 'IBM Plex Mono', monospace";
         ctx.fillStyle = "rgba(170,182,190,0.7)";
         ctx.fillText(c.label, cx, bodyTop + 3);
         ctx.font = "bold 5.5px 'Martian Mono', monospace";
         ctx.fillStyle = c.tint;
-        ctx.fillText(fit(c.count, cwIn), cx, bodyTop + 10);
+        this.drawRoll(ctx, cx, bodyTop + 10, `${pfx}.count`, fit(c.count, cwIn), 5.5, r);
         ctx.font = "bold 3.6px 'Martian Mono', monospace";
         const plus = `+${c.add}`;
         ctx.fillStyle = "#3ee089";
-        ctx.fillText(plus, cx, bodyTop + 16);
+        this.drawRoll(ctx, cx, bodyTop + 16, `${pfx}.add`, plus, 3.6, r);
         ctx.fillStyle = "#ff6055";
-        ctx.fillText(`-${c.del}`, cx + ctx.measureText(plus).width + 3, bodyTop + 16);
+        this.drawRoll(ctx, cx + ctx.measureText(plus).width + 3, bodyTop + 16, `${pfx}.del`, `-${c.del}`, 3.6, r);
         churnBar(cx, bodyTop + 18.5, cwIn, c.add, c.del);
+        if (i === 2) {
+          const up = bd.unpushed, bh = bd.behind, sy = bodyBot - 1.5;
+          ctx.font = "3.6px 'Martian Mono', monospace";
+          if (up > 0 || bh > 0) {
+            let sx = cx;
+            if (up > 0) {
+              ctx.fillStyle = "#ffb13d";
+              ctx.fillText(`\u21E1${up}`, sx, sy);
+              sx += ctx.measureText(`\u21E1${up}`).width + 2.5;
+            }
+            if (bh > 0) {
+              ctx.fillStyle = "#56c7ff";
+              ctx.fillText(`\u21E3${bh}`, sx, sy);
+              sx += ctx.measureText(`\u21E3${bh}`).width + 2.5;
+            }
+            if (sync) {
+              ctx.fillStyle = bh > 0 ? "#56c7ff" : "#3ee089";
+              ctx.fillText("\u27F3", sx + 0.5, sy);
+            }
+          } else {
+            ctx.fillStyle = "rgba(120,200,255,0.5)";
+            ctx.font = "3px 'IBM Plex Mono', monospace";
+            ctx.fillText("synced", cx, sy);
+          }
+        }
       });
       const px = gitR + 4;
+      cellGlow(gitR + 2, innerR - gitR - 2, cp.pr);
       ctx.fillStyle = "rgba(120,150,170,0.14)";
       ctx.fillRect(gitR + 1, bodyTop, 0.7, bodyBot - bodyTop);
       let py = bodyTop + 3;
@@ -1957,8 +2128,21 @@
         };
         const checkCol = bd.pr.checks === "pass" ? "#3ee089" : bd.pr.checks === "fail" ? "#ff6055" : "#ffb13d";
         if (bd.pr.checksTotal > 0) {
-          const icon = bd.pr.checks === "pass" ? "\u2713" : bd.pr.checks === "fail" ? "\u2717" : "\u2026";
-          line(`checks ${bd.pr.checksPass}/${bd.pr.checksTotal} ${icon}`, checkCol);
+          if (py <= bodyBot) {
+            let sx = px;
+            const seg = (t, c) => {
+              ctx.fillStyle = c;
+              ctx.fillText(t, sx, py);
+              sx += ctx.measureText(t).width + 3.5;
+            };
+            if (bd.pr.checksPass > 0)
+              seg(`${bd.pr.checksPass}\u2713`, "#3ee089");
+            if (bd.pr.checksFailed > 0)
+              seg(`${bd.pr.checksFailed}\u2717`, "#ff6055");
+            if (bd.pr.checksRunning > 0)
+              seg(`${bd.pr.checksRunning}\u27F3`, "#ffb13d");
+            py += 4.6;
+          }
         } else if (bd.pr.checks !== "none") {
           line(checkTxt[bd.pr.checks], checkCol);
         }
@@ -1998,11 +2182,6 @@
           ctx.fillText(fit(lineStr, prW), px, py);
       }
       ctx.restore();
-      if (glow > 0.02) {
-        ctx.strokeStyle = `rgba(62,224,137,${glow * 0.85})`;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(b.x, b.y, b.w, b.h);
-      }
     }
     drawDesks(ctx, r, row) {
       const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
@@ -2244,6 +2423,9 @@
     },
     onRemoveWorktree(cb) {
       this._instance?.onRemoveWorktree(cb);
+    },
+    onSync(cb) {
+      this._instance?.onSync(cb);
     },
     onCd(cb) {
       this._instance?.onCd(cb);

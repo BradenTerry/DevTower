@@ -37,6 +37,8 @@ interface BoardData {
   committedDel: number;
   base: string;
   ahead: number;
+  unpushed: number;
+  behind: number;
   commits: string[];
   /** Set when the room's directory no longer exists on disk (a worktree removed
    *  out from under us). The board renders a distinct "missing" state. */
@@ -51,6 +53,8 @@ interface BoardData {
     draft: boolean;
     checks: "pass" | "fail" | "pending" | "none";
     checksPass: number;
+    checksFailed: number;
+    checksRunning: number;
     checksTotal: number;
     review: "approved" | "changes" | "required" | "none";
     approvals: number;
@@ -88,6 +92,9 @@ export class ConsolePanel {
    *  reflected at once instead of waiting for the poll. Keyed by repo top-level. */
   private gitWatchers = new Map<string, fs.FSWatcher>();
   private gitDebounce?: ReturnType<typeof setTimeout>;
+  /** room key → absolute git path, so a sync request can run git in the right dir. */
+  private roomGitPaths = new Map<string, string>();
+  private fetchTimer?: ReturnType<typeof setInterval>;
 
   static createOrShow(
     context: vscode.ExtensionContext,
@@ -138,6 +145,46 @@ export class ConsolePanel {
     this.statsTimer = setInterval(() => {
       if (this.panel.visible) void this.refreshState();
     }, 6_000);
+    // background fetch so "behind" (out-of-date) is meaningful; once shortly after
+    // open, then periodically while visible
+    setTimeout(() => void this.fetchAll(), 5_000);
+    this.fetchTimer = setInterval(() => {
+      if (this.panel.visible) void this.fetchAll();
+    }, 180_000);
+  }
+
+  /** Quiet `git fetch` per tracked repo so the boards' behind/ahead counts reflect
+   *  the remote, then refresh the stats. Best-effort; offline/no-remote is fine. */
+  private async fetchAll(): Promise<void> {
+    const dirs = new Set(this.roomGitPaths.values());
+    await Promise.all(
+      [...dirs].map((d) => (fs.existsSync(d) ? runGit(d, ["fetch", "--quiet"]).catch(() => "") : Promise.resolve("")))
+    );
+    await this.refreshState();
+  }
+
+  /** Sync a room's branch: fast-forward pull, then push local commits. Surfaces a
+   *  warning if it can't (diverged history / network), leaving the repo untouched. */
+  private async syncBranch(roomKey: string): Promise<void> {
+    const dir = this.roomGitPaths.get(roomKey) ?? roomKey;
+    if (!fs.existsSync(dir)) return;
+    try {
+      await runGit(dir, ["pull", "--ff-only"]);
+    } catch (e) {
+      vscode.window.showWarningMessage(`DevTower: can't fast-forward — pull/rebase manually. ${String(e).slice(0, 140)}`);
+      await this.refreshState();
+      return;
+    }
+    try {
+      await runGit(dir, ["push"]);
+    } catch {
+      try {
+        await runGit(dir, ["push", "-u", "origin", "HEAD"]); // first push sets upstream
+      } catch (e) {
+        vscode.window.showWarningMessage(`DevTower: push failed — ${String(e).slice(0, 140)}`);
+      }
+    }
+    await this.refreshState();
   }
 
   /** Coalesce a flurry of git/file events into a single prompt refresh of the
@@ -236,6 +283,9 @@ export class ConsolePanel {
         break;
       case "refreshPrs":
         void this.prs.refresh();
+        break;
+      case "syncBranch":
+        if (typeof m.room === "string") await this.syncBranch(m.room);
         break;
       case "send":
         if (id) this.handleSend(id, m.text);
@@ -530,6 +580,7 @@ export class ConsolePanel {
     const repoDirs = new Set<string>();
     for (const p of pairs.values()) if (fs.existsSync(p)) repoDirs.add(p);
     void this.syncGitWatchers(repoDirs);
+    this.roomGitPaths = new Map(pairs); // room key → git path, for sync requests
     const prs = [...this.prs.getCrew(), ...this.prs.getReview()];
     const boards = new Map<string, BoardData>();
     const branches = new Map<string, string>();
@@ -537,7 +588,7 @@ export class ConsolePanel {
     const emptyBoard = (over: Partial<BoardData>): BoardData => ({
       branch: "", modified: 0, staged: 0, modifiedFiles: [], stagedFiles: [],
       unstagedAdd: 0, unstagedDel: 0, stagedAdd: 0, stagedDel: 0,
-      committedAdd: 0, committedDel: 0, base: "", ahead: 0, commits: [],
+      committedAdd: 0, committedDel: 0, base: "", ahead: 0, unpushed: 0, behind: 0, commits: [],
       prReady: this.prs.hasFetched(), ...over,
     });
     for (const [roomKey, p] of pairs) {
@@ -571,11 +622,14 @@ export class ConsolePanel {
           base: sum.base,
           prReady: this.prs.hasFetched(),
           ahead: sum.ahead,
+          unpushed: sum.unpushed,
+          behind: sum.behind,
           commits: sum.commits,
           pr: pr
             ? {
                 number: pr.number, title: pr.title, url: pr.url, draft: pr.isDraft,
-                checks: pr.checks, checksPass: pr.checksPass, checksTotal: pr.checksTotal,
+                checks: pr.checks, checksPass: pr.checksPass, checksFailed: pr.checksFailed,
+                checksRunning: pr.checksRunning, checksTotal: pr.checksTotal,
                 review: pr.review, approvals: pr.approvals,
                 changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
               }
@@ -938,6 +992,7 @@ export class ConsolePanel {
     ConsolePanel.current = undefined;
     if (this.usageTimer) clearInterval(this.usageTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
+    if (this.fetchTimer) clearInterval(this.fetchTimer);
     if (this.gitDebounce) clearTimeout(this.gitDebounce);
     for (const w of this.gitWatchers.values()) w.close();
     this.gitWatchers.clear();

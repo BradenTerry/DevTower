@@ -150,7 +150,11 @@ interface Particle {
 }
 /** A glowing "commit packet" that flies from a dev's desk to the room board
  *  whenever that worktree's files change. */
-interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; color: string; ph: number; path?: { x: number; y: number }[] }
+interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; color: string; ph: number; path?: { x: number; y: number }[];
+  /** Board snapshot captured when this beam was fired; applied to the room's TV
+   *  when the beam lands (so the screen shows the data that triggered it, not
+   *  whatever the latest poll happens to be at landing time). */
+  applyKey?: string; applySnap?: BoardData }
 interface Stroke { x1: number; y1: number; x2: number; y2: number; color: string }
 
 // A "room" is now one BUILDING = one worktree/checkout. Buildings of the same
@@ -179,6 +183,8 @@ interface Room {
   boardShown?: BoardData; // what the screen currently renders; swapped in when a beam lands
   statSig: string; // last seen git signature; any change (stage/commit/…) → fire a beam
   statPulse: number; // 0..1 board glow that decays after a change
+  cellPulse: { unstaged: number; staged: number; commits: number; pr: number }; // per-column flash
+  numAnim: Record<string, { from: string; to: string; t: number }>; // per-number flip transitions
   swapPending?: boolean; // a beam is in flight; update the screen when it arrives
   swapClock?: number; // seconds since the beam was fired
 }
@@ -198,6 +204,8 @@ interface BoardData {
   committedDel: number;
   base: string;
   ahead: number;
+  unpushed: number;
+  behind: number;
   commits: string[];
   missing?: boolean;
   prReady?: boolean;
@@ -208,6 +216,8 @@ interface BoardData {
     draft: boolean;
     checks: "pass" | "fail" | "pending" | "none";
     checksPass: number;
+    checksFailed: number;
+    checksRunning: number;
     checksTotal: number;
     review: "approved" | "changes" | "required" | "none";
     approvals: number;
@@ -319,6 +329,19 @@ function pointOnPath(path: { x: number; y: number }[], t: number): { x: number; 
   return path[path.length - 1];
 }
 
+/** Signature of every display-relevant board field (incl. PR/checks), so any
+ *  real change fires exactly one beam and identical polls fire none. */
+function boardSig(b: BoardData | undefined): string {
+  if (!b) return "none";
+  const pr = b.pr
+    ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.title}`
+    : "no";
+  return [
+    b.modified, b.staged, b.ahead, b.unstagedAdd, b.unstagedDel, b.stagedAdd, b.stagedDel,
+    b.committedAdd, b.committedDel, b.commits.length, b.base, b.prReady ? 1 : 0, b.missing ? 1 : 0, pr,
+  ].join("|");
+}
+
 class PixelCrew {
   private ctx: CanvasRenderingContext2D;
   private toons = new Map<string, Toon>();
@@ -372,6 +395,7 @@ class PixelCrew {
   private onAddWorktreeCb: (island: string) => void = () => {};
   private onRemoveRoomCb: (room: string) => void = () => {};
   private onRemoveWorktreeCb: (worktree: string, island: string) => void = () => {};
+  private onSyncCb: (room: string) => void = () => {};
   private onCdCb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void =
     () => {};
 
@@ -448,7 +472,7 @@ class PixelCrew {
       if (!this.drag.active) {
         const hit = this.pick(e);
         this.container.style.cursor =
-          hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn
+          hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.syncRoom
             ? "pointer"
             : "default";
         return;
@@ -513,6 +537,7 @@ class PixelCrew {
   onAddWorktree(cb: (island: string) => void) { this.onAddWorktreeCb = cb; }
   onRemoveRoom(cb: (room: string) => void) { this.onRemoveRoomCb = cb; }
   onRemoveWorktree(cb: (worktree: string, island: string) => void) { this.onRemoveWorktreeCb = cb; }
+  onSync(cb: (room: string) => void) { this.onSyncCb = cb; }
   onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
     this.onCdCb = cb;
   }
@@ -695,7 +720,7 @@ class PixelCrew {
   /** Fire a glowing light-ball from a working dev's computer along its network
    *  cable, through the port, and up into the screen — the "git changed" signal.
    *  Falls back to a room-centre → port route when no dev/seat is known. */
-  private emitPacket(r: Room, delay = 0) {
+  private emitPacket(r: Room, delay = 0, snap?: BoardData) {
     const plug = this.cablePlug(r);
     const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
     const seat = occ ? r.plan?.seats.get(occ.id) : undefined;
@@ -709,7 +734,44 @@ class PixelCrew {
       x: s.x, y: s.y, sx: s.x, sy: s.y, tx: plug.x, ty: plug.y, t: -delay, path,
       color: Math.random() < 0.6 ? "#3ee089" : "#56c7ff",
       ph: Math.random() * Math.PI * 2, // flicker/pulse phase
+      applyKey: snap ? r.name : undefined, applySnap: snap,
     });
+  }
+
+  /** A beam reached the screen: show the snapshot it carried, and flash only the
+   *  column(s) that differ from what was on the TV (so it's clear what moved). */
+  private applyBoardSnapshot(key: string | undefined, snap: BoardData) {
+    const r = key ? this.rooms.get(key) : undefined;
+    if (!r) return;
+    const o = r.boardShown, cp = r.cellPulse;
+    if (o) {
+      const uChanged = o.modified !== snap.modified || o.unstagedAdd !== snap.unstagedAdd || o.unstagedDel !== snap.unstagedDel;
+      const sChanged = o.staged !== snap.staged || o.stagedAdd !== snap.stagedAdd || o.stagedDel !== snap.stagedDel;
+      const cChanged = o.ahead !== snap.ahead || o.committedAdd !== snap.committedAdd || o.committedDel !== snap.committedDel || o.commits.length !== snap.commits.length;
+      if (uChanged) cp.unstaged = 1;
+      if (sChanged) cp.staged = 1;
+      if (cChanged) cp.commits = 1;
+      if (JSON.stringify(o.pr) !== JSON.stringify(snap.pr)) cp.pr = 1;
+      // a pure stage/unstage MOVE (file count conserved, the two sides swap in
+      // opposite directions) just flashes the columns; genuine new churn flips
+      // the numbers
+      const pureMove = uChanged && sChanged &&
+        o.modified + o.staged === snap.modified + snap.staged &&
+        (o.modified > snap.modified) !== (o.staged > snap.staged);
+      const num = (b: BoardData) => ({
+        "u.count": `${b.modified} file${b.modified === 1 ? "" : "s"}`, "u.add": `+${b.unstagedAdd}`, "u.del": `-${b.unstagedDel}`,
+        "s.count": `${b.staged} file${b.staged === 1 ? "" : "s"}`, "s.add": `+${b.stagedAdd}`, "s.del": `-${b.stagedDel}`,
+        "c.count": `${b.ahead}`, "c.add": `+${b.committedAdd}`, "c.del": `-${b.committedDel}`,
+      } as Record<string, string>);
+      const oN = num(o), nN = num(snap);
+      for (const k of Object.keys(nN)) {
+        if (oN[k] === nN[k]) continue;
+        if (pureMove && (k[0] === "u" || k[0] === "s")) continue; // moved → flash only
+        r.numAnim[k] = { from: oN[k], to: nN[k], t: 0 };
+      }
+    }
+    r.boardShown = snap;
+    r.statPulse = 1;
   }
 
   /** Draw each occupied desk's network cable: computer → floor → a curved sweep
@@ -815,6 +877,8 @@ class PixelCrew {
           delay: newIdx++ * 0.45, // buildings rise one after another
           agents: [], scribbles: [], decor: hash(key + "decor"),
           statSig: "", statPulse: 0,
+          cellPulse: { unstaged: 0, staged: 0, commits: 0, pr: 0 },
+          numAnim: {},
         };
         this.rooms.set(key, room);
       }
@@ -1108,6 +1172,9 @@ class PixelCrew {
     if (this.particles.length || this.leaving.length || this.packets.length) return false;
     for (const r of this.rooms.values()) {
       if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending) return false;
+      const cp = r.cellPulse;
+      if (cp.unstaged > 0.02 || cp.staged > 0.02 || cp.commits > 0.02 || cp.pr > 0.02) return false;
+      for (const _k in r.numAnim) return false; // a number is mid-flip
       if (r.boardShown && r.boardShown.prReady === false) return false; // PR spinner still spinning
       // still sliding toward its packed cell (collapse animation)
       if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5) return false;
@@ -1172,39 +1239,31 @@ class PixelCrew {
       this.layout(); // free the cells → ghost slots reappear
     }
 
-    // boards: any git change (modified/staged/commits/push churn) sends a beam of
-    // light up each desk's cable; the SCREEN only updates once the beam lands
-    const BEAM_TRAVEL = 1 / 0.55; // seconds for the lead ball to reach the screen
+    // boards: any change (git churn, commits, PR/checks) fires ONE beam carrying
+    // a SNAPSHOT of the board taken right now; the TV updates to that snapshot
+    // when the beam lands (see the packet loop), so there's no race with newer
+    // polls and the screen shows exactly what each beam was sent for
     for (const r of this.rooms.values()) {
       if (r.statPulse > 0) r.statPulse = Math.max(0, r.statPulse - dt * 1.4);
-      const b = r.board;
-      const sig = b
-        ? `${b.modified}|${b.staged}|${b.ahead}|${b.committedAdd}|${b.committedDel}|${b.commits.length}`
-        : "none";
-      if (r.statSig === "") { r.statSig = sig; r.boardShown = b; continue; } // first sync shows at once
-      if (sig !== r.statSig) {
-        r.statSig = sig;
-        if (b && r.built > 0.6) {
-          // git changed: send ONE ball of light; hold the OLD screen until it lands
-          this.emitPacket(r);
-          r.swapPending = true;
-          r.swapClock = 0;
-        } else {
-          r.boardShown = b; // not built / no board → just update
-        }
+      const cp = r.cellPulse;
+      if (cp.unstaged > 0) cp.unstaged = Math.max(0, cp.unstaged - dt * 0.9);
+      if (cp.staged > 0) cp.staged = Math.max(0, cp.staged - dt * 0.9);
+      if (cp.commits > 0) cp.commits = Math.max(0, cp.commits - dt * 0.9);
+      if (cp.pr > 0) cp.pr = Math.max(0, cp.pr - dt * 0.9);
+      for (const k in r.numAnim) {
+        const an = r.numAnim[k];
+        an.t += dt * 3; // ~0.33s flip
+        if (an.t >= 1) delete r.numAnim[k];
       }
-      // when the lead ball reaches the screen, swap in the new data + flash
-      if (r.swapPending) {
-        r.swapClock = (r.swapClock ?? 0) + dt;
-        if (r.swapClock >= BEAM_TRAVEL) {
-          r.boardShown = r.board;
-          r.statPulse = 1;
-          r.swapPending = false;
-        }
+      const b = r.board;
+      const sig = boardSig(b);
+      if (r.statSig === "") { r.statSig = sig; r.boardShown = b; continue; } // first sync shows at once
+      if (sig === r.statSig) continue;
+      r.statSig = sig;
+      if (b && r.built > 0.6) {
+        this.emitPacket(r, 0, b); // beam carries this exact snapshot to the TV
       } else {
-        // no beam in flight: keep the screen live for fields the beam doesn't
-        // gate (PR status, checks, reviewers, base branch)
-        r.boardShown = r.board;
+        r.boardShown = b; // unbuilt / board removed → apply immediately, no beam
       }
     }
     for (let i = this.packets.length - 1; i >= 0; i--) {
@@ -1220,7 +1279,10 @@ class PixelCrew {
         p.x = p.sx + (p.tx - p.sx) * ease;
         p.y = p.sy + (p.ty - p.sy) * ease - Math.sin(ease * Math.PI) * 16; // lob it up to the wall
       }
-      if (p.t >= 1) this.packets.splice(i, 1);
+      if (p.t >= 1) {
+        if (p.applySnap) this.applyBoardSnapshot(p.applyKey, p.applySnap);
+        this.packets.splice(i, 1);
+      }
     }
 
     // re-glue seated/working devs to their building's live position so they ride
@@ -1369,6 +1431,7 @@ class PixelCrew {
     addDev?: { island: string; key: string }; // + DEV on a specific room
     removeBtn?: string; // island (nuke)
     removeWtBtn?: string; // building key (worktree path)
+    syncRoom?: string; // building key → pull/push that branch
   } {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -1385,6 +1448,8 @@ class PixelCrew {
       if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
         return { addDev: { island: r.island, key: r.name } };
       }
+      const sr = this.commitSyncRect(r);
+      if (sr && this.inRect(mx, my, sr.x, sr.y, sr.w, sr.h)) return { syncRoom: r.name };
     }
     // ghost slots: +building (extend an island) and +island (reserve a directory)
     for (const g of this.ghosts) {
@@ -1411,7 +1476,8 @@ class PixelCrew {
 
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
-    if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
+    if (hit.syncRoom) this.onSyncCb(hit.syncRoom);
+    else if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
     else if (hit.removeBtn) this.onRemoveRoomCb(hit.removeBtn);
     else if (hit.addDev) this.onAddDevCb(hit.addDev.island, hit.addDev.key);
     else if (hit.ghost) {
@@ -2010,6 +2076,45 @@ class PixelCrew {
   /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
    *  plus live git stats (files changed, lines +/-). It glows when the worktree's
    *  files change (see the packets fired from the desks in tick). */
+  /** World rect of the COMMITS-cell sync button when the branch is out of date
+   *  (has unpushed or behind commits); null otherwise. Shared by the renderer and
+   *  the hit-test so they always agree. Must mirror drawBoard's cell geometry. */
+  private commitSyncRect(r: Room): { x: number; y: number; w: number; h: number } | null {
+    const bd = r.boardShown ?? r.board;
+    if (!bd || bd.missing || (bd.unpushed <= 0 && bd.behind <= 0)) return null;
+    const b = boardRect(r.x0, r.baseY);
+    if (b.w < 20 || b.h < 14) return null;
+    const pad = 4;
+    const innerL = b.x + pad, innerR = b.x + b.w - pad;
+    const prW = Math.min(74, (innerR - innerL) * 0.34);
+    const gitR = innerR - prW - 4;
+    const cw = (gitR - innerL) / 3;
+    const cx = innerL + 2 * cw; // COMMITS cell
+    return { x: cx - 1, y: b.y + b.h - 8, w: cw, h: 8 };
+  }
+
+  /** Draw a number, rolling the old value up and out while the new value rises in
+   *  when it just changed (a flip-board feel). Uses the caller's font + fillStyle.
+   *  `fontH` is the cap height, used to size the clip box and the roll distance. */
+  private drawRoll(ctx: CanvasRenderingContext2D, x: number, y: number, key: string, text: string, fontH: number, r: Room) {
+    const an = r.numAnim[key];
+    if (!an || an.to !== text) { ctx.fillText(text, x, y); return; }
+    const e = an.t * an.t * (3 - 2 * an.t);
+    const h = fontH * 1.2;
+    const w = Math.max(ctx.measureText(an.from).width, ctx.measureText(text).width) + 2;
+    const a0 = ctx.globalAlpha;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x - 1, y - fontH, w + 2, fontH + 2.5);
+    ctx.clip();
+    ctx.globalAlpha = a0 * (1 - e);
+    ctx.fillText(an.from, x, y - e * h); // old rolls up and out
+    ctx.globalAlpha = a0 * e;
+    ctx.fillText(text, x, y + (1 - e) * h); // new rises into place
+    ctx.restore();
+    ctx.globalAlpha = a0;
+  }
+
   /** A small spinning arc, e.g. while the first GitHub PR lookup is in flight. */
   private drawSpinner(ctx: CanvasRenderingContext2D, cx: number, cy: number, rad: number, color: string) {
     const a0 = (this.frame * 0.35) % (Math.PI * 2);
@@ -2116,6 +2221,17 @@ class PixelCrew {
       ctx.fillStyle = "#ff6055";
       ctx.fillRect(x + aw, yy, w - aw, 2);
     };
+    // flash a single column when its value just changed (set in applyBoardSnapshot)
+    const cellGlow = (x: number, w: number, pulse: number) => {
+      if (pulse <= 0.02) return;
+      const a = Math.min(1, pulse);
+      ctx.fillStyle = `rgba(62,224,137,${0.14 * a})`;
+      ctx.fillRect(x, bodyTop - 2, w, bodyBot - bodyTop + 4);
+      ctx.strokeStyle = `rgba(62,224,137,${0.9 * a})`;
+      ctx.lineWidth = 0.8;
+      ctx.strokeRect(x + 0.4, bodyTop - 1.6, w - 0.8, bodyBot - bodyTop + 3.2);
+    };
+    const cp = r.cellPulse;
 
     ctx.save();
     ctx.textBaseline = "alphabetic";
@@ -2124,33 +2240,56 @@ class PixelCrew {
     const cells = [
       { label: "UNSTAGED", count: `${bd.modified} file${bd.modified === 1 ? "" : "s"}`, add: bd.unstagedAdd, del: bd.unstagedDel, tint: "#ffb13d" },
       { label: "STAGED", count: `${bd.staged} file${bd.staged === 1 ? "" : "s"}`, add: bd.stagedAdd, del: bd.stagedDel, tint: "#3ee089" },
-      { label: "COMMITS", count: bd.ahead > 0 ? `↑${bd.ahead}` : "0", add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" },
+      { label: "COMMITS", count: `${bd.ahead}`, add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" },
     ];
+    const sync = this.commitSyncRect(r); // bottom-of-COMMITS sync button rect (or null)
+    const cellKeys = ["unstaged", "staged", "commits"] as const;
     cells.forEach((c, i) => {
       const cx = innerL + i * cw;
       const cwIn = cw - 4; // inner width (leaves a gutter before the divider)
+      cellGlow(cx - 1.5, cw - 1, cp[cellKeys[i]]);
       if (i > 0) {
         ctx.fillStyle = "rgba(120,150,170,0.12)";
         ctx.fillRect(cx - 2, bodyTop, 0.7, bodyBot - bodyTop);
       }
+      const pfx = ["u", "s", "c"][i];
       ctx.textAlign = "left";
       ctx.font = "3px 'IBM Plex Mono', monospace";
       ctx.fillStyle = "rgba(170,182,190,0.7)";
       ctx.fillText(c.label, cx, bodyTop + 3);
       ctx.font = "bold 5.5px 'Martian Mono', monospace";
       ctx.fillStyle = c.tint;
-      ctx.fillText(fit(c.count, cwIn), cx, bodyTop + 10);
+      this.drawRoll(ctx, cx, bodyTop + 10, `${pfx}.count`, fit(c.count, cwIn), 5.5, r);
       ctx.font = "bold 3.6px 'Martian Mono', monospace";
       const plus = `+${c.add}`;
       ctx.fillStyle = "#3ee089";
-      ctx.fillText(plus, cx, bodyTop + 16);
+      this.drawRoll(ctx, cx, bodyTop + 16, `${pfx}.add`, plus, 3.6, r);
       ctx.fillStyle = "#ff6055";
-      ctx.fillText(`-${c.del}`, cx + ctx.measureText(plus).width + 3, bodyTop + 16);
+      this.drawRoll(ctx, cx + ctx.measureText(plus).width + 3, bodyTop + 16, `${pfx}.del`, `-${c.del}`, 3.6, r);
       churnBar(cx, bodyTop + 18.5, cwIn, c.add, c.del);
+      // COMMITS cell also shows push/pull sync state + a sync button
+      if (i === 2) {
+        const up = bd.unpushed, bh = bd.behind, sy = bodyBot - 1.5;
+        ctx.font = "3.6px 'Martian Mono', monospace";
+        if (up > 0 || bh > 0) {
+          let sx = cx;
+          if (up > 0) { ctx.fillStyle = "#ffb13d"; ctx.fillText(`⇡${up}`, sx, sy); sx += ctx.measureText(`⇡${up}`).width + 2.5; }
+          if (bh > 0) { ctx.fillStyle = "#56c7ff"; ctx.fillText(`⇣${bh}`, sx, sy); sx += ctx.measureText(`⇣${bh}`).width + 2.5; }
+          if (sync) {
+            ctx.fillStyle = bh > 0 ? "#56c7ff" : "#3ee089";
+            ctx.fillText("⟳", sx + 0.5, sy);
+          }
+        } else {
+          ctx.fillStyle = "rgba(120,200,255,0.5)";
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillText("synced", cx, sy);
+        }
+      }
     });
 
     /* ---- right: PR ---- */
     const px = gitR + 4;
+    cellGlow(gitR + 2, innerR - gitR - 2, cp.pr);
     ctx.fillStyle = "rgba(120,150,170,0.14)";
     ctx.fillRect(gitR + 1, bodyTop, 0.7, bodyBot - bodyTop);
     let py = bodyTop + 3;
@@ -2186,11 +2325,21 @@ class PixelCrew {
         ctx.fillText(fit(text, prW), px, py);
         py += 4.6;
       };
-      // GH Actions tally: "checks 5/5 ✓" (green pass / red fail / amber running)
+      // GH Actions breakdown: passed ✓ / failed ✗ / still-running ⟳, each counted
       const checkCol = bd.pr.checks === "pass" ? "#3ee089" : bd.pr.checks === "fail" ? "#ff6055" : "#ffb13d";
       if (bd.pr.checksTotal > 0) {
-        const icon = bd.pr.checks === "pass" ? "✓" : bd.pr.checks === "fail" ? "✗" : "…";
-        line(`checks ${bd.pr.checksPass}/${bd.pr.checksTotal} ${icon}`, checkCol);
+        if (py <= bodyBot) {
+          let sx = px;
+          const seg = (t: string, c: string) => {
+            ctx.fillStyle = c;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3.5;
+          };
+          if (bd.pr.checksPass > 0) seg(`${bd.pr.checksPass}✓`, "#3ee089");
+          if (bd.pr.checksFailed > 0) seg(`${bd.pr.checksFailed}✗`, "#ff6055");
+          if (bd.pr.checksRunning > 0) seg(`${bd.pr.checksRunning}⟳`, "#ffb13d");
+          py += 4.6;
+        }
       } else if (bd.pr.checks !== "none") {
         line(checkTxt[bd.pr.checks], checkCol);
       }
@@ -2219,13 +2368,8 @@ class PixelCrew {
       if (py <= bodyBot && lineStr) ctx.fillText(fit(lineStr, prW), px, py);
     }
     ctx.restore();
-
-    // pulse the border briefly when files change
-    if (glow > 0.02) {
-      ctx.strokeStyle = `rgba(62,224,137,${glow * 0.85})`;
-      ctx.lineWidth = 1;
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
-    }
+    // (column-level flashes are drawn per cell above via cellGlow; no full-board
+    // border pulse anymore, so it's clear which stat changed)
   }
 
   private drawDesks(ctx: CanvasRenderingContext2D, r: Room, row: number) {
@@ -2490,6 +2634,9 @@ class PixelCrew {
   },
   onRemoveWorktree(cb: (worktree: string, island: string) => void) {
     this._instance?.onRemoveWorktree(cb);
+  },
+  onSync(cb: (room: string) => void) {
+    this._instance?.onSync(cb);
   },
   onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
     this._instance?.onCd(cb);

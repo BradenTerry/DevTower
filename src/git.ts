@@ -244,7 +244,9 @@ export interface BranchSummary {
   committedAdd: number; // lines added across commits ahead of base
   committedDel: number; // lines removed across commits ahead of base
   base: string; // friendly name of the base branch (e.g. "main"); "" if unknown
-  ahead: number; // commits ahead of upstream/base
+  ahead: number; // commits ahead of base branch (the PR size)
+  unpushed: number; // local commits not on the branch's own remote (to push)
+  behind: number; // commits the branch's remote has that local doesn't (to pull)
   commits: string[]; // recent commit subjects (newest first)
 }
 
@@ -314,6 +316,16 @@ export async function branchSummary(cwd: string): Promise<BranchSummary | null> 
     base = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "@{upstream}"]).catch(() => "")).trim() || baseRef;
   }
   base = base.replace(/^origin\//, "");
+  // push/pull state vs the branch's OWN remote (origin/<branch>): how many local
+  // commits aren't pushed, and how many remote commits we haven't pulled
+  let unpushed = 0, behind = 0;
+  try {
+    const lr = (await runGit(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"])).trim();
+    const [bh, ah] = lr.split(/\s+/).map((n) => parseInt(n, 10) || 0);
+    behind = bh; unpushed = ah;
+  } catch {
+    unpushed = ahead; // no upstream → all branch commits are unpushed local work
+  }
   return {
     modified: st.unstaged.length,
     staged: st.staged.length,
@@ -327,6 +339,8 @@ export async function branchSummary(cwd: string): Promise<BranchSummary | null> 
     committedDel: committed.del,
     base,
     ahead,
+    unpushed,
+    behind,
     commits,
   };
 }

@@ -32,6 +32,7 @@
     window.DevTowerCrew.onAddWorktree((island) => vscode.postMessage({ type: "addWorktree", island }));
     window.DevTowerCrew.onRemoveRoom((room) => vscode.postMessage({ type: "removeRoom", room }));
     window.DevTowerCrew.onRemoveWorktree((worktree, island) => vscode.postMessage({ type: "removeWorktree", worktree, island }));
+    window.DevTowerCrew.onSync((room) => vscode.postMessage({ type: "syncBranch", room }));
     window.DevTowerCrew.onCd((id, target) =>
       vscode.postMessage({ type: "cdAgent", id, room: target.room, ghost: target.ghost })
     );
