@@ -38,6 +38,12 @@ for (const sc of SCENARIOS) {
       if (s.usage) post({ type: "usage", usage: s.usage });
     }, sc as any);
 
+    // optionally open an agent's side panel
+    if ((sc as any).focusAgent) {
+      await page.evaluate((id) => window.postMessage({ type: "focusAgent", id }, "*"), (sc as any).focusAgent);
+      await page.waitForTimeout(200);
+    }
+
     // optionally open the settings overlay seeded with mock capabilities
     if ((sc as any).settings) {
       await page.evaluate((st) => {
@@ -53,6 +59,8 @@ for (const sc of SCENARIOS) {
     await page.screenshot({ path: path.join(OUT, `${sc.name}.png`) });
     const hud = page.locator(".hud-top");
     if (await hud.count()) await hud.screenshot({ path: path.join(OUT, `${sc.name}-hud.png`) });
+    const panel = page.locator(".panel:not([hidden])");
+    if (await panel.count()) await panel.screenshot({ path: path.join(OUT, `${sc.name}-panel.png`) });
     const card = page.locator(".settings-card");
     if (await card.count()) {
       await card.screenshot({ path: path.join(OUT, `${sc.name}-card.png`) });

@@ -241,7 +241,8 @@ button{ font-family:inherit; }
 .s-toggle.on .knob{ left:19px; background:var(--active); }
 
 .s-status{ font-size:12px; padding:10px 12px; border-radius:10px; border:1px solid var(--edge-soft); }
-.s-status.ok{ background:color-mix(in srgb,var(--active) 12%,transparent); border-color:color-mix(in srgb,var(--active) 35%,transparent); }
+.s-status.ok{ display:flex; align-items:center; gap:10px; background:color-mix(in srgb,var(--active) 12%,transparent); border-color:color-mix(in srgb,var(--active) 35%,transparent); }
+.s-status.ok .s-status-info{ flex:1; min-width:0; }
 .s-status.ok b{ color:var(--text); }
 .s-status.err{ background:color-mix(in srgb,var(--error) 12%,transparent); border-color:color-mix(in srgb,var(--error) 38%,transparent); color:var(--text); }
 .s-status.idle{ color:var(--text-faint); }
@@ -284,11 +285,13 @@ button{ font-family:inherit; }
 }
 .s-save:hover{ background:rgba(255,255,255,0.1); }
 .s-save:disabled{ opacity:.6; cursor:default; }
+/* sits inside the green "Connected as …" pill, to the right */
 .s-clear{
-  cursor:pointer; align-self:flex-start; border:1px solid var(--edge); color:var(--text-dim);
-  background:transparent; border-radius:9px; padding:7px 14px; font-size:11px; transition:.15s;
+  flex:none; cursor:pointer; border:1px solid color-mix(in srgb,var(--error) 40%,var(--edge));
+  color:var(--text-dim); background:rgba(0,0,0,0.18); border-radius:8px; padding:5px 11px;
+  font-size:11px; white-space:nowrap; transition:.15s;
 }
-.s-clear:hover{ color:var(--error); border-color:color-mix(in srgb,var(--error) 45%,transparent); }
+.s-clear:hover{ color:var(--error); border-color:color-mix(in srgb,var(--error) 60%,transparent); background:color-mix(in srgb,var(--error) 14%,transparent); }
 
 /* ============ ARRIVALS FEED (bottom-left) ============ */
 .feed{
@@ -328,7 +331,8 @@ button{ font-family:inherit; }
   background:linear-gradient(180deg, color-mix(in srgb,var(--ac,#5b666b) 16%, transparent), transparent 86%);
   border-bottom:1px solid var(--edge-soft);
 }
-.p-id{ display:flex; align-items:center; gap:12px; }
+/* reserve room on the right so the status badge can't slide under the ✕ close */
+.p-id{ display:flex; align-items:center; gap:12px; padding-right:32px; }
 .avatar{
   width:42px; height:42px; border-radius:12px; flex-shrink:0; position:relative;
   background:linear-gradient(145deg, var(--av1,#456), var(--av2,#234));

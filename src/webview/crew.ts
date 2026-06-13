@@ -82,6 +82,10 @@ const DOOR_W = 18;
 // (one per skill it uses) and carries it back to stack on its desk.
 const SHELF_REACH = 16; // world x (from room left) a dev stands at to fetch a book
 const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
+// Paper shredder on the right of the room: when a session is /cleared the dev
+// carries its stack of context papers here, feeds them in, then walks back.
+const SHRED_REACH = 168; // world x (from room left) a dev stands at to shred
+const SHRED_FEED = 1.6;  // seconds spent feeding the stack into the shredder
 // Room depth: the interior is a shallow one-point-perspective box. The far wall
 // is inset by DEPTH_X on each side and its floor line sits DEPTH_Y above the
 // near floor; the floor, ceiling and side walls are drawn as trapezoids between
@@ -294,6 +298,10 @@ interface Toon {
   booksShown: number;
   booksInHand: number;
   errand?: { phase: "out" | "grab" | "back"; grab: number };
+  // context-clear (/clear) trip: a session replaced by a new one in the SAME
+  // worktree keeps this dev, which carries its context papers to the shredder
+  // ("out"), feeds the stack in ("feed"), then walks back to its seat ("back").
+  shred?: { phase: "out" | "feed" | "back"; t: number };
   // review verdict animation: when a reviewer's PR decision resolves, `stampAt`
   // records the frame so the APPROVED/CHANGES stamp can "thud" in over ~1s.
   lastVerdict?: string;
@@ -677,6 +685,39 @@ class PixelCrew {
 
   setAgents(agents: CrewAgent[]) {
     const seen = new Set(agents.map((a) => a.id));
+    // /clear restart: a session is replaced by a NEW session id in the SAME
+    // worktree on one poll (the old transcript stops, the new one starts, and
+    // discovery keeps only the live process's newest transcript). Rather than
+    // walk the old dev out and a fresh one in, keep the SAME dev at its seat and
+    // send it on a shred trip (carry context papers to the shredder, then back).
+    const arriving = new Map<string, CrewAgent[]>(); // worktree -> brand-new agents
+    for (const a of agents) {
+      if (this.toons.has(a.id)) continue;
+      const key = a.worktree?.trim();
+      if (!key) continue;
+      const list = arriving.get(key);
+      if (list) list.push(a);
+      else arriving.set(key, [a]);
+    }
+    if (arriving.size) {
+      for (const [id, tn] of [...this.toons]) {
+        if (seen.has(id) || tn.leaving || tn.entering) continue; // only a settled, departing dev
+        const key = tn.agent.worktree?.trim();
+        const next = key ? arriving.get(key)?.shift() : undefined;
+        if (!next) continue;
+        // re-key the toon to the new session, keeping its persona/seat/position so
+        // it reads as the SAME dev continuing after wiping its context.
+        this.toons.delete(id);
+        tn.agent = next;
+        tn.shred = { phase: "out", t: 0 };
+        tn.errand = undefined;
+        // the shredded context resets the dev's skills/books to the fresh session
+        tn.skills = [...(next.skills ?? [])];
+        tn.booksShown = tn.skills.length;
+        tn.booksInHand = 0;
+        this.toons.set(next.id, tn);
+      }
+    }
     for (const [id, tn] of this.toons) {
       if (!seen.has(id)) {
         // the agent dropped out of this poll. It may be a genuine departure or a
@@ -1558,11 +1599,13 @@ class PixelCrew {
       if (!room) continue;
       // start a trip once settled at the desk and a skill's book is still missing
       // (neither on the desk nor already in hand)
-      if (!tn.errand && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
+      if (!tn.errand && !tn.shred && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
         tn.errand = { phase: "out", grab: 0 };
       }
       // out/grab: head for (and hold at) the shelf; back: keep the desk aim above
       if (tn.errand && tn.errand.phase !== "back") tn.targetX = room.x0 + SHELF_REACH;
+      // the shred trip overrides the desk aim toward the shredder until it heads back
+      if (tn.shred && tn.shred.phase !== "back") tn.targetX = room.x0 + SHRED_REACH;
     }
 
     // upper-floor arrivals ride the elevator up the shaft to their door
@@ -1590,11 +1633,11 @@ class PixelCrew {
       const dx = tn.targetX - tn.x;
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
-      tn.sitting = tn.agent.state === "active" && !tn.entering && !tn.errand && Math.abs(dx) <= 1;
+      tn.sitting = tn.agent.state === "active" && !tn.entering && !tn.errand && !tn.shred && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
       // (lift -> 0) whenever walking, entering, leaving, or off on a book
       // errand (so the dev rides the near floor to the shelf and back)
-      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand;
+      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred;
       const targetLift = atDesk ? tn.row * ROW_DY : 0;
       tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
     }
@@ -1614,6 +1657,21 @@ class PixelCrew {
         // set down (they go on the desk once the task stops being active, below)
         tn.booksInHand = tn.skills.length - tn.booksShown;
         tn.errand = undefined;
+      }
+    }
+    // advance the shred trip: arrive at the shredder → feed the stack in → walk
+    // back to the desk. Mirrors the book errand but carries nothing home.
+    for (const tn of this.toons.values()) {
+      const sh = tn.shred;
+      if (!sh) continue;
+      const arrived = Math.abs(tn.targetX - tn.x) <= 1;
+      if (sh.phase === "out") {
+        if (arrived) { sh.phase = "feed"; sh.t = SHRED_FEED; }
+      } else if (sh.phase === "feed") {
+        sh.t -= dt;
+        if (sh.t <= 0) sh.phase = "back";
+      } else if (arrived) {
+        tn.shred = undefined;
       }
     }
     // a dev reads its fetched book(s) at the desk while the task is live; once the
@@ -1760,7 +1818,7 @@ class PixelCrew {
       if (this.inRect(mx, my, r.x0 + ROOM_W - 10, base - ROOM_H + 2, 8, 8)) {
         return r.isMain ? { removeBtn: r.island } : { removeWtBtn: r.name, island: r.island };
       }
-      if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
+      if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 2, 16, 8)) {
         return { addDev: { island: r.island, key: r.name } };
       }
       const btns = this.commitButtons(r);
@@ -2047,39 +2105,22 @@ class PixelCrew {
     /* ---- screen-space pass ---- */
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = "center";
-    const xBtn = (r: Room, title: string) => {
-      const base = r.baseY;
-      const hov = this.hov("remove:" + (r.isMain ? r.island : r.name));
-      const c1 = this.screenOf(r.x0 + ROOM_W - 10, base - ROOM_H + 2);
-      const c2 = this.screenOf(r.x0 + ROOM_W - 2, base - ROOM_H + 10);
-      ctx.fillStyle = hov ? "rgba(255,96,85,0.30)" : "rgba(10,15,18,0.8)"; // hover tint
-      ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-      ctx.strokeStyle = hov ? "#ff6055" : "rgba(255,96,85,0.7)";
-      ctx.lineWidth = hov ? 1.6 : 1;
-      ctx.strokeRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-      ctx.fillStyle = hov ? "#ffd2ce" : "#ff6055";
-      ctx.font = `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`;
-      ctx.textAlign = "center";
-      ctx.fillText(title, (c1.x + c2.x) / 2, (c1.y + c2.y) / 2 + 3);
-    };
     for (const r of this.rooms.values()) {
       if (r.built < 0.95) continue;
       const base = r.baseY;
+      const top = base - ROOM_H + 2; // shared top so + DEV and ✕ line up vertically
       // "+ DEV" on every room — drop an agent into this room's worktree
+      const d1 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, top);
+      const d2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, top + 8);
       const devHov = this.hov("addDev:" + r.name);
-      const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
-      const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
-      ctx.fillStyle = devHov ? "rgba(62,224,137,0.28)" : "rgba(10,15,18,0.8)"; // hover tint
-      ctx.fillRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-      ctx.strokeStyle = "#3ee089";
-      ctx.lineWidth = devHov ? 1.6 : 1;
-      ctx.strokeRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-      ctx.fillStyle = devHov ? "#aef5cf" : "#3ee089";
-      ctx.font = `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`;
-      ctx.textAlign = "center";
-      ctx.fillText("+ DEV", (b.x + b2.x) / 2, (b.y + b2.y) / 2 + 3);
+      this.drawRoomButton(ctx, d1.x, d1.y, d2.x - d1.x, d2.y - d1.y, "+ DEV",
+        devHov ? "#aef5cf" : "#3ee089", `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`, devHov);
       // ✕ — main nukes the whole directory, a worktree removes just itself
-      xBtn(r, "✕");
+      const x1 = this.screenOf(r.x0 + ROOM_W - 10, top);
+      const x2 = this.screenOf(r.x0 + ROOM_W - 2, top + 8);
+      const xHov = this.hov("remove:" + (r.isMain ? r.island : r.name));
+      this.drawRoomButton(ctx, x1.x, x1.y, x2.x - x1.x, x2.y - x1.y, "✕",
+        xHov ? "#ffd2ce" : "#ff6055", `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`, xHov);
     }
     // ghost labels: +building (create a worktree room) vs +island (reserve a dir)
     for (const g of this.ghosts) {
@@ -2093,14 +2134,30 @@ class PixelCrew {
       ctx.fillStyle = "rgba(140,150,156,0.6)";
       ctx.fillText(building ? "new branch room" : "pick a directory", s.x, s.y + 11);
     }
-    // toon labels + bubbles
-    for (const tn of this.toons.values()) {
+    // toon labels + bubbles. Names stay a fixed, readable size (they do NOT scale
+    // with the zoom), but when devs converge on screen — zoomed out, or many in
+    // one room — their labels would pile into a colliding mess. So we DECLUTTER:
+    // a name is drawn only if its box doesn't overlap one already drawn. The
+    // selected dev is sorted first so it always wins and stays visible.
+    const claimed: { x0: number; x1: number; y0: number; y1: number }[] = [];
+    const nameOverlaps = (b: { x0: number; x1: number; y0: number; y1: number }) =>
+      claimed.some((c) => b.x0 < c.x1 && b.x1 > c.x0 && b.y0 < c.y1 && b.y1 > c.y0);
+    const labelToons = [...this.toons.values()].sort(
+      (a, b) => (b.agent.id === this.selectedId ? 1 : 0) - (a.agent.id === this.selectedId ? 1 : 0)
+    );
+    ctx.textAlign = "center";
+    for (const tn of labelToons) {
       const s = this.screenOf(tn.x, tn.base - tn.lift - 23);
       const st = tn.agent.state;
+      const sel = tn.agent.id === this.selectedId;
       ctx.font = "9px 'IBM Plex Mono', monospace";
-      ctx.textAlign = "center";
-      ctx.fillStyle = tn.agent.id === this.selectedId ? "#ffb13d" : "rgba(230,238,240,0.85)";
-      ctx.fillText(tn.agent.name, s.x, s.y - 8);
+      const nw = ctx.measureText(tn.agent.name).width;
+      const box = { x0: s.x - nw / 2 - 2, x1: s.x + nw / 2 + 2, y0: s.y - 18, y1: s.y - 6 };
+      if (sel || !nameOverlaps(box)) {
+        claimed.push(box);
+        ctx.fillStyle = sel ? "#ffb13d" : "rgba(230,238,240,0.88)";
+        ctx.fillText(tn.agent.name, s.x, s.y - 8);
+      }
       const glyph = st === "waiting" ? "?" : st === "complete" ? "✓" : st === "error" ? "✗" : "";
       if (glyph) {
         const bob = st === "waiting" ? Math.sin(this.frame * 0.6 + tn.ph) * 2 : 0;
@@ -2509,6 +2566,9 @@ class PixelCrew {
     // to the wall's perspective, just below the window
     this.drawBookshelf(ctx, r, onWall);
 
+    // the paper shredder a dev visits on /clear (right of the desks, on the floor)
+    this.drawShredder(ctx, r);
+
     // plant + hash decor
     const px = x + w - DOOR_W - 6;
     ctx.fillStyle = "#7a4a2a";
@@ -2701,6 +2761,30 @@ class PixelCrew {
     ctx.lineTo(cx + g * 0.9, cy - g * 1.5);
     ctx.stroke();
     ctx.restore();
+  }
+
+  /** A room chrome button (+ DEV, ✕) drawn to match the HUD glass icon buttons:
+   *  a rounded translucent chip with a neutral light border and a colored glyph,
+   *  brightening on hover. `sx,sy,sw,sh` are screen-space. */
+  private drawRoomButton(
+    ctx: CanvasRenderingContext2D,
+    sx: number, sy: number, sw: number, sh: number,
+    icon: string, color: string, font: string, hovered: boolean
+  ) {
+    const rad = Math.min(sw, sh) * 0.26;
+    ctx.beginPath();
+    ctx.roundRect(sx, sy, sw, sh, rad);
+    ctx.fillStyle = hovered ? "rgba(20,28,33,0.92)" : "rgba(10,15,18,0.72)"; // --glass / --glass-2
+    ctx.fill();
+    ctx.lineWidth = hovered ? 1.3 : 1;
+    ctx.strokeStyle = hovered ? "rgba(255,255,255,0.30)" : "rgba(255,255,255,0.14)"; // --edge
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = font;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(icon, sx + sw / 2, sy + sh / 2 + 0.2);
+    ctx.textBaseline = "alphabetic";
   }
 
   private drawBoard(ctx: CanvasRenderingContext2D, r: Room, base: number) {

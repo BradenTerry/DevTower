@@ -20,6 +20,8 @@ export interface Scenario {
   settings?: { caps: any; scopeHelp: { scope: string; why: string }[] };
   /** GitHub connection flag sent on the prs message (false => disconnected UI). */
   connected?: boolean;
+  /** Open the agent side-panel on this agent id (posts a focusAgent message). */
+  focusAgent?: string;
 }
 
 const board = (over: Partial<Record<string, any>>) => ({
@@ -102,6 +104,20 @@ export const SCENARIOS: Scenario[] = [
         "/repo": board({ branch: "main" }),
         "/wt/x": board({ branch: "feat/x", modified: 5, unstagedAdd: 88, unstagedDel: 31, ahead: 4, unpushed: 4 }),
       },
+    },
+    prs: { crew: [], review: [] },
+  },
+  {
+    // agent side-panel open on an active agent (checks the ✕ close vs the
+    // ACTIVE status badge, and the panel header layout)
+    name: "agent-panel",
+    focusAgent: "a1",
+    state: {
+      agents: [
+        { id: "a1", name: "Atlas", state: "active", repo: "DevTower", model: "claude-opus-4-8", worktree: "/repo", branch: "main", skills: ["code-review", "verify"], contextTokens: 84_000, elapsed: "12m" },
+      ],
+      rooms: [{ name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] }],
+      boards: { "/repo": board({ branch: "main", modified: 2 }) },
     },
     prs: { crew: [], review: [] },
   },
