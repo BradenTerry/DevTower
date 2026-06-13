@@ -71,6 +71,14 @@
         "title": "DevTower: Open Settings"
       },
       {
+        "command": "devtower.installHooks",
+        "title": "DevTower: Install Notification Hook"
+      },
+      {
+        "command": "devtower.openErrorLog",
+        "title": "DevTower: Open Error Log"
+      },
+      {
         "command": "devtower.refreshChanges",
         "title": "DevTower: Refresh Changes",
         "icon": "$(refresh)"
@@ -98,6 +106,36 @@
         "command": "devtower.unstageAll",
         "title": "Unstage All Changes",
         "icon": "$(remove)"
+      },
+      {
+        "command": "devtower.scmStage",
+        "title": "Stage Changes",
+        "icon": "$(add)"
+      },
+      {
+        "command": "devtower.scmUnstage",
+        "title": "Unstage Changes",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "devtower.scmStageAll",
+        "title": "Stage All Changes",
+        "icon": "$(add)"
+      },
+      {
+        "command": "devtower.scmUnstageAll",
+        "title": "Unstage All Changes",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "devtower.scmRefresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "devtower.openRoomFolder",
+        "title": "DevTower: Show Room in Explorer",
+        "icon": "$(root-folder-opened)"
       }
     ],
     "menus": {
@@ -135,6 +173,40 @@
           "group": "inline"
         }
       ],
+      "scm/title": [
+        {
+          "command": "devtower.openRoomFolder",
+          "when": "scmProvider == devtower",
+          "group": "navigation@0"
+        },
+        {
+          "command": "devtower.scmStageAll",
+          "when": "scmProvider == devtower",
+          "group": "navigation@1"
+        },
+        {
+          "command": "devtower.scmUnstageAll",
+          "when": "scmProvider == devtower",
+          "group": "navigation@2"
+        },
+        {
+          "command": "devtower.scmRefresh",
+          "when": "scmProvider == devtower",
+          "group": "navigation@3"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "devtower.scmStage",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "inline"
+        },
+        {
+          "command": "devtower.scmUnstage",
+          "when": "scmProvider == devtower && scmResourceGroup == staged",
+          "group": "inline"
+        }
+      ],
       "commandPalette": [
         {
           "command": "devtower.openFileDiff",
@@ -146,6 +218,14 @@
         },
         {
           "command": "devtower.unstageFile",
+          "when": "false"
+        },
+        {
+          "command": "devtower.scmStage",
+          "when": "false"
+        },
+        {
+          "command": "devtower.scmUnstage",
           "when": "false"
         }
       ]

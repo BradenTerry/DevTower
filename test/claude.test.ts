@@ -130,6 +130,53 @@ describe("readMeta", () => {
     expect(meta.skills).toContain("code-review");
   });
 
+  it("counts in-flight sub-agents (Task tool calls with no result yet)", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "fan out" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_1", name: "Task", input: {} },
+            { type: "tool_use", id: "toolu_2", name: "Task", input: {} },
+          ],
+        },
+      },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.subagents).toBe(2);
+  });
+
+  it("drops sub-agents from the count once their result returns", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "fan out" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "toolu_1", name: "Task", input: {} },
+            { type: "tool_use", id: "toolu_2", name: "Agent", input: {} },
+            { type: "tool_use", id: "toolu_3", name: "Task", input: {} },
+          ],
+        },
+      },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_2", content: "done" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.subagents).toBe(2);
+  });
+
+  it("reports 0 sub-agents when none were spawned", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "hi" } },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.subagents).toBe(0);
+  });
+
   it("unescapes a Windows-style cwd path (regression: backslash mangling)", async () => {
     const winCwd = "C:\\Users\\me\\proj";
     const { file, size } = write([

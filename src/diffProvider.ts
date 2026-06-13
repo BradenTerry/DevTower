@@ -52,6 +52,11 @@ function gitUri(cwd: string, file: string, ref: string): vscode.Uri {
   });
 }
 
+/** Public HEAD-side URI for a worktree file, for SCM quick-diff gutters. */
+export function gitHeadUri(cwd: string, file: string): vscode.Uri {
+  return gitUri(cwd, file, "HEAD");
+}
+
 function mockUri(agentId: string, file: string, side: "left" | "right"): vscode.Uri {
   return vscode.Uri.from({
     scheme: MOCK_SCHEME,

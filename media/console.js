@@ -3,6 +3,11 @@
    the panel is a compact stats card: context %, model, plus PR actions. */
 (function () {
   const vscode = acquireVsCodeApi();
+  // forward uncaught webview errors to the extension's always-on errors.log so a
+  // blank/blacked-out scene can be diagnosed later. The early inline script in
+  // the page buffers anything thrown before this point; flush it now.
+  window.__dtSendError = (rec) => { try { vscode.postMessage({ type: "error", ...rec }); } catch (_) {} };
+  if (Array.isArray(window.__dtErrors)) { for (const r of window.__dtErrors.splice(0)) window.__dtSendError(r); }
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const STATE_LABEL = { active: "Active", waiting: "Awaiting input", complete: "Complete", error: "Error", idle: "Idle" };
@@ -28,6 +33,8 @@
     if (!window.DevTowerCrew) return;
     window.DevTowerCrew.mount($("#crew-wrap"), $("#crew-canvas"));
     window.DevTowerCrew.onSelect((id) => selectAgent(id, true));
+    if (DevTowerCrew.onPickRoom) DevTowerCrew.onPickRoom((room) => vscode.postMessage({ type: "pickRoom", room }));
+    if (DevTowerCrew.onUseDir) DevTowerCrew.onUseDir((room) => vscode.postMessage({ type: "useDir", room }));
     window.DevTowerCrew.onReserve((floor, col) => vscode.postMessage({ type: "reserveRoom", floor, col }));
     window.DevTowerCrew.onAddDev((island, worktree) => vscode.postMessage({ type: "addDev", island, worktree }));
     window.DevTowerCrew.onAddWorktree((island) => vscode.postMessage({ type: "addWorktree", island }));
@@ -48,7 +55,7 @@
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, external: a.external, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, external: a.external, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 
@@ -91,8 +98,27 @@
     const secs = ts - Math.floor(Date.now() / 1000);
     if (secs <= 0) return " · resetting";
     const h = Math.floor(secs / 3600);
+    if (h >= 24) {
+      const d = Math.floor(h / 24);
+      return ` · resets in ${d}d ${h % 24}h`;
+    }
     const m = Math.floor((secs % 3600) / 60);
     return h >= 1 ? ` · resets in ${h}h ${m}m` : ` · resets in ${m}m`;
+  }
+  // Compact form for the inline meter chip (no "resets in" prefix). Rolls into
+  // days once the window is more than a day out (the weekly window) so it reads
+  // "1d 2h" instead of "26h 11m".
+  function fmtResetShort(ts) {
+    if (!ts) return "";
+    const secs = ts - Math.floor(Date.now() / 1000);
+    if (secs <= 0) return "now";
+    const h = Math.floor(secs / 3600);
+    if (h >= 24) {
+      const d = Math.floor(h / 24);
+      return `${d}d ${h % 24}h`;
+    }
+    const m = Math.floor((secs % 3600) / 60);
+    return h >= 1 ? `${h}h ${m}m` : `${m}m`;
   }
   function setMeter(sel, label, w) {
     const el = $(sel);
@@ -103,6 +129,12 @@
     const pct = w.pct;
     el.querySelector(".ubar i").style.width = pct + "%";
     el.querySelector(".upct").textContent = pct + "%";
+    const reset = fmtResetShort(w.resetsAt);
+    const rEl = el.querySelector(".ureset");
+    if (rEl) {
+      rEl.textContent = reset ? `↻ ${reset}` : "";
+      rEl.style.display = reset ? "" : "none";
+    }
     el.classList.toggle("warn", pct >= 75 && pct < 90);
     el.classList.toggle("crit", pct >= 90);
     el.title = `Plan usage — ${label} window: ${pct}% used${fmtReset(w.resetsAt)}`;
