@@ -8,6 +8,12 @@ A pixel office tower (VS Code extension) for your coding agents. Each repo is a 
 
 > DevTower is an early **Preview** release on the VS Code Marketplace. See [Releasing](#releasing).
 
+## The problem it solves
+
+Running several coding agents means several worktrees, each in its own directory - and the usual workflow is a window (or terminal tab) per directory. You alt-tab to find which session is waiting on input, `cd` around to run `git status` in each, and switch editor windows to review diffs. That context-switching tax grows fast once more than one or two are running.
+
+DevTower collapses it into **a single view**. Every repo, worktree, and live session is a room in one campus, so you watch **multiple directories and worktrees at once - without switching windows**: who is active, who is blocked waiting on you, who finished or errored, each branch's unstaged / staged / commit counts, and each PR's checks and review status. Click a dev to act, click a room to focus its crew, and the diff or terminal you need opens in place.
+
 ## Run it
 
 ```bash
@@ -19,7 +25,7 @@ Press **F5** (Run DevTower Extension) to launch an Extension Development Host. T
 
 > After rebuilding, reload the Extension Development Host (**Cmd/Ctrl+R** in that window) so it runs the new bundle.
 
-Ships with mock agents (`devtower.useMockData`) so you can try the whole loop without a live session.
+To see PRs and checks, add a GitHub token in **Settings** (the ⚙ gear, top right) - see [GitHub access and token storage](#github-access-and-token-storage). The tower populates from real Claude Code sessions; DevTower ships no mock data.
 
 ## What's in the tower
 
@@ -49,8 +55,8 @@ DevTower drives your existing CLIs; it makes no network calls of its own (git/gh
 | **VS Code** 1.85+ | required | host |
 | **git** | required | Changes view, native diffs, `git worktree add`, per-room push/pull/fetch |
 | **claude** ([Claude Code](https://claude.com/claude-code) CLI) | required for live agents | spawning/resuming sessions in terminals (`devtower.claudeCommand`); session discovery reads `~/.claude/projects` transcripts |
-| **gh** ([GitHub CLI](https://cli.github.com), authenticated) | optional | PR board, review-requested billboard, review dispatch, create/view PR. Without it, PR features fall back to mock data |
-| **ps** / **lsof** (Unix) | optional | phantom-session filter - only show sessions whose `claude` process is still running. Unavailable on Windows (a 15-min freshness fallback is used) |
+| **gh** ([GitHub CLI](https://cli.github.com)) | optional | PR board, review-requested billboard, review dispatch, create/view PR. Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
+| **ps** / **lsof** (macOS / Linux) | optional | phantom-session filter - show only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower instead counts running `claude` processes fleet-wide via WMI (`Get-CimInstance Win32_Process`) and caps shown sessions to that many, newest-first; if even that is unavailable it falls back to a 15-min freshness window |
 
 What it accesses currently:
 
@@ -61,6 +67,12 @@ What it accesses currently:
 - **Spawns** one VS Code integrated terminal per agent and runs the configured launch command in it.
 
 On macOS, launch VS Code from a terminal so the extension host inherits your shell `PATH`; otherwise `claude` / `gh` may not be found.
+
+## GitHub access and token storage
+
+PR features authenticate with a GitHub **Personal Access Token** added in the DevTower settings page (the ⚙ gear, top right). The token is **stored in VS Code [SecretStorage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage)** (`context.secrets`), which is backed by the OS credential vault - macOS **Keychain**, Windows **Credential Manager**, or **libsecret / gnome-keyring** on Linux. It is encrypted at rest and is never written to `settings.json`, the workspace, or the repo.
+
+The token is used only inside the extension: it is passed to the spawned `gh` subprocess via the `GH_TOKEN` environment variable (which overrides any `gh auth login`), and is never sent to the webview, agent terminals, git, or any DevTower network call. On save, DevTower probes the token to show the account, its scopes, and which features it unlocks. The page recommends a **fine-grained, read-only** token scoped to chosen repos; you can remove it there at any time.
 
 ## Architecture
 
@@ -95,7 +107,7 @@ State comes from a generic append-only JSONL file (`devtower.stateFile`, default
 {"id":"a1","state":"waiting","task":"needs a decision on rotation"}
 ```
 
-The watcher ingests changes live and the scene re-renders. Set `devtower.useMockData` to `false` to run purely off the feed and live session discovery.
+The watcher ingests changes live and the scene re-renders off the feed and live session discovery.
 
 ### Claude Code hooks (auto state)
 

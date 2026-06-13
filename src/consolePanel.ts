@@ -6,6 +6,7 @@ import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
 import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
 import { PrService, PrInfo } from "./prs";
+import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { ClaudeDiscovery } from "./claude";
 import * as fs from "fs";
 import * as os from "os";
@@ -103,11 +104,11 @@ export class ConsolePanel {
     terminals: TerminalManager,
     prs: PrService,
     discovery?: ClaudeDiscovery
-  ): void {
+  ): ConsolePanel {
     const column = vscode.ViewColumn.Active;
     if (ConsolePanel.current) {
       ConsolePanel.current.panel.reveal(column);
-      return;
+      return ConsolePanel.current;
     }
     const panel = vscode.window.createWebviewPanel(
       ConsolePanel.viewType,
@@ -121,6 +122,7 @@ export class ConsolePanel {
     );
     panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "devtower.svg");
     ConsolePanel.current = new ConsolePanel(panel, context, store, terminals, prs, discovery);
+    return ConsolePanel.current;
   }
 
   private constructor(
@@ -319,6 +321,20 @@ export class ConsolePanel {
       case "refreshPrs":
         void this.prs.refresh();
         break;
+      case "getSettings":
+        await this.postSettings();
+        break;
+      case "setGithubToken":
+        if (typeof m.token === "string") {
+          await setGithubToken(m.token);
+          await this.postSettings();
+          void this.prs.reauth(); // re-poll PRs now that a token exists
+        }
+        break;
+      case "clearGithubToken":
+        await clearGithubToken();
+        await this.postSettings();
+        break;
       case "pushBranch":
         if (typeof m.room === "string") await this.pushRoom(m.room);
         break;
@@ -346,7 +362,21 @@ export class ConsolePanel {
       type: "prs",
       crew: this.prs.getCrew(),
       review: this.prs.getReview(),
+      connected: this.prs.isConnected(),
     });
+  }
+
+  /** Push the current GitHub auth state (token connected? login, scopes, which
+   *  features it unlocks) to the settings page. Never sends the token itself. */
+  private async postSettings(): Promise<void> {
+    const caps = await capabilities();
+    this.panel.webview.postMessage({ type: "settings", caps, scopeHelp: SCOPE_HELP });
+  }
+
+  /** Reveal the tower and open the settings overlay (from the nudge / command). */
+  openSettings(): void {
+    this.panel.reveal();
+    this.panel.webview.postMessage({ type: "openSettings" });
   }
 
   /* ============ ROOMS (tower floors) ============ */
@@ -366,9 +396,16 @@ export class ConsolePanel {
       )
     );
     const seen = new Set<string>();
+    const seenPaths = new Set<string>();
     const rooms: ReservedRoom[] = [];
     for (const r of raw) {
       if (!r || typeof r.path !== "string" || !r.path) continue; // unusable without a directory
+      // Collapse duplicate reservations for the SAME directory (a trailing slash,
+      // symlink, or case difference would otherwise spawn a second empty building
+      // named "<dir>-1"). Keep the first; skip later dupes of the same real path.
+      const key = normalizeRoomPath(r.path);
+      if (seenPaths.has(key)) continue;
+      seenPaths.add(key);
       let name =
         (r.name || "").trim() ||
         path.basename(r.path) ||
@@ -417,7 +454,7 @@ export class ConsolePanel {
     if (!picked?.[0]) return;
     const dir = picked[0].fsPath;
     const rooms = this.getRooms();
-    if (rooms.some((r) => r.path === dir)) {
+    if (rooms.some((r) => normalizeRoomPath(r.path) === normalizeRoomPath(dir))) {
       vscode.window.showInformationMessage(`DevTower: ${path.basename(dir) || dir} already has a room.`);
       return;
     }
@@ -1205,7 +1242,11 @@ export class ConsolePanel {
     <div class="spacer"></div>
     <button class="iconbtn" id="prbtn" title="Pull requests">⇄<span class="nbadge" id="pr-badge" hidden>0</span></button>
     <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">⚡</button>
+    <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
   </header>
+
+  <!-- settings overlay (GitHub token + capabilities) -->
+  <div class="settings-scrim" id="settings" hidden></div>
 
   <!-- review dispatch card (modal) -->
   <div class="rd-scrim" id="reviewdispatch" hidden></div>
@@ -1228,4 +1269,14 @@ function makeNonce(): string {
   let s = "";
   for (let i = 0; i < 32; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
+}
+
+/** Canonical key for a reserved-room directory so the same folder reached via a
+ *  trailing slash, a symlink, or a case difference maps to one building. Resolves
+ *  the real path when it exists; folds case on case-insensitive platforms. */
+function normalizeRoomPath(p: string): string {
+  let abs = path.resolve(p);
+  try { abs = fs.realpathSync.native(abs); } catch { /* path gone; use resolved form */ }
+  abs = abs.replace(/[\\/]+$/, ""); // strip trailing separators
+  return process.platform === "win32" || process.platform === "darwin" ? abs.toLowerCase() : abs;
 }

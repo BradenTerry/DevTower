@@ -14,6 +14,16 @@ function execP(cmd: string, args: string[]): Promise<string> {
   });
 }
 
+/** Liveness of running `claude` processes, used to filter out phantom sessions.
+ *  - perCwd: exact count per working directory (Unix, via ps + lsof).
+ *  - total:  fleet-wide count only (Windows — no cwd is available; the caller
+ *    caps kept sessions to this many, newest-first).
+ *  - null:   process info unavailable → caller falls back to mtime freshness. */
+type LiveCounts =
+  | { mode: "perCwd"; counts: Map<string, number> }
+  | { mode: "total"; total: number }
+  | null;
+
 /**
  * Discovers live Claude Code CLI sessions on this machine.
  *
@@ -89,10 +99,11 @@ export class ClaudeDiscovery {
    * transcripts per cwd, so closing one of several sessions there drops exactly
    * one toon on the next poll instead of leaving a phantom behind.
    *
-   * Returns null when the check isn't possible (Windows / tools missing).
+   * Returns null when the check isn't possible (tools missing); a `total`-mode
+   * count on Windows (no per-cwd info there); else exact per-cwd counts.
    */
-  private async liveCwdCounts(): Promise<Map<string, number> | null> {
-    if (process.platform === "win32") return null;
+  private async liveCwdCounts(): Promise<LiveCounts> {
+    if (process.platform === "win32") return this.liveClaudeCountWindows();
     try {
       const ps = await execP("ps", ["-axo", "pid=,comm="]);
       const pids: string[] = [];
@@ -103,7 +114,7 @@ export class ClaudeDiscovery {
         const comm = t.slice(sp + 1).trim();
         if (comm === "claude" || comm.endsWith("/claude")) pids.push(t.slice(0, sp));
       }
-      if (!pids.length) return new Map();
+      if (!pids.length) return { mode: "perCwd", counts: new Map() };
       // -a -d cwd → exactly one cwd record per pid; counting them per path
       // yields the number of live claude processes rooted at that directory.
       const out = await execP("lsof", ["-a", "-d", "cwd", "-p", pids.join(","), "-Fn"]);
@@ -113,7 +124,32 @@ export class ClaudeDiscovery {
         const cwd = line.slice(1).trim();
         counts.set(cwd, (counts.get(cwd) ?? 0) + 1);
       }
-      return counts;
+      return { mode: "perCwd", counts };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Windows has no lsof equivalent for a process's working directory, but we can
+   * still count how many `claude` processes are running fleet-wide via WMI. That
+   * lets the caller cap kept sessions to exactly that many (newest-first) — a
+   * strict improvement on the pure mtime-freshness fallback: zero running → drop
+   * every phantom at once instead of waiting out the freshness window.
+   *
+   * Matches the native installer (`claude.exe`) and the npm CLI (a `node`
+   * process whose command line includes the `claude-code` package). Returns null
+   * if PowerShell/WMI is unavailable, so we degrade to freshness.
+   */
+  private async liveClaudeCountWindows(): Promise<LiveCounts> {
+    const script =
+      "@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { " +
+      "$_.Name -ieq 'claude.exe' -or ($_.CommandLine -and $_.CommandLine -match 'claude-code') " +
+      "}).Count";
+    try {
+      const out = await execP("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+      const total = parseInt(out.trim(), 10);
+      return Number.isFinite(total) ? { mode: "total", total } : null;
     } catch {
       return null;
     }
@@ -141,6 +177,7 @@ export class ClaudeDiscovery {
     const liveCounts = await this.liveCwdCounts();
     const kept: Found[] = [];
     const keptCwd = new Set<string>();
+    const asRecent = (f: Found): Found => ({ ...f, state: "idle", task: `(recent) ${f.task}` });
     if (liveCounts === null) {
       // no process info → treat only one very-fresh session per launch dir as live
       for (const f of found) {
@@ -150,11 +187,26 @@ export class ClaudeDiscovery {
           kept.push(f);
         } else if (showRecent) {
           keptCwd.add(f.launchCwd);
-          kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
+          kept.push(asRecent(f));
+        }
+      }
+    } else if (liveCounts.mode === "total") {
+      // Windows: we know HOW MANY claude processes run, not where. `found` is
+      // newest-first, so the freshest N transcripts are the live ones; keep that
+      // many (no per-dir dedup — several sessions can share a cwd), recent rest.
+      let slots = liveCounts.total;
+      for (const f of found) {
+        if (slots > 0) {
+          slots--;
+          keptCwd.add(f.launchCwd);
+          kept.push(f);
+        } else if (showRecent && !keptCwd.has(f.launchCwd)) {
+          keptCwd.add(f.launchCwd);
+          kept.push(asRecent(f));
         }
       }
     } else {
-      const remaining = new Map(liveCounts);
+      const remaining = new Map(liveCounts.counts);
       const claim = (cwd: string): boolean => {
         const n = remaining.get(cwd) ?? 0;
         if (n <= 0) return false;
@@ -167,7 +219,7 @@ export class ClaudeDiscovery {
           kept.push(f);
         } else if (showRecent && !keptCwd.has(f.launchCwd)) {
           keptCwd.add(f.launchCwd);
-          kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
+          kept.push(asRecent(f));
         }
       }
     }

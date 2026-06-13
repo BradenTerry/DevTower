@@ -67,6 +67,10 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "devtower.openSettings",
+        "title": "DevTower: Open Settings"
+      },
+      {
         "command": "devtower.refreshChanges",
         "title": "DevTower: Refresh Changes",
         "icon": "$(refresh)"
@@ -153,11 +157,6 @@
           "type": "string",
           "default": ".devtower/state.jsonl",
           "description": "Path (relative to the first workspace folder, or absolute) to the append-only JSONL file agents write state events to."
-        },
-        "devtower.useMockData": {
-          "type": "boolean",
-          "default": false,
-          "description": "Seed simulated agents on startup when no live Claude sessions are discovered."
         },
         "devtower.discoverClaudeSessions": {
           "type": "boolean",

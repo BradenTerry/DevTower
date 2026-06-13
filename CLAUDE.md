@@ -19,6 +19,24 @@ sessions work, stack floors, spawn devs into worktrees, review diffs and PRs.
 
 Run `npm run typecheck` and `npm test` before handing work back.
 
+## UI conventions: clickable controls
+
+Every control a user can click MUST signal that it is clickable:
+
+- **Pointer cursor.** On hover it shows `cursor: pointer`. For DOM controls use
+  CSS. For canvas-drawn controls (the scene in `src/webview/crew.ts`), the
+  pointer-move hit-test must set `container.style.cursor = "pointer"` when the
+  cursor is over the control's rect.
+- **Hover animation.** Hovering produces a visible change, not a static target:
+  a brightened fill, a glow, a slight scale, or a background tint. For DOM use a
+  CSS `:hover` transition. For canvas controls, track the hovered control and
+  redraw it in a highlighted state.
+
+This applies to both DOM HUD/overlay buttons and the canvas buttons in the scene
+(for example: `+ DEV`, a room's `✕` close, the COMMITS push/pull/refresh
+buttons, the PR billboard refresh, and the open-in-GitHub `↗` arrows). A
+clickable control with no pointer and no hover feedback is a bug.
+
 ## UI changes: always show before and after
 
 Whenever a change affects what the app looks like (canvas rendering in

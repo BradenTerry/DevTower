@@ -402,6 +402,11 @@ class PixelCrew {
   // review-requested PRs shown on the central billboard (left of the campus);
   // clicking a row opens the dispatch modal to assign a reviewer to it
   private reviewPrs: { number: number; repo: string; title: string; branch?: string; url?: string }[] = [];
+  // null = not yet known (startup); false = no GitHub token, show the disconnected
+  // placeholder instead of an empty/"nothing awaiting" state
+  private githubConnected: boolean | null = null;
+  // key of the canvas control under the cursor, so it can be drawn highlighted
+  private hoverKey: string | null = null;
   private campusMinX = 0; // rooms-only left edge, before the billboard is added in
   private focus = { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 };
   private cam = { x: 0, y: -ROOM_H / 2, z: 4 };
@@ -517,10 +522,12 @@ class PixelCrew {
       }
       if (!this.drag.active) {
         const hit = this.pick(e);
-        this.container.style.cursor =
-          hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom || hit.openPrUrl
-            ? "pointer"
-            : "default";
+        const clickable = !!(hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn ||
+          hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom || hit.openPrUrl ||
+          hit.billboardRefresh || hit.reviewPr || hit.billboardZoom);
+        this.container.style.cursor = clickable ? "pointer" : "default";
+        const hk = this.hoverKeyOf(hit);
+        if (hk !== this.hoverKey) { this.hoverKey = hk; this.invalidate(); } // repaint the highlight
         return;
       }
       const dx = e.clientX - this.drag.lastX;
@@ -565,6 +572,10 @@ class PixelCrew {
       this.toonDrag = null;
       this.dropTarget = null;
       this.invalidate();
+    });
+    canvas.addEventListener("pointerleave", () => {
+      if (this.hoverKey !== null) { this.hoverKey = null; this.invalidate(); } // clear button highlight
+      this.container.style.cursor = "default";
     });
     canvas.addEventListener(
       "wheel",
@@ -613,6 +624,13 @@ class PixelCrew {
   /** Branches that currently have an open PR; shown on each worktree's board. */
   setPrBranches(branches: string[]) {
     this.prBranches = new Set((branches || []).filter(Boolean).map((b) => b.toLowerCase()));
+    this.invalidate();
+  }
+
+  /** Whether DevTower has a GitHub token. false => draw the disconnected glyph in
+   *  the PR billboard and board PR cells; null/true => normal. */
+  setGithubConnected(connected: boolean | null | undefined) {
+    this.githubConnected = connected === undefined ? null : connected;
     this.invalidate();
   }
 
@@ -1773,6 +1791,25 @@ class PixelCrew {
     return {};
   }
 
+  /** A stable key for the clickable control under a pick result, so the renderer
+   *  can highlight whatever the cursor is hovering. null = not a button. */
+  private hoverKeyOf(h: ReturnType<PixelCrew["pick"]>): string | null {
+    if (h.billboardRefresh) return "bbRefresh";
+    if (h.openPrUrl) return "openpr:" + h.openPrUrl;
+    if (h.addDev) return "addDev:" + h.addDev.key;
+    if (h.removeBtn) return "remove:" + h.removeBtn;
+    if (h.removeWtBtn) return "remove:" + h.removeWtBtn;
+    if (h.fetchRoom) return "fetch:" + h.fetchRoom;
+    if (h.pushRoom) return "push:" + h.pushRoom;
+    if (h.pullRoom) return "pull:" + h.pullRoom;
+    return null;
+  }
+
+  /** Is the given control key the one currently hovered? */
+  private hov(key: string): boolean {
+    return this.hoverKey === key;
+  }
+
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
     if (hit.billboardRefresh) { this.onRefreshPrsCb(); }
@@ -2010,14 +2047,15 @@ class PixelCrew {
     ctx.textAlign = "center";
     const xBtn = (r: Room, title: string) => {
       const base = r.baseY;
+      const hov = this.hov("remove:" + (r.isMain ? r.island : r.name));
       const c1 = this.screenOf(r.x0 + ROOM_W - 10, base - ROOM_H + 2);
       const c2 = this.screenOf(r.x0 + ROOM_W - 2, base - ROOM_H + 10);
-      ctx.fillStyle = "rgba(10,15,18,0.8)";
+      ctx.fillStyle = hov ? "rgba(255,96,85,0.30)" : "rgba(10,15,18,0.8)"; // hover tint
       ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-      ctx.strokeStyle = "rgba(255,96,85,0.7)";
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = hov ? "#ff6055" : "rgba(255,96,85,0.7)";
+      ctx.lineWidth = hov ? 1.6 : 1;
       ctx.strokeRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-      ctx.fillStyle = "#ff6055";
+      ctx.fillStyle = hov ? "#ffd2ce" : "#ff6055";
       ctx.font = `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`;
       ctx.textAlign = "center";
       ctx.fillText(title, (c1.x + c2.x) / 2, (c1.y + c2.y) / 2 + 3);
@@ -2026,14 +2064,15 @@ class PixelCrew {
       if (r.built < 0.95) continue;
       const base = r.baseY;
       // "+ DEV" on every room — drop an agent into this room's worktree
+      const devHov = this.hov("addDev:" + r.name);
       const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
       const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
-      ctx.fillStyle = "rgba(10,15,18,0.8)";
+      ctx.fillStyle = devHov ? "rgba(62,224,137,0.28)" : "rgba(10,15,18,0.8)"; // hover tint
       ctx.fillRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
       ctx.strokeStyle = "#3ee089";
-      ctx.lineWidth = 1;
+      ctx.lineWidth = devHov ? 1.6 : 1;
       ctx.strokeRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-      ctx.fillStyle = "#3ee089";
+      ctx.fillStyle = devHov ? "#aef5cf" : "#3ee089";
       ctx.font = `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`;
       ctx.textAlign = "center";
       ctx.fillText("+ DEV", (b.x + b2.x) / 2, (b.y + b2.y) / 2 + 3);
@@ -2281,9 +2320,10 @@ class PixelCrew {
     ctx.textAlign = "right";
     ctx.fillText(String(this.reviewPrs.length), x + w - 19, top + 11);
     // refresh button
-    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    const bbRefHov = this.hov("bbRefresh");
+    ctx.fillStyle = bbRefHov ? "rgba(255,177,61,0.22)" : "rgba(255,255,255,0.06)"; // hover tint
     ctx.fillRect(refresh.x, refresh.y, refresh.w, refresh.h);
-    ctx.fillStyle = "rgba(230,238,240,0.85)";
+    ctx.fillStyle = bbRefHov ? "#ffb13d" : "rgba(230,238,240,0.85)";
     ctx.font = "8px 'IBM Plex Mono', monospace";
     ctx.textAlign = "center";
     ctx.fillText("↻", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
@@ -2304,19 +2344,32 @@ class PixelCrew {
       ctx.font = "7px 'IBM Plex Mono', monospace";
       ctx.fillText(this.fitText(ctx, pr.title || "", w - 30), x + 6, y + 17);
       // open-in-GitHub button (↗)
-      ctx.fillStyle = "rgba(127,184,223,0.18)"; // accent-tinted chip so it reads as a link
+      const aHov = !!pr.url && this.hov("openpr:" + pr.url);
+      ctx.fillStyle = aHov ? "rgba(127,184,223,0.42)" : "rgba(127,184,223,0.18)"; // accent chip, brighter on hover
       ctx.fillRect(open.x, open.y, open.w, open.h);
-      ctx.fillStyle = "#9fd0f0"; // brighter accent arrow
+      ctx.fillStyle = aHov ? "#d6ecfb" : "#9fd0f0"; // brighter accent arrow
       ctx.font = "bold 8px 'IBM Plex Mono', monospace";
       ctx.textAlign = "center";
       ctx.fillText("↗", open.x + open.w / 2, open.y + open.h - 2.2);
       ctx.textAlign = "left";
     }
     if (!rows.length) {
-      ctx.fillStyle = "rgba(180,190,196,0.5)";
-      ctx.font = "6.5px 'IBM Plex Mono', monospace";
+      const cy = top + headerH + BB_ROW / 2 + 2;
       ctx.textAlign = "center";
-      ctx.fillText("nothing awaiting you", x + w / 2, top + headerH + BB_ROW / 2 + 2);
+      if (this.githubConnected === false) {
+        // no token: show the disconnected glyph + a prompt, not a misleading empty
+        this.drawDisconnected(ctx, x + w / 2, cy - 4, 7, "rgba(255,177,61,0.85)");
+        ctx.fillStyle = "rgba(210,218,224,0.8)";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillText("GitHub not connected", x + w / 2, cy + 11);
+        ctx.fillStyle = "rgba(180,190,196,0.55)";
+        ctx.font = "5px 'IBM Plex Mono', monospace";
+        ctx.fillText("add a token in ⚙ Settings", x + w / 2, cy + 19);
+      } else {
+        ctx.fillStyle = "rgba(180,190,196,0.5)";
+        ctx.font = "6.5px 'IBM Plex Mono', monospace";
+        ctx.fillText("nothing awaiting you", x + w / 2, cy);
+      }
       ctx.textAlign = "left";
     }
     if (extra > 0) {
@@ -2619,6 +2672,35 @@ class PixelCrew {
     ctx.restore();
   }
 
+  /** A "disconnected" glyph: a ringed plug whose prongs are pulled apart, shown
+   *  where PR data would be when there is no GitHub token. */
+  private drawDisconnected(ctx: CanvasRenderingContext2D, cx: number, cy: number, rad: number, color: string) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(0.6, rad * 0.16);
+    ctx.lineCap = "round";
+    ctx.globalAlpha = 0.9;
+    // ring
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    ctx.stroke();
+    // a broken connector: two stubs meeting a gap across the ring's middle
+    const g = rad * 0.26; // half-gap
+    const reach = rad * 0.92;
+    ctx.beginPath();
+    ctx.moveTo(cx - reach, cy);
+    ctx.lineTo(cx - g, cy);
+    ctx.moveTo(cx + g, cy);
+    ctx.lineTo(cx + reach, cy);
+    ctx.stroke();
+    // a slash through the gap to read clearly as "no connection"
+    ctx.beginPath();
+    ctx.moveTo(cx - g * 0.9, cy + g * 1.5);
+    ctx.lineTo(cx + g * 0.9, cy - g * 1.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   private drawBoard(ctx: CanvasRenderingContext2D, r: Room, base: number) {
     const b = boardRect(r.x0, base);
     if (b.w < 20 || b.h < 14) return;
@@ -2760,13 +2842,22 @@ class PixelCrew {
         const btns = this.commitButtons(r);
         const sy = bodyBot - 1.5; // shared baseline for the row
         ctx.textAlign = "left";
+        // a faint rounded tint behind whichever control the cursor is over
+        const hoverTint = (rc: { x: number; y: number; w: number; h: number }, color: string) => {
+          ctx.fillStyle = color;
+          ctx.fillRect(rc.x - 0.5, rc.y, rc.w + 1, rc.h);
+        };
         if (btns.push) {
-          ctx.fillStyle = "#ffb13d"; // up = push local commits upstream
+          const hv = this.hov("push:" + r.name);
+          if (hv) hoverTint(btns.push, "rgba(255,177,61,0.22)");
+          ctx.fillStyle = hv ? "#ffd9a3" : "#ffb13d"; // up = push local commits upstream
           ctx.font = "bold 4px 'Martian Mono', monospace";
           ctx.fillText(`↑${bd.unpushed}`, btns.push.x + 0.5, sy);
         }
         if (btns.pull) {
-          ctx.fillStyle = "#56c7ff"; // down = pull upstream commits
+          const hv = this.hov("pull:" + r.name);
+          if (hv) hoverTint(btns.pull, "rgba(86,199,255,0.22)");
+          ctx.fillStyle = hv ? "#a9e2ff" : "#56c7ff"; // down = pull upstream commits
           ctx.font = "bold 4px 'Martian Mono', monospace";
           ctx.fillText(`↓${bd.behind}`, btns.pull.x + 0.5, sy);
         }
@@ -2776,7 +2867,9 @@ class PixelCrew {
           ctx.fillText("synced", cx, sy);
         }
         if (btns.fetch) {
-          ctx.fillStyle = "rgba(120,200,255,0.8)"; // refresh = fetch remote refs
+          const hv = this.hov("fetch:" + r.name);
+          if (hv) hoverTint(btns.fetch, "rgba(120,200,255,0.22)");
+          ctx.fillStyle = hv ? "#cfecff" : "rgba(120,200,255,0.8)"; // refresh = fetch remote refs
           ctx.font = "5px 'Martian Mono', monospace";
           ctx.fillText("↻", btns.fetch.x + 1, sy + 0.4);
         }
@@ -2808,15 +2901,18 @@ class PixelCrew {
       ctx.textAlign = "left";
       // open-in-GitHub button (↗) at the top-right of the PR cell
       const ob = { x: innerR - 6, y: bodyTop, w: 6, h: 6 };
-      ctx.fillStyle = "rgba(127,184,223,0.20)"; // accent-tinted chip so it reads as a link
+      const obHov = !!bd.pr?.url && this.hov("openpr:" + bd.pr.url);
+      ctx.fillStyle = obHov ? "rgba(127,184,223,0.44)" : "rgba(127,184,223,0.20)"; // accent chip, brighter on hover
       ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
-      ctx.fillStyle = "#9fd0f0"; // brighter accent arrow
+      ctx.fillStyle = obHov ? "#d6ecfb" : "#9fd0f0"; // brighter accent arrow
       ctx.font = "bold 6px 'IBM Plex Mono', monospace";
       ctx.textAlign = "center";
       ctx.fillText("↗", ob.x + ob.w / 2, ob.y + ob.h - 1.1);
       ctx.textAlign = "left";
     } else if (loadingPr) {
       this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
+    } else if (this.githubConnected === false) {
+      this.drawDisconnected(ctx, innerR - 2.6, py - 1.4, 2.2, "rgba(255,177,61,0.8)");
     }
     py += 6;
     if (!pr) {
@@ -2824,6 +2920,9 @@ class PixelCrew {
       if (loadingPr) {
         ctx.fillStyle = "rgba(185,140,255,0.7)";
         ctx.fillText("checking…", px, py);
+      } else if (this.githubConnected === false) {
+        ctx.fillStyle = "rgba(255,177,61,0.7)";
+        ctx.fillText("not connected", px, py);
       } else {
         ctx.fillStyle = "rgba(170,182,190,0.55)";
         ctx.fillText("no open PR", px, py);
@@ -3273,6 +3372,9 @@ class PixelCrew {
   },
   setReviewPrs(prs: { number: number; repo: string; title: string; branch?: string; url?: string }[]) {
     this._instance?.setReviewPrs(prs);
+  },
+  setGithubConnected(connected: boolean | null | undefined) {
+    this._instance?.setGithubConnected(connected);
   },
   setBoards(boards: Record<string, any>) {
     this._instance?.setBoards(boards);

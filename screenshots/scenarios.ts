@@ -16,6 +16,10 @@ export interface Scenario {
   state: { agents: any[]; rooms: any[]; boards: Record<string, any>; selectedId?: string };
   prs?: { crew: any[]; review: any[] };
   usage?: { fiveHour?: { pct: number; resetsAt?: number }; sevenDay?: { pct: number; resetsAt?: number } };
+  /** When set, open the settings overlay seeded with these capabilities. */
+  settings?: { caps: any; scopeHelp: { scope: string; why: string }[] };
+  /** GitHub connection flag sent on the prs message (false => disconnected UI). */
+  connected?: boolean;
 }
 
 const board = (over: Partial<Record<string, any>>) => ({
@@ -100,5 +104,42 @@ export const SCENARIOS: Scenario[] = [
       },
     },
     prs: { crew: [], review: [] },
+  },
+  {
+    // no GitHub token: the billboard + board PR cell show the disconnected glyph
+    // instead of mock data or a misleading empty state
+    name: "disconnected",
+    config: { eco: false },
+    connected: false,
+    state: {
+      agents: [
+        { id: "a1", name: "Atlas", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: [], contextTokens: 40_000, elapsed: "8m" },
+      ],
+      rooms: [
+        { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "feat/x" }] },
+      ],
+      boards: { "/repo": board({ branch: "feat/x", modified: 2, unstagedAdd: 30, unstagedDel: 5, ahead: 1, unpushed: 1, prReady: true }) },
+    },
+    prs: { crew: [], review: [] },
+  },
+  {
+    // the settings overlay, connected with a classic token that grants every
+    // feature. Drives the GitHub-access page for a screenshot.
+    name: "settings",
+    state: { agents: [], rooms: [], boards: {} },
+    settings: {
+      scopeHelp: [
+        { scope: "repo", why: "Read pull requests and CI checks on your PRIVATE repositories. Public-only? You can skip this, but private PRs will not appear." },
+        { scope: "read:org", why: "Resolve review requests assigned to you inside organizations (the 'PRs to review' billboard)." },
+      ],
+      caps: {
+        connected: true, login: "BradenTerry", tokenType: "classic", scopes: ["repo", "read:org"],
+        features: [
+          { key: "prs", label: "Pull requests", enabled: true, scope: "repo / public", why: "List your open PRs and their state." },
+          { key: "checks", label: "CI checks", enabled: true, scope: "repo", why: "Read the status-check rollup on your PRs." },
+          { key: "reviewRequests", label: "Reviews requested of you", enabled: true, scope: "read:org", why: "Find PRs across orgs that request your review." },
+        ],
+      },
+    },
   },
 ];
