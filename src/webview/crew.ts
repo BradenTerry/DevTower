@@ -150,7 +150,7 @@ interface Particle {
 }
 /** A glowing "commit packet" that flies from a dev's desk to the room board
  *  whenever that worktree's files change. */
-interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; color: string }
+interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; color: string; path?: { x: number; y: number }[] }
 interface Stroke { x1: number; y1: number; x2: number; y2: number; color: string }
 
 // A "room" is now one BUILDING = one worktree/checkout. Buildings of the same
@@ -273,6 +273,28 @@ interface Toon {
 
 const floorBase = (floor: number) => -floor * FLOOR_STEP;
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** Position at fraction t (0..1) along a polyline, measured by arc length. */
+function pointOnPath(path: { x: number; y: number }[], t: number): { x: number; y: number } {
+  if (path.length === 1) return path[0];
+  const segs: number[] = [];
+  let total = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    const len = Math.hypot(path[i + 1].x - path[i].x, path[i + 1].y - path[i].y);
+    segs.push(len);
+    total += len;
+  }
+  if (total === 0) return path[0];
+  let d = clamp(t, 0, 1) * total;
+  for (let i = 0; i < segs.length; i++) {
+    if (d <= segs[i] || i === segs.length - 1) {
+      const f = segs[i] === 0 ? 0 : d / segs[i];
+      return { x: path[i].x + (path[i + 1].x - path[i].x) * f, y: path[i].y + (path[i + 1].y - path[i].y) * f };
+    }
+    d -= segs[i];
+  }
+  return path[path.length - 1];
+}
 
 class PixelCrew {
   private ctx: CanvasRenderingContext2D;
@@ -623,20 +645,65 @@ class PixelCrew {
     else tn.targetX = deskX + 19;
   }
 
-  /** Fire a glowing packet from a working dev's desk up to the room's board — the
-   *  visual "a file just changed" signal. Falls back to room center if empty. */
-  private emitPacket(r: Room) {
-    let sx = r.x0 + ROOM_W / 2, sy = r.baseY - 16;
-    const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
-    const tn = occ ? this.toons.get(occ.id) : undefined;
-    if (tn) { sx = tn.x; sy = tn.base - tn.lift - 12; }
+  /** Where a desk's network cable plugs into the room's screen (bottom-centre of
+   *  the board), shared by the static cable art and the packet route. */
+  private cablePlug(r: Room): { x: number; y: number } {
     const b = boardRect(r.x0, r.baseY);
-    const tx = b.x + b.w * (0.3 + Math.random() * 0.4);
-    const ty = b.y + b.h * (0.4 + Math.random() * 0.3);
+    return { x: b.x + b.w / 2, y: b.y + b.h - 1 };
+  }
+
+  /** The cable polyline for a seat: computer → floor → screen plug. The same
+   *  path the "file changed" light-ball travels along. */
+  private cableRoute(r: Room, seat: { col: number; row: number }): { x: number; y: number }[] {
+    const base = r.baseY;
+    const dx = this.seatX(r, seat.col, seat.row);
+    const db = base - seat.row * ROW_DY;
+    const cx = dx + 8; // behind the monitor
+    const plug = this.cablePlug(r);
+    return [{ x: cx, y: db - 12 }, { x: cx, y: db + 0.5 }, plug];
+  }
+
+  /** Fire a glowing light-ball from a working dev's computer along its network
+   *  cable to the room's board — the visual "a file just changed" signal. Falls
+   *  back to a straight room-centre → screen lob when no dev/seat is known. */
+  private emitPacket(r: Room) {
+    const plug = this.cablePlug(r);
+    const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
+    const seat = occ ? r.plan?.seats.get(occ.id) : undefined;
+    const path = seat
+      ? this.cableRoute(r, seat)
+      : [{ x: r.x0 + ROOM_W / 2, y: r.baseY - 16 }, plug];
+    const s = path[0];
     this.packets.push({
-      x: sx, y: sy, sx, sy, tx, ty, t: 0,
+      x: s.x, y: s.y, sx: s.x, sy: s.y, tx: plug.x, ty: plug.y, t: 0, path,
       color: Math.random() < 0.6 ? "#3ee089" : "#56c7ff",
     });
+  }
+
+  /** Draw each occupied desk's network cable: computer → down to the floor →
+   *  back to the screen plug. Static art; the light-balls (packets) ride this
+   *  same route when a file changes. */
+  private drawCables(ctx: CanvasRenderingContext2D, r: Room) {
+    if (r.built < 0.85 || !r.plan) return;
+    ctx.save();
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    for (const [, seat] of r.plan.seats) {
+      const route = this.cableRoute(r, seat);
+      ctx.beginPath();
+      ctx.moveTo(route[0].x, route[0].y);
+      for (let i = 1; i < route.length; i++) ctx.lineTo(route[i].x, route[i].y);
+      ctx.strokeStyle = "rgba(8,12,16,0.5)"; // cable body
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(74,96,116,0.45)"; // faint top highlight
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+      // a little jack where it plugs into the desk
+      ctx.fillStyle = "#2a3138";
+      ctx.fillRect(route[0].x - 1, route[0].y - 1, 2, 2);
+    }
+    ctx.restore();
   }
 
   /** Build the campus: only rooms the operator added (reserved islands + their
@@ -1066,11 +1133,17 @@ class PixelCrew {
     }
     for (let i = this.packets.length - 1; i >= 0; i--) {
       const p = this.packets[i];
-      p.t += dt * 1.7;
+      p.t += dt * 1.3; // a touch slower so the run along the cable reads
       const e = Math.min(1, p.t);
-      const ease = e * e * (3 - 2 * e);
-      p.x = p.sx + (p.tx - p.sx) * ease;
-      p.y = p.sy + (p.ty - p.sy) * ease - Math.sin(ease * Math.PI) * 16; // lob it up to the wall
+      if (p.path && p.path.length >= 2) {
+        // ride the cable: computer → floor → screen, eased by arc length
+        const pos = pointOnPath(p.path, e * e * (3 - 2 * e));
+        p.x = pos.x; p.y = pos.y;
+      } else {
+        const ease = e * e * (3 - 2 * e);
+        p.x = p.sx + (p.tx - p.sx) * ease;
+        p.y = p.sy + (p.ty - p.sy) * ease - Math.sin(ease * Math.PI) * 16; // lob it up to the wall
+      }
       if (p.t >= 1) this.packets.splice(i, 1);
     }
 
@@ -1345,25 +1418,12 @@ class PixelCrew {
       ctx.fillRect(gx, grassFront, gw, 1.2);
     }
 
-    // ragged skyline: a roof slab caps each column; beacon on the tallest
-    let tallestCol = 0, tallestMax = -Infinity;
-    for (const [col, rng] of this.colRange) {
-      if (rng.max > tallestMax) {
-        tallestMax = rng.max;
-        tallestCol = col;
-      }
-    }
+    // ragged skyline: a roof slab caps each column
     for (const [col, rng] of this.colRange) {
       const x0 = cellX0(col);
       const roofY = floorBase(rng.max) - ROOM_H;
       ctx.fillStyle = "#2c353e";
       ctx.fillRect(x0 - 1.5, roofY - 3, ROOM_W + 3, 3.4);
-      if (col === tallestCol) {
-        ctx.fillStyle = "#3a4550";
-        ctx.fillRect(x0 + 8, roofY - 9, 2, 6); // antenna
-        ctx.fillStyle = "#ff6055";
-        if (this.frame % 10 < 5) ctx.fillRect(x0 + 7.4, roofY - 10.6, 3.2, 1.6); // beacon
-      }
     }
 
     // island platforms (the foundation the buildings stand on)
@@ -1371,6 +1431,10 @@ class PixelCrew {
 
     // rooms back layer
     for (const r of this.rooms.values()) this.drawRoomBack(ctx, r);
+
+    // network cables run each desk's computer down to the floor and back to the
+    // screen; drawn here so the desks + devs (next layer) occlude the near runs
+    for (const r of this.rooms.values()) this.drawCables(ctx, r);
 
     // ghost slots (+building extends an island, +island reserves a directory)
     for (const g of this.ghosts) this.drawGhost(ctx, g);
