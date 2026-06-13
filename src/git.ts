@@ -375,8 +375,11 @@ export async function branchSummary(cwd: string, forkBase?: string): Promise<Bra
   // additions aren't counted here — the file COUNT still reflects them.)
   const unstaged = await numstatTotals(cwd, ["diff", "--numstat"]);
   const stagedLines = await numstatTotals(cwd, ["diff", "--cached", "--numstat"]);
+  // three-dot: diff against the MERGE-BASE of countBase and HEAD, matching the
+  // rev-list count above. Two-dot here would diff tip-to-tip, which reads +0/-0
+  // when the base ref has diverged but happens to share HEAD's tree.
   const committed = countBase
-    ? await numstatTotals(cwd, ["diff", "--numstat", `${countBase}..HEAD`])
+    ? await numstatTotals(cwd, ["diff", "--numstat", `${countBase}...HEAD`])
     : { add: 0, del: 0 };
   // friendly base branch name for the board header (what this branch targets)
   let base = prBaseRef;
