@@ -1254,26 +1254,27 @@ export class ConsolePanel {
 
   <!-- top HUD -->
   <header class="hud-top">
-    <div class="brand"><span class="spark">◆</span>DEVTOWER</div>
     <div class="telemetry">
       <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
       <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
       <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
       <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
     </div>
-    <div class="usage" id="usage" hidden>
-      <span class="umeter" id="u-5h" title="Plan usage — 5-hour window">
-        <span class="ulbl">5H</span><span class="ubar"><i></i></span><b class="upct">–</b>
-      </span>
-      <span class="umeter" id="u-wk" title="Plan usage — weekly window">
-        <span class="ulbl">WK</span><span class="ubar"><i></i></span><b class="upct">–</b>
-      </span>
-    </div>
     <div class="spacer"></div>
     <button class="iconbtn" id="prbtn" title="Pull requests">⇄<span class="nbadge" id="pr-badge" hidden>0</span></button>
     <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">⚡</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
   </header>
+
+  <!-- plan-usage meters (5h / weekly token windows), pinned bottom-right -->
+  <div class="usage" id="usage" hidden>
+    <span class="umeter" id="u-5h" title="Plan usage — 5-hour window">
+      <span class="ulbl">5H</span><span class="ubar"><i></i></span><b class="upct">–</b>
+    </span>
+    <span class="umeter" id="u-wk" title="Plan usage — weekly window">
+      <span class="ulbl">WK</span><span class="ubar"><i></i></span><b class="upct">–</b>
+    </span>
+  </div>
 
   <!-- settings overlay (GitHub token + capabilities) -->
   <div class="settings-scrim" id="settings" hidden></div>
