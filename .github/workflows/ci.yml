@@ -1,8 +1,12 @@
 name: CI
 
-# Typechecks and builds on every pull request targeting main. Merges to main are not
+# Typechecks, tests, and builds on every pull request targeting main. Merges to main are not
 # re-tested here -- the PR already ran this gate, and the release workflow re-runs it on the
 # tagged commit before publishing, so that step is the actual release gate.
+#
+# The job fans out across the three OSes the extension ships to. The tests exercise the
+# OS-sensitive logic (git plumbing, transcript scanning, path handling), so the matrix is the
+# point: a Windows-only path-separator or line-ending regression fails here, not in the wild.
 on:
   pull_request:
     branches: [main]
@@ -11,10 +15,19 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Cancel superseded runs on the same PR to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    name: Typecheck + build
-    runs-on: ubuntu-latest
+  test:
+    name: Typecheck + test + build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +40,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Test
+        run: npm test
 
       - name: Build (production bundle)
         run: npm run build
