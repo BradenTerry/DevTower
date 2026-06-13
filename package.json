@@ -182,7 +182,7 @@
         "devtower.efficiencyMode": {
           "type": "boolean",
           "default": false,
-          "description": "Reduce animation/particle work in the tower to save CPU. Toggle from the ⚡ button in the tower; your choice is saved here."
+          "description": "Reduce animation/particle work in the tower to save CPU. Toggle from the \u26a1 button in the tower; your choice is saved here."
         },
         "devtower.claudeCommand": {
           "type": "string",
@@ -247,9 +247,11 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "package": "npx --yes @vscode/vsce package --readme-path MARKETPLACE.md"
+    "package": "npx --yes @vscode/vsce package --readme-path MARKETPLACE.md",
+    "screenshots": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.20.0",
