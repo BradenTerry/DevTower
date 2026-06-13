@@ -7,6 +7,38 @@ are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-13
+
+### Added
+
+- **GitHub access via a Personal Access Token**, set in a new tabbed **Settings** page (the ⚙ gear,
+  top right). The token is stored in VS Code SecretStorage (OS keychain), probed for the account and
+  granted scopes, and lights up only the features it can serve. The page offers pre-filled
+  create-token links for fine-grained (name + permissions) and classic tokens.
+- A **disconnected** placeholder in the PR billboard and board PR cells when no GitHub token is set.
+- **Pointer cursor and hover highlights** on canvas controls (`+ DEV`, a room's close, the COMMITS
+  push/pull/refresh buttons, the billboard refresh, and the open-in-GitHub arrows).
+- **Windows live-session detection** now counts running `claude` processes via WMI
+  (`Get-CimInstance Win32_Process`) and caps shown sessions to that many, instead of relying only on
+  an mtime-freshness window.
+
+### Changed
+
+- PRs are discovered for **each room's branch** (the main building and worktree rooms), not just
+  branches that have an agent, so a PR opened outside DevTower (e.g. from the CLI) still appears.
+
+### Fixed
+
+- The committed line stat showed **+0/-0** on branches whose base ref had diverged but shared HEAD's
+  tree (two-dot vs three-dot `git diff` range).
+- The efficiency-mode HUD button had no visible toggle state, so it read as broken.
+- The agent panel rebuilt (flashed) on every poll even when nothing changed.
+
+### Removed
+
+- **All mock data** — mock agents, mock PRs, and the `devtower.useMockData` setting. With no token,
+  PR areas show the disconnected state.
+
 ## [0.2.0] - 2026-06-13
 
 ### Fixed
