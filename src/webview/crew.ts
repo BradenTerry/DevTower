@@ -738,7 +738,11 @@ class PixelCrew {
     }
     if (arriving.size) {
       for (const [id, tn] of [...this.toons]) {
-        if (seen.has(id) || tn.leaving || tn.entering) continue; // only a settled, departing dev
+        // only a settled, departing dev we OWN. An external (outside-DevTower)
+        // toon must never be re-keyed: its session didn't /clear-restart, so
+        // grabbing it would drag an unrelated agent through the shred trip and
+        // swap desks with the new dev.
+        if (seen.has(id) || tn.leaving || tn.entering || tn.agent.external) continue;
         const key = tn.agent.worktree?.trim();
         const next = key ? arriving.get(key)?.shift() : undefined;
         if (!next) continue;
