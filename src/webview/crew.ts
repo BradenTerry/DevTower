@@ -150,7 +150,7 @@ interface Particle {
 }
 /** A glowing "commit packet" that flies from a dev's desk to the room board
  *  whenever that worktree's files change. */
-interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; color: string; path?: { x: number; y: number }[] }
+interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; color: string; ph: number; path?: { x: number; y: number }[] }
 interface Stroke { x1: number; y1: number; x2: number; y2: number; color: string }
 
 // A "room" is now one BUILDING = one worktree/checkout. Buildings of the same
@@ -175,9 +175,12 @@ interface Room {
   scribbles: Stroke[];
   decor: number;
   plan?: SeatPlan; // desks grouped by worktree (recomputed each layout)
-  board?: BoardData; // live git/PR data shown on the back-wall screen
+  board?: BoardData; // latest live git/PR data from the extension (incoming)
+  boardShown?: BoardData; // what the screen currently renders; swapped in when a beam lands
   statSig: string; // last seen git signature; any change (stage/commit/…) → fire a beam
   statPulse: number; // 0..1 board glow that decays after a change
+  swapPending?: boolean; // a beam is in flight; update the screen when it arrives
+  swapClock?: number; // seconds since the beam was fired
 }
 
 /** Board payload pushed from the extension (see consolePanel BoardData). */
@@ -691,20 +694,20 @@ class PixelCrew {
   /** Fire a glowing light-ball from a working dev's computer along its network
    *  cable, through the port, and up into the screen — the "git changed" signal.
    *  Falls back to a room-centre → port route when no dev/seat is known. */
-  private emitPacket(r: Room) {
-    const b = boardRect(r.x0, r.baseY);
+  private emitPacket(r: Room, delay = 0) {
     const plug = this.cablePlug(r);
-    const screen = { x: b.x + b.w / 2, y: b.y + b.h * 0.5 }; // into the TV
     const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
     const seat = occ ? r.plan?.seats.get(occ.id) : undefined;
-    const cable = seat
+    // the ball rides the cable and STOPS at the wall port below the screen
+    const path = seat
       ? this.cableRoute(r, seat)
       : [{ x: r.x0 + ROOM_W / 2, y: r.baseY - 16 }, plug];
-    const path = [...cable, screen]; // ride the cable to the port, then up into the screen
     const s = path[0];
+    // negative t holds the ball at the source so a burst streams out over time
     this.packets.push({
-      x: s.x, y: s.y, sx: s.x, sy: s.y, tx: screen.x, ty: screen.y, t: 0, path,
+      x: s.x, y: s.y, sx: s.x, sy: s.y, tx: plug.x, ty: plug.y, t: -delay, path,
       color: Math.random() < 0.6 ? "#3ee089" : "#56c7ff",
+      ph: Math.random() * Math.PI * 2, // flicker/pulse phase
     });
   }
 
@@ -1089,7 +1092,7 @@ class PixelCrew {
   private sceneIdle(): boolean {
     if (this.particles.length || this.leaving.length || this.packets.length) return false;
     for (const r of this.rooms.values()) {
-      if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02) return false;
+      if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending) return false;
       // still sliding toward its packed cell (collapse animation)
       if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5) return false;
     }
@@ -1153,26 +1156,42 @@ class PixelCrew {
       this.layout(); // free the cells → ghost slots reappear
     }
 
-    // boards: any git change (modified/staged/commits/push churn) fires a beam of
-    // light up each desk's cable to the board; the glow then decays
+    // boards: any git change (modified/staged/commits/push churn) sends a beam of
+    // light up each desk's cable; the SCREEN only updates once the beam lands
+    const BEAM_TRAVEL = 1 / 0.55; // seconds for the lead ball to reach the screen
     for (const r of this.rooms.values()) {
       if (r.statPulse > 0) r.statPulse = Math.max(0, r.statPulse - dt * 1.4);
       const b = r.board;
       const sig = b
         ? `${b.modified}|${b.staged}|${b.ahead}|${b.committedAdd}|${b.committedDel}|${b.commits.length}`
         : "none";
-      if (r.statSig === "") { r.statSig = sig; continue; } // first sync, no burst
-      if (sig !== r.statSig && r.built > 0.6) {
-        const burst = this.eco ? 1 : 4;
-        for (let i = 0; i < burst; i++) this.emitPacket(r);
-        r.statPulse = 1;
+      if (r.statSig === "") { r.statSig = sig; r.boardShown = b; continue; } // first sync shows at once
+      if (sig !== r.statSig) {
+        r.statSig = sig;
+        if (b && r.built > 0.6) {
+          // git changed: stream the beam now, hold the OLD screen until it arrives
+          const burst = this.eco ? 1 : 5;
+          for (let i = 0; i < burst; i++) this.emitPacket(r, i * 0.3);
+          r.swapPending = true;
+          r.swapClock = 0;
+        } else {
+          r.boardShown = b; // not built / no board → just update
+        }
       }
-      r.statSig = sig;
+      // when the lead ball reaches the screen, swap in the new data + flash
+      if (r.swapPending) {
+        r.swapClock = (r.swapClock ?? 0) + dt;
+        if (r.swapClock >= BEAM_TRAVEL) {
+          r.boardShown = r.board;
+          r.statPulse = 1;
+          r.swapPending = false;
+        }
+      }
     }
     for (let i = this.packets.length - 1; i >= 0; i--) {
       const p = this.packets[i];
-      p.t += dt * 1.3; // a touch slower so the run along the cable reads
-      const e = Math.min(1, p.t);
+      p.t += dt * 0.55; // slow travel so the run along the cable is easy to follow
+      const e = clamp(p.t, 0, 1); // negative t (staggered start) holds at the source
       if (p.path && p.path.length >= 2) {
         // ride the cable: computer → floor → screen, eased by arc length
         const pos = pointOnPath(p.path, e * e * (3 - 2 * e));
@@ -1524,29 +1543,22 @@ class PixelCrew {
     }
     ctx.globalAlpha = 1;
 
-    // light-balls riding the cables up to the screens
+    // a small glowing light that flickers + pulses as it travels the cable
     for (const p of this.packets) {
-      const e = Math.min(1, p.t);
-      const eased = e * e * (3 - 2 * e);
+      if (p.t < 0) continue; // still queued at the source (staggered start)
       const fade = p.t < 0.85 ? 1 : clamp((1 - p.t) / 0.15, 0, 1);
-      // a glowing tail trailing behind along the cable path
-      if (p.path && p.path.length >= 2) {
-        for (let k = 1; k <= 4; k++) {
-          const tp = pointOnPath(p.path, Math.max(0, eased - k * 0.035));
-          const s = 2.4 - k * 0.4;
-          ctx.globalAlpha = (0.2 - k * 0.035) * fade;
-          ctx.fillStyle = p.color;
-          ctx.fillRect(tp.x - s / 2, tp.y - s / 2, s, s);
-        }
-      }
+      const pulse = 0.8 + 0.2 * Math.sin(this.frame * 0.55 + p.ph); // slow breathing
+      const flick = 0.82 + Math.random() * 0.18; // subtle flicker
+      const a = fade * pulse * flick;
+      const rad = 1.3 + 0.45 * Math.sin(this.frame * 0.55 + p.ph);
       ctx.fillStyle = p.color;
-      ctx.globalAlpha = 0.4 * fade; // outer glow
-      ctx.fillRect(p.x - 2.6, p.y - 2.6, 5.2, 5.2);
-      ctx.globalAlpha = 0.85 * fade; // colored body
-      ctx.fillRect(p.x - 1.4, p.y - 1.4, 2.8, 2.8);
-      ctx.globalAlpha = fade; // bright white core
-      ctx.fillStyle = "#eafff4";
-      ctx.fillRect(p.x - 0.7, p.y - 0.7, 1.4, 1.4);
+      ctx.globalAlpha = 0.22 * a; // soft outer halo
+      ctx.fillRect(p.x - rad - 1.4, p.y - rad - 1.4, (rad + 1.4) * 2, (rad + 1.4) * 2);
+      ctx.globalAlpha = 0.5 * a; // colored glow
+      ctx.fillRect(p.x - rad, p.y - rad, rad * 2, rad * 2);
+      ctx.globalAlpha = Math.min(1, a + 0.1); // small bright core
+      ctx.fillStyle = "#e6fff4";
+      ctx.fillRect(p.x - 0.6, p.y - 0.6, 1.2, 1.2);
     }
     ctx.globalAlpha = 1;
 
@@ -2005,7 +2017,7 @@ class PixelCrew {
     ctx.textAlign = "left";
     const branch = r.branch && r.branch !== "—" ? r.branch : r.isMain ? "main" : "—";
     // " → base" suffix tells you what this branch targets / is based off of
-    const baseName = r.board?.base || "";
+    const baseName = (r.boardShown ?? r.board)?.base || "";
     const suffix = baseName && baseName !== branch ? `→ ${baseName}` : "";
     ctx.font = "4px 'IBM Plex Mono', monospace";
     const suffixW = suffix ? ctx.measureText(suffix).width + 3 : 0;
@@ -2028,7 +2040,7 @@ class PixelCrew {
     ctx.fillRect(b.x + pad, b.y + 9.5, b.w - pad * 2, 0.8);
     ctx.restore();
 
-    const bd = r.board;
+    const bd = r.boardShown ?? r.board;
     const placeholder = (text: string, color: string) => {
       ctx.save();
       ctx.textAlign = "center";
