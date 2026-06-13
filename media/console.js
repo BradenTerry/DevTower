@@ -42,12 +42,13 @@
     window.DevTowerCrew.onAssignReview((pr) => openReviewDispatch(pr));
     window.DevTowerCrew.onRefreshPrs(() => vscode.postMessage({ type: "refreshPrs" }));
     window.DevTowerCrew.onOpenPr((url) => vscode.postMessage({ type: "action", act: "openPr", url }));
+    if (DevTowerCrew.onDebug) DevTowerCrew.onDebug((event, data) => vscode.postMessage({ type: "debug", event, data }));
     window.DevTowerCrew.start();
   }
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, external: a.external, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 
@@ -583,6 +584,7 @@
       renderUsage(m.usage);
     } else if (m.type === "config") {
       applyEco(!!m.eco); // saved efficiency-mode preference (default off)
+      if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(!!m.debug); // mirror devtower.debugLog into the scene
       if (Array.isArray(m.reviewSkills) && m.reviewSkills.length) reviewSkills = m.reviewSkills;
       if (m.reviewDefaults && typeof m.reviewDefaults === "object") reviewDefaults = m.reviewDefaults;
       if (Array.isArray(m.reviewAgents)) reviewAgents = m.reviewAgents;

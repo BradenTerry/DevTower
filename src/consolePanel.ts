@@ -4,10 +4,12 @@ import { TerminalManager } from "./terminals";
 import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
+import { randomUUID } from "crypto";
 import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { ClaudeDiscovery } from "./claude";
+import { dlog } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
 
@@ -140,6 +142,11 @@ export class ConsolePanel {
     this.prs.onChange(() => this.postPrs(), null, this.disposables);
     this.prs.onChange(() => void this.refreshState(), null, this.disposables); // PR → board column
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    // mirror a live devtower.debugLog toggle into the scene so shred/toon events
+    // start (or stop) without reopening the console
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("devtower.debugLog")) this.postConfig();
+    }, null, this.disposables);
     this.startUsage();
     // a saved file is a working-tree (unstaged) change → refresh promptly
     vscode.workspace.onDidSaveTextDocument(() => this.onGitChange(), null, this.disposables);
@@ -253,16 +260,7 @@ export class ConsolePanel {
         this.postUsage();
         // push the persisted efficiency-mode setting (defaults off) plus the
         // review-dispatch options (selectable skills + saved defaults)
-        {
-          const cfg = vscode.workspace.getConfiguration("devtower");
-          this.panel.webview.postMessage({
-            type: "config",
-            eco: cfg.get<boolean>("efficiencyMode", false),
-            reviewSkills: cfg.get<string[]>("reviewSkills", []),
-            reviewDefaults: cfg.get<object>("reviewDefaults", {}),
-            reviewAgents: this.discoverReviewAgents(),
-          });
-        }
+        this.postConfig();
         void this.refreshState(); // fill in each island's worktree rooms
         break;
       case "setEco":
@@ -354,7 +352,27 @@ export class ConsolePanel {
         }
         if (id) await this.handleAction(id, m.act, m.path);
         break;
+      case "debug":
+        // scene-side debug events (shred swaps, toon spawn/leave, ghost render)
+        // forwarded so the extension + webview share one ordered timeline
+        if (typeof m.event === "string") dlog(`scene.${m.event}`, m.data && typeof m.data === "object" ? m.data : undefined);
+        break;
     }
+  }
+
+  /** Push the persisted efficiency-mode + debug-log prefs and review-dispatch
+   *  options to the webview. Sent on ready and re-sent when debugLog toggles so
+   *  the scene's debug emission tracks the setting without a reopen. */
+  private postConfig(): void {
+    const cfg = vscode.workspace.getConfiguration("devtower");
+    this.panel.webview.postMessage({
+      type: "config",
+      eco: cfg.get<boolean>("efficiencyMode", false),
+      debug: cfg.get<boolean>("debugLog", false),
+      reviewSkills: cfg.get<string[]>("reviewSkills", []),
+      reviewDefaults: cfg.get<object>("reviewDefaults", {}),
+      reviewAgents: this.discoverReviewAgents(),
+    });
   }
 
   private postPrs(): void {
@@ -563,6 +581,7 @@ export class ConsolePanel {
       const n = this.store.list().filter((a) => a.repo === island).length + 1;
       const branch = await currentBranch(worktree);
       const id = `${island}-a${n}`;
+      dlog("panel.addDev", { island, worktree, id });
       this.store.apply({
         id,
         name: `${island}-${n}`,
@@ -645,11 +664,22 @@ export class ConsolePanel {
     const cfg = vscode.workspace.getConfiguration("devtower");
     const launch = cfg.get<string>("launchCommand", "").trim();
     const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim();
-    // mark the launch so discovery only adopts the session we start here, not a
-    // stale prior transcript already sitting in this worktree
-    this.discovery?.expectSession(id);
-    if (!launch && claudeCmd) this.terminals.send(id, claudeCmd);
-    else this.terminals.reveal(id);
+    // Pin an explicit session id so discovery binds THIS transcript to THIS
+    // placeholder deterministically — essential when several placeholders share
+    // one worktree (one + DEV per dev), where a worktree/time heuristic can't
+    // tell which placeholder launched which session. Only the default `claude`
+    // path can carry the flag; a custom launchCommand falls back to the
+    // launch-time/worktree heuristic in discovery.
+    const sessionId = randomUUID();
+    const mode = !launch && claudeCmd ? "claude" : launch ? "launchCommand" : "reveal";
+    dlog("panel.launchSession", { id, mode, sessionId: mode === "claude" ? sessionId : undefined });
+    if (!launch && claudeCmd) {
+      this.discovery?.expectSession(id, sessionId);
+      this.terminals.send(id, `${claudeCmd} --session-id ${sessionId}`);
+    } else {
+      this.discovery?.expectSession(id);
+      this.terminals.reveal(id);
+    }
   }
 
   /** Recompute live git stats + branch per ROOM (keyed by the room's checkout
@@ -1224,26 +1254,27 @@ export class ConsolePanel {
 
   <!-- top HUD -->
   <header class="hud-top">
-    <div class="brand"><span class="spark">◆</span>DEVTOWER</div>
     <div class="telemetry">
       <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
       <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
       <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
       <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
     </div>
-    <div class="usage" id="usage" hidden>
-      <span class="umeter" id="u-5h" title="Plan usage — 5-hour window">
-        <span class="ulbl">5H</span><span class="ubar"><i></i></span><b class="upct">–</b>
-      </span>
-      <span class="umeter" id="u-wk" title="Plan usage — weekly window">
-        <span class="ulbl">WK</span><span class="ubar"><i></i></span><b class="upct">–</b>
-      </span>
-    </div>
     <div class="spacer"></div>
     <button class="iconbtn" id="prbtn" title="Pull requests">⇄<span class="nbadge" id="pr-badge" hidden>0</span></button>
     <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">⚡</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
   </header>
+
+  <!-- plan-usage meters (5h / weekly token windows), pinned bottom-right -->
+  <div class="usage" id="usage" hidden>
+    <span class="umeter" id="u-5h" title="Plan usage — 5-hour window">
+      <span class="ulbl">5H</span><span class="ubar"><i></i></span><b class="upct">–</b>
+    </span>
+    <span class="umeter" id="u-wk" title="Plan usage — weekly window">
+      <span class="ulbl">WK</span><span class="ubar"><i></i></span><b class="upct">–</b>
+    </span>
+  </div>
 
   <!-- settings overlay (GitHub token + capabilities) -->
   <div class="settings-scrim" id="settings" hidden></div>

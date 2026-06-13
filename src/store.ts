@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { dlog } from "./debugLog";
 
 export type AgentState = "active" | "waiting" | "complete" | "error" | "idle";
 
@@ -113,6 +114,10 @@ export class DevTowerStore {
   private agents = new Map<string, Agent>();
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
+  // change-coalescing for batch(): while depth > 0, fires are deferred and
+  // collapsed into a single emit when the outermost batch closes.
+  private batchDepth = 0;
+  private batchDirty = false;
   private _onSelect = new vscode.EventEmitter<string | undefined>();
   readonly onDidChangeSelection = this._onSelect.event;
   private selectedId?: string;
@@ -136,6 +141,35 @@ export class DevTowerStore {
 
   list(): Agent[] {
     return [...this.agents.values()];
+  }
+
+  /** Run `fn` with all change emissions coalesced into ONE fire at the end.
+   *  A single discovery refresh applies the new session AND removes the old one;
+   *  without batching those land as two separate webview posts, so a /clear is
+   *  seen as an old dev leaving + a new dev entering instead of one in-place
+   *  swap — which is exactly what suppresses the shred trip. Batching makes the
+   *  refresh reach the scene as a single atomic snapshot. Reentrancy-safe via a
+   *  depth count; only the outermost batch emits. */
+  async batch(fn: () => void | Promise<void>): Promise<void> {
+    this.batchDepth++;
+    try {
+      await fn();
+    } finally {
+      this.batchDepth--;
+      if (this.batchDepth === 0 && this.batchDirty) {
+        this.batchDirty = false;
+        this._onChange.fire();
+      }
+    }
+  }
+
+  /** Fire a change, unless inside a batch() — then defer to the batch close. */
+  private emit(): void {
+    if (this.batchDepth > 0) {
+      this.batchDirty = true;
+      return;
+    }
+    this._onChange.fire();
   }
 
   get(id: string): Agent | undefined {
@@ -177,11 +211,31 @@ export class DevTowerStore {
       reviewOf: ev.reviewOf ?? existing?.reviewOf,
     };
     this.agents.set(ev.id, merged);
-    this._onChange.fire();
+    // log only meaningful transitions, not every poll's no-op re-apply
+    if (
+      !existing ||
+      existing.external !== merged.external ||
+      !!existing.transcriptPath !== !!merged.transcriptPath ||
+      existing.state !== merged.state ||
+      existing.worktree !== merged.worktree
+    ) {
+      dlog(existing ? "store.update" : "store.create", {
+        id: merged.id,
+        name: merged.name,
+        external: !!merged.external,
+        hasTranscript: !!merged.transcriptPath,
+        state: merged.state,
+        worktree: merged.worktree,
+      });
+    }
+    this.emit();
   }
 
   remove(id: string): void {
-    if (this.agents.delete(id)) this._onChange.fire();
+    if (this.agents.delete(id)) {
+      dlog("store.remove", { id });
+      this.emit();
+    }
   }
 
   /** Manual state change from the UI (quick actions / send). */
@@ -190,7 +244,7 @@ export class DevTowerStore {
     if (!a) return;
     a.state = state;
     if (task !== undefined) a.task = task;
-    this._onChange.fire();
+    this.emit();
   }
 
   /** Begin watching the configured state.jsonl for live events. */

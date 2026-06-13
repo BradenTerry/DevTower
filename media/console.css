@@ -43,13 +43,6 @@ button{ font-family:inherit; }
   display:flex; align-items:center; gap:12px; pointer-events:none;
 }
 .hud-top > *{ pointer-events:auto; }
-.brand{
-  display:flex; align-items:center; gap:9px;
-  font-family:var(--label); font-weight:700; font-size:14px; letter-spacing:.3em; color:var(--text);
-  background:var(--glass); border:1px solid var(--edge); border-radius:12px;
-  padding:11px 18px 11px 15px; backdrop-filter:var(--blur); box-shadow:var(--shadow);
-}
-.brand .spark{ color:var(--amber); font-size:16px; }
 .telemetry{
   display:flex; align-items:center; gap:0;
   background:var(--glass); border:1px solid var(--edge); border-radius:12px;
@@ -64,7 +57,8 @@ button{ font-family:inherit; }
 .pip.waiting{ background:var(--waiting); box-shadow:0 0 8px var(--waiting); }
 .pip.error{ background:var(--error); box-shadow:0 0 8px var(--error); }
 .usage{
-  display:flex; align-items:center; gap:0;
+  position:fixed; right:16px; bottom:16px; z-index:10;
+  display:flex; align-items:center; gap:0; pointer-events:auto;
   background:var(--glass); border:1px solid var(--edge); border-radius:12px;
   backdrop-filter:var(--blur); box-shadow:var(--shadow); overflow:hidden;
 }

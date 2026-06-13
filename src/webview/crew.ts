@@ -22,6 +22,7 @@ interface CrewAgent {
   worktree?: string; // git worktree path; groups desks within a room
   branch?: string; // branch name, shown on the cluster sign
   skills?: string[]; // skills this session has used (accumulated, first-use order)
+  external?: boolean; // a live session running OUTSIDE DevTower (not one we launched)
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
   reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
 }
@@ -57,6 +58,32 @@ const SKINS = ["#f2c8a0", "#e0a87e", "#c68642", "#8d5524", "#ffd9b3", "#a86b3c"]
 const HAIRS = ["#2e2620", "#4a342a", "#16100c", "#7a5230", "#b88a4a", "#55585e", "#6e3a28"];
 const ACCENTS = ["#ff6055", "#56c7ff", "#3ee089", "#ffb13d", "#b98cff", "#ff8fc7"];
 
+/** Desaturate + dim one persona color (hsl() or #hex) for the ghosted render of
+ *  an external session — strips the chroma so it reads as gray, not "ours". */
+function ghostColor(c: string): string {
+  const m = /^hsl\((\d+)\s+(\d+)%\s+(\d+)%\)$/.exec(c);
+  if (m) return `hsl(${m[1]} 7% ${Math.round(+m[3] * 0.82)}%)`;
+  const h = c.replace("#", "");
+  if (h.length < 6) return c;
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  const y = 0.3 * r + 0.59 * g + 0.11 * b;
+  const hx = (v: number) => Math.round(Math.min(255, (v * 0.2 + y * 0.8) * 0.82)).toString(16).padStart(2, "0");
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+/** A persona with every color desaturated, for an external (outside) session. */
+function ghostPersona(p: ReturnType<typeof persona>): ReturnType<typeof persona> {
+  return {
+    ...p,
+    shirt: ghostColor(p.shirt),
+    shirtDark: ghostColor(p.shirtDark),
+    pants: ghostColor(p.pants),
+    skin: ghostColor(p.skin),
+    hair: ghostColor(p.hair),
+    accColor: ghostColor(p.accColor),
+  };
+}
+
 function persona(id: string) {
   const h = hash(id);
   const hue = h % 360;
@@ -82,10 +109,11 @@ const DOOR_W = 18;
 // (one per skill it uses) and carries it back to stack on its desk.
 const SHELF_REACH = 16; // world x (from room left) a dev stands at to fetch a book
 const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
-// Paper shredder on the right of the room: when a session is /cleared the dev
-// carries its stack of context papers here, feeds them in, then walks back.
-const SHRED_REACH = 168; // world x (from room left) a dev stands at to shred
-const SHRED_FEED = 1.6;  // seconds spent feeding the stack into the shredder
+// Paper shredder in the front-left corner, left of the bookshelf: when a session
+// is /cleared the dev carries its stack of context papers here, feeds them in,
+// then walks back. The bookshelf's near end is pulled back to make room for it.
+const SHRED_REACH = 18; // world x (from room left) a dev stands at to shred (just right of the bin)
+const SHRED_FEED = 1.6; // seconds spent feeding the stack into the shredder
 // Room depth: the interior is a shallow one-point-perspective box. The far wall
 // is inset by DEPTH_X on each side and its floor line sits DEPTH_Y above the
 // near floor; the floor, ceiling and side walls are drawn as trapezoids between
@@ -459,6 +487,9 @@ class PixelCrew {
   private onAssignReviewCb: (pr: { number: number; repo: string; title: string; branch?: string; url?: string }) => void = () => {};
   private onRefreshPrsCb: () => void = () => {};
   private onOpenPrCb: (url: string) => void = () => {};
+  // debug event sink (forwarded to the extension's debug log when enabled)
+  private onDebugCb: (event: string, data?: unknown) => void = () => {};
+  private debugOn = false;
 
   private resizeT: ReturnType<typeof setTimeout> | undefined;
 
@@ -615,6 +646,12 @@ class PixelCrew {
   }
   onRefreshPrs(cb: () => void) { this.onRefreshPrsCb = cb; }
   onOpenPr(cb: (url: string) => void) { this.onOpenPrCb = cb; }
+  onDebug(cb: (event: string, data?: unknown) => void) { this.onDebugCb = cb; }
+  setDebug(on: boolean) { this.debugOn = on; }
+  /** Emit a scene debug event (no-op unless devtower.debugLog is on). */
+  private dbg(event: string, data?: Record<string, unknown>) {
+    if (this.debugOn) this.onDebugCb(event, data);
+  }
   private newToonIds = new Set<string>();
 
   /* ============ DATA ============ */
@@ -701,12 +738,17 @@ class PixelCrew {
     }
     if (arriving.size) {
       for (const [id, tn] of [...this.toons]) {
-        if (seen.has(id) || tn.leaving || tn.entering) continue; // only a settled, departing dev
+        // only a settled, departing dev we OWN. An external (outside-DevTower)
+        // toon must never be re-keyed: its session didn't /clear-restart, so
+        // grabbing it would drag an unrelated agent through the shred trip and
+        // swap desks with the new dev.
+        if (seen.has(id) || tn.leaving || tn.entering || tn.agent.external) continue;
         const key = tn.agent.worktree?.trim();
         const next = key ? arriving.get(key)?.shift() : undefined;
         if (!next) continue;
         // re-key the toon to the new session, keeping its persona/seat/position so
         // it reads as the SAME dev continuing after wiping its context.
+        this.dbg("shred.swap", { from: id, to: next.id, worktree: key, wasExternal: !!tn.agent.external, nowExternal: !!next.external });
         this.toons.delete(id);
         tn.agent = next;
         tn.shred = { phase: "out", t: 0 };
@@ -724,6 +766,7 @@ class PixelCrew {
         // one-refresh blip (e.g. a PR refresh momentarily drops it). Park its spot
         // so a quick return resumes here; meanwhile it walks out, and if it comes
         // back the recreate below cancels that exit.
+        this.dbg("toon.leave", { id, worktree: tn.agent.worktree, external: !!tn.agent.external });
         this.parkToon(id, tn);
         tn.leaving = true;
         this.leaving.push(tn);
@@ -761,7 +804,10 @@ class PixelCrew {
           ph: (hash(a.id) % 628) / 100,
         };
         this.toons.set(a.id, tn);
-        if (!resume) this.newToonIds.add(a.id);
+        if (!resume) {
+          this.newToonIds.add(a.id);
+          this.dbg("toon.spawn", { id: a.id, worktree: a.worktree, external: !!a.external });
+        }
       }
       // a reviewer's decision resolving (pending → approved/changes) thuds the
       // verdict stamp in; record the frame so the overlay can animate it once
@@ -2072,7 +2118,19 @@ class PixelCrew {
       const rowToons = seated.filter((t) => displayRow(t) === row);
       for (const tn of this.leaving) if (displayRow(tn) === row) rowToons.push(tn);
       rowToons.sort((a, b) => a.x - b.x);
-      for (const tn of rowToons) this.drawToon(ctx, tn);
+      for (const tn of rowToons) {
+        // a session running OUTSIDE DevTower is rendered ghosted — grayed and
+        // semi-transparent — so it reads as "not one of ours" at a glance
+        // outside-DevTower sessions render translucent (here) and desaturated
+        // (palette swap in drawToon) so they read as "not one of ours"
+        const ghost = tn.agent.external;
+        if (ghost) {
+          ctx.save();
+          ctx.globalAlpha *= 0.62;
+        }
+        this.drawToon(ctx, tn);
+        if (ghost) ctx.restore();
+      }
       for (const r of this.rooms.values()) this.drawDesks(ctx, r, row);
     }
     // particles
@@ -2155,8 +2213,21 @@ class PixelCrew {
       const box = { x0: s.x - nw / 2 - 2, x1: s.x + nw / 2 + 2, y0: s.y - 18, y1: s.y - 6 };
       if (sel || !nameOverlaps(box)) {
         claimed.push(box);
-        ctx.fillStyle = sel ? "#ffb13d" : "rgba(230,238,240,0.88)";
+        const ext = tn.agent.external;
+        ctx.fillStyle = sel ? "#ffb13d" : ext ? "rgba(150,162,170,0.7)" : "rgba(230,238,240,0.88)";
         ctx.fillText(tn.agent.name, s.x, s.y - 8);
+        if (ext && !sel) {
+          // dashed underline: the "running outside DevTower" marker
+          ctx.save();
+          ctx.strokeStyle = "rgba(160,172,180,0.8)";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([2.5, 2]);
+          ctx.beginPath();
+          ctx.moveTo(s.x - nw / 2, s.y - 5);
+          ctx.lineTo(s.x + nw / 2, s.y - 5);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
       const glyph = st === "waiting" ? "?" : st === "complete" ? "✓" : st === "error" ? "✗" : "";
       if (glyph) {
@@ -3119,7 +3190,9 @@ class PixelCrew {
     // floor. The cabinet stands PROUD of the wall: `front` offsets a wall point
     // toward the room (and slightly down) to fake depth, the offset shrinking
     // toward the back wall so it reads in perspective.
-    const t0 = 0.05, t1 = 0.95, fTop = 0.68, fBot = 0.99;
+    // t0 starts back from the near opening so the front-left corner is clear for
+    // the paper shredder (see drawShredder); the cabinet is a touch less wide.
+    const t0 = 0.4, t1 = 0.95, fTop = 0.68, fBot = 0.99;
     const front = (t: number, f: number) => {
       const p = onWall(t, f);
       const d = 6 * (1 - t * 0.5); // protrusion: bigger up front, smaller at the back
@@ -3309,7 +3382,7 @@ class PixelCrew {
   }
 
   private drawToon(ctx: CanvasRenderingContext2D, tn: Toon) {
-    const p = tn.p;
+    const p = tn.agent.external ? ghostPersona(tn.p) : tn.p;
     const st = tn.agent.state;
     const walking = Math.abs(tn.targetX - tn.x) > 1;
     const f = this.frame + Math.floor(tn.ph * 10);
@@ -3611,5 +3684,11 @@ class PixelCrew {
   },
   setInsets(left: number, right: number) {
     this._instance?.setInsets(left, right);
+  },
+  setDebug(on: boolean) {
+    this._instance?.setDebug(on);
+  },
+  onDebug(cb: (event: string, data?: unknown) => void) {
+    this._instance?.onDebug(cb);
   },
 };

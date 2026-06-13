@@ -7,8 +7,11 @@ import { ConsolePanel } from "./consolePanel";
 import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
 import { initGithubAuth } from "./github";
+import { initDebugLog, dlog } from "./debugLog";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  initDebugLog(context);
+  dlog("activate", {});
   const store = new DevTowerStore(context);
   const terminals = new TerminalManager(store);
   const diffProvider = new DiffProvider(store);
