@@ -245,12 +245,15 @@
     "watch": "node esbuild.js --watch",
     "compile": "node esbuild.js",
     "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "package": "npx --yes @vscode/vsce package --readme-path MARKETPLACE.md"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.20.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.9"
   }
 }

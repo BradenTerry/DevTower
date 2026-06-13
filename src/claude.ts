@@ -354,7 +354,7 @@ interface Found {
 }
 
 /** Read head (for cwd) + tail (for last role / prompt / model) of a transcript. */
-async function readMeta(
+export async function readMeta(
   file: string,
   size: number
 ): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[] }> {
@@ -471,14 +471,14 @@ async function readMeta(
 /** True for non-human user turns Claude Code writes into the transcript:
  *  synthetic continuations, slash-command wrappers, hook/system-reminder blocks.
  *  These must never become an agent's displayed task. */
-function isSyntheticTask(text: string): boolean {
+export function isSyntheticTask(text: string): boolean {
   if (text === "<synthetic>") return true;
   if (/^<(synthetic|command-|local-command|bash-(input|stdout|stderr)|system-reminder|user-prompt-submit-hook)/i.test(text)) return true;
   if (/^Caveat: The messages below were generated/i.test(text)) return true;
   return false;
 }
 
-function lastMatch(s: string, re: RegExp, accept?: (v: string) => boolean): string | undefined {
+export function lastMatch(s: string, re: RegExp, accept?: (v: string) => boolean): string | undefined {
   let m: RegExpExecArray | null, last: string | undefined;
   while ((m = re.exec(s))) if (!accept || accept(m[1])) last = m[1];
   return last;
@@ -495,7 +495,7 @@ function flatten(content: unknown): string {
   return "";
 }
 
-function ago(mtime: number): string {
+export function ago(mtime: number): string {
   const m = Math.floor((Date.now() - mtime) / 60_000);
   if (m < 1) return "now";
   if (m < 60) return `${m}m ago`;

@@ -23,6 +23,78 @@ export interface GitStatus {
   unstaged: GitFile[];
 }
 
+/** Split command output into lines, tolerating CRLF as well as LF so parsing is
+ *  identical on Windows (where some tools emit \r\n) and POSIX. Trailing \r is
+ *  stripped from each line; no empty lines are dropped here (callers decide). */
+export function splitLines(out: string): string[] {
+  return out.split(/\r?\n/);
+}
+
+/** Parse `git status --porcelain` text into staged / unstaged buckets. Pure: no
+ *  IO, so it can be unit-tested with canned git output on any OS. */
+export function parseStatusPorcelain(out: string): { staged: GitFile[]; unstaged: GitFile[] } {
+  const staged: GitFile[] = [];
+  const unstaged: GitFile[] = [];
+  for (const line of splitLines(out)) {
+    if (!line) continue;
+    const index = line[0];
+    const work = line[1];
+    let p = line.slice(3);
+    // handle "orig -> new" for renames/copies
+    const arrow = p.indexOf(" -> ");
+    if (arrow !== -1) p = p.slice(arrow + 4);
+    p = p.replace(/^"(.*)"$/, "$1");
+
+    const untracked = index === "?" && work === "?";
+    const file: GitFile = {
+      path: p,
+      index,
+      work,
+      staged: index !== " " && index !== "?",
+      unstaged: untracked || (work !== " " && work !== "?"),
+      untracked,
+    };
+    if (file.staged) staged.push({ ...file });
+    if (file.unstaged) unstaged.push({ ...file });
+  }
+  return { staged, unstaged };
+}
+
+/** Parse `git <diff> --numstat` text into a path → {add,del} map. Binary files
+ *  report "-\t-" and contribute 0. Pure. */
+export function parseNumstat(out: string): Map<string, { add: number; del: number }> {
+  const counts = new Map<string, { add: number; del: number }>();
+  for (const line of splitLines(out)) {
+    if (!line.trim()) continue;
+    const [a, d, ...p] = line.split("\t");
+    const file = p.join("\t");
+    if (!file) continue;
+    const prev = counts.get(file) ?? { add: 0, del: 0 };
+    prev.add += a === "-" ? 0 : parseInt(a, 10) || 0;
+    prev.del += d === "-" ? 0 : parseInt(d, 10) || 0;
+    counts.set(file, prev);
+  }
+  return counts;
+}
+
+/** Parse `git worktree list --porcelain` into {path,branch} rows. Pure. */
+export function parseWorktreeList(out: string): { path: string; branch: string }[] {
+  const res: { path: string; branch: string }[] = [];
+  let cur: { path: string; branch: string } | null = null;
+  for (const line of splitLines(out)) {
+    if (line.startsWith("worktree ")) {
+      if (cur) res.push(cur);
+      cur = { path: line.slice(9).trim(), branch: "" };
+    } else if (line.startsWith("branch ") && cur) {
+      cur.branch = line.slice(7).replace(/^refs\/heads\//, "").trim();
+    } else if (line.startsWith("detached") && cur) {
+      cur.branch = "detached";
+    }
+  }
+  if (cur) res.push(cur);
+  return res;
+}
+
 export function runGit(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -78,31 +150,7 @@ export async function status(cwd: string): Promise<GitStatus> {
   const root = await topLevel(cwd);
   const branch = await currentBranch(cwd);
   const out = await runGit(cwd, ["status", "--porcelain", "--untracked-files=all"]);
-  const staged: GitFile[] = [];
-  const unstaged: GitFile[] = [];
-
-  for (const line of out.split("\n")) {
-    if (!line) continue;
-    const index = line[0];
-    const work = line[1];
-    let p = line.slice(3);
-    // handle "orig -> new" for renames/copies
-    const arrow = p.indexOf(" -> ");
-    if (arrow !== -1) p = p.slice(arrow + 4);
-    p = p.replace(/^"(.*)"$/, "$1");
-
-    const untracked = index === "?" && work === "?";
-    const file: GitFile = {
-      path: p,
-      index,
-      work,
-      staged: index !== " " && index !== "?",
-      unstaged: untracked || (work !== " " && work !== "?"),
-      untracked,
-    };
-    if (file.staged) staged.push({ ...file });
-    if (file.unstaged) unstaged.push({ ...file });
-  }
+  const { staged, unstaged } = parseStatusPorcelain(out);
   return { root, branch, staged, unstaged };
 }
 
@@ -125,7 +173,10 @@ export interface ChangeSummary {
  * so changes only appear when the agent's cwd is itself a repo root.
  */
 export async function changedFiles(cwd: string): Promise<ChangeSummary[]> {
-  const st = await status(cwd);
+  // No repo at cwd (e.g. an umbrella dir that merely contains repos) → []. status()
+  // throws there, so swallow it and honor the documented empty-list contract.
+  const st = await status(cwd).catch(() => null);
+  if (!st) return [];
   const counts = new Map<string, { add: number; del: number }>();
   const numstat = async (args: string[]) => {
     let out = "";
@@ -134,14 +185,11 @@ export async function changedFiles(cwd: string): Promise<ChangeSummary[]> {
     } catch {
       return;
     }
-    for (const line of out.split("\n")) {
-      if (!line.trim()) continue;
-      const [a, d, ...p] = line.split("\t");
-      const path = p.join("\t");
-      const prev = counts.get(path) ?? { add: 0, del: 0 };
-      prev.add += a === "-" ? 0 : parseInt(a, 10) || 0;
-      prev.del += d === "-" ? 0 : parseInt(d, 10) || 0;
-      counts.set(path, prev);
+    for (const [file, c] of parseNumstat(out)) {
+      const prev = counts.get(file) ?? { add: 0, del: 0 };
+      prev.add += c.add;
+      prev.del += c.del;
+      counts.set(file, prev);
     }
   };
   await numstat(["diff", "--numstat"]);
@@ -283,11 +331,9 @@ async function numstatTotals(cwd: string, args: string[]): Promise<{ add: number
     return { add: 0, del: 0 };
   }
   let add = 0, del = 0;
-  for (const line of out.split("\n")) {
-    if (!line.trim()) continue;
-    const [a, d] = line.split("\t");
-    add += a === "-" ? 0 : parseInt(a, 10) || 0;
-    del += d === "-" ? 0 : parseInt(d, 10) || 0;
+  for (const c of parseNumstat(out).values()) {
+    add += c.add;
+    del += c.del;
   }
   return { add, del };
 }
@@ -320,7 +366,7 @@ export async function branchSummary(cwd: string, forkBase?: string): Promise<Bra
   }
   let commits: string[] = [];
   try {
-    commits = (await runGit(cwd, ["log", "-12", "--format=%s"])).split("\n").map((s) => s.trim()).filter(Boolean);
+    commits = splitLines(await runGit(cwd, ["log", "-12", "--format=%s"])).map((s) => s.trim()).filter(Boolean);
   } catch {
     /* empty repo with no commits */
   }
@@ -378,20 +424,7 @@ export async function worktreeList(dir: string): Promise<{ path: string; branch:
   } catch {
     return [];
   }
-  const res: { path: string; branch: string }[] = [];
-  let cur: { path: string; branch: string } | null = null;
-  for (const line of out.split("\n")) {
-    if (line.startsWith("worktree ")) {
-      if (cur) res.push(cur);
-      cur = { path: line.slice(9).trim(), branch: "" };
-    } else if (line.startsWith("branch ") && cur) {
-      cur.branch = line.slice(7).replace(/^refs\/heads\//, "").trim();
-    } else if (line.startsWith("detached") && cur) {
-      cur.branch = "detached";
-    }
-  }
-  if (cur) res.push(cur);
-  return res;
+  return parseWorktreeList(out);
 }
 
 /** Remove a git worktree (force, to drop dirty/locked ones) and optionally its
