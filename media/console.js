@@ -32,7 +32,9 @@
     window.DevTowerCrew.onAddWorktree((island) => vscode.postMessage({ type: "addWorktree", island }));
     window.DevTowerCrew.onRemoveRoom((room) => vscode.postMessage({ type: "removeRoom", room }));
     window.DevTowerCrew.onRemoveWorktree((worktree, island) => vscode.postMessage({ type: "removeWorktree", worktree, island }));
-    window.DevTowerCrew.onSync((room) => vscode.postMessage({ type: "syncBranch", room }));
+    window.DevTowerCrew.onPush((room) => vscode.postMessage({ type: "pushBranch", room }));
+    window.DevTowerCrew.onPull((room) => vscode.postMessage({ type: "pullBranch", room }));
+    window.DevTowerCrew.onFetch((room) => vscode.postMessage({ type: "fetchBranch", room }));
     window.DevTowerCrew.onCd((id, target) =>
       vscode.postMessage({ type: "cdAgent", id, room: target.room, ghost: target.ghost })
     );
@@ -41,7 +43,7 @@
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 
@@ -225,9 +227,14 @@
   /* ---------- agent stats card ---------- */
   function contextOf(a) {
     if (!a.contextTokens) return null;
-    // 1M-context sessions don't always advertise it in the model id — if the
-    // window already exceeds 200k, it must be a 1M model
-    const limit = /1m/i.test(a.model || "") || a.contextTokens > 180_000 ? 1_000_000 : 200_000;
+    // Match Claude Code's status line: pick the session's real context window.
+    // The transcript stores the bare model id ("claude-opus-4-8") and drops the
+    // "[1m]" suffix the CLI shows, so /1m/ alone misses 1M sessions — the window
+    // stayed at 200k and the % read ~5x too high. Detect 1M by model family (the
+    // Claude 4.x Opus/Sonnet runs use the 1M beta), or once usage passes 200k.
+    const m = (a.model || "").toLowerCase();
+    const oneM = /1m/.test(m) || /(opus|sonnet)[ -]4/.test(m) || a.contextTokens > 200_000;
+    const limit = oneM ? 1_000_000 : 200_000;
     return Math.min(100, Math.round((a.contextTokens / limit) * 100));
   }
 
@@ -263,6 +270,11 @@
           <b>${pct === null ? "—" : pct + "%"}${tokens ? `<span class="tk"> ${tokens}</span>` : ""}</b>
         </div>
         <div class="srow"><span class="sl">Model</span><b>${esc(a.model || "—")}</b></div>
+        ${a.skills && a.skills.length ? `
+        <div class="srow skills-row">
+          <span class="sl">Skills</span>
+          <div class="skills">${a.skills.map((s) => `<span class="skill">${esc(s)}</span>`).join("")}</div>
+        </div>` : ""}
       </div>
 
       ${a.state === "waiting" ? `

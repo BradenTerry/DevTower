@@ -20,6 +20,7 @@ interface CrewAgent {
   model: string;
   worktree?: string; // git worktree path; groups desks within a room
   branch?: string; // branch name, shown on the cluster sign
+  skills?: string[]; // skills this session has used (accumulated, first-use order)
 }
 
 interface ReservedRoom {
@@ -74,6 +75,10 @@ const FLOOR_STEP = ROOM_H + SLAB;
 const WB_W = 42; // left inset before the first desk
 const DESK_W = 26;
 const DOOR_W = 18;
+// Bookshelf under the left window: a dev walks here to pick up a "skill" book
+// (one per skill it uses) and carries it back to stack on its desk.
+const SHELF_REACH = 16; // world x (from room left) a dev stands at to fetch a book
+const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
 // Room depth: the interior is a shallow one-point-perspective box. The far wall
 // is inset by DEPTH_X on each side and its floor line sits DEPTH_Y above the
 // near floor; the floor, ceiling and side walls are drawn as trapezoids between
@@ -284,6 +289,16 @@ interface Toon {
   ladderFrom?: number;
   ladderX?: number;
   climbing?: boolean;
+  // skills the dev has fetched from the shelf (one book per skill). `skills` is
+  // the accumulated set; `booksShown` is how many are resting on the desk and
+  // `booksInHand` how many it carried back and is currently reading while the task
+  // is active. When skills outnumber the books it has (desk + hand), the dev runs
+  // a trip to the shelf (the `errand`) to fetch the rest, reads them at the desk
+  // for the duration of the active task, then sets them down on the desk.
+  skills: string[];
+  booksShown: number;
+  booksInHand: number;
+  errand?: { phase: "out" | "grab" | "back"; grab: number };
   ph: number;
 }
 
@@ -355,6 +370,16 @@ class PixelCrew {
   private particles: Particle[] = [];
   private packets: Packet[] = []; // desk → board "file changed" trails
   private boardsMap: Record<string, BoardData> = {};
+  /** Last-known walk state of a toon culled because its room was momentarily
+   *  absent (a refresh pushes new rooms before the matching agents, so a
+   *  re-layout can briefly unplace a dev). Keyed by agent id + the frame it was
+   *  parked, so when setAgents re-creates the toon we resume from where it was
+   *  instead of respawning it at the door. */
+  private parked = new Map<string, {
+    x: number; base: number; lift: number; entering: boolean;
+    enterPhase?: "stairs" | "walk"; sitting: boolean; frame: number;
+    skills: string[]; booksShown: number; booksInHand: number;
+  }>();
   private hasFitted = false; // first layout fits the campus; later ones preserve the view
   // ghost slots come in two kinds: "building" extends an island with the next
   // worktree (click → add agent there), "island" reserves a brand-new directory.
@@ -399,9 +424,11 @@ class PixelCrew {
   private onAddWorktreeCb: (island: string) => void = () => {};
   private onRemoveRoomCb: (room: string) => void = () => {};
   private onRemoveWorktreeCb: (worktree: string, island: string) => void = () => {};
-  private onSyncCb: (room: string) => void = () => {};
-  /** room key → time a sync was requested, so the board change it causes flashes
-   *  without firing a beam (the agent didn't do that work). */
+  private onPushCb: (room: string) => void = () => {};
+  private onPullCb: (room: string) => void = () => {};
+  private onFetchCb: (room: string) => void = () => {};
+  /** room key → time a push/pull was requested, so the board change it causes
+   *  flashes without firing a beam (the agent didn't do that work). */
   private syncSuppress = new Map<string, number>();
   private onCdCb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void =
     () => {};
@@ -479,7 +506,7 @@ class PixelCrew {
       if (!this.drag.active) {
         const hit = this.pick(e);
         this.container.style.cursor =
-          hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.syncRoom
+          hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom
             ? "pointer"
             : "default";
         return;
@@ -544,7 +571,9 @@ class PixelCrew {
   onAddWorktree(cb: (island: string) => void) { this.onAddWorktreeCb = cb; }
   onRemoveRoom(cb: (room: string) => void) { this.onRemoveRoomCb = cb; }
   onRemoveWorktree(cb: (worktree: string, island: string) => void) { this.onRemoveWorktreeCb = cb; }
-  onSync(cb: (room: string) => void) { this.onSyncCb = cb; }
+  onPush(cb: (room: string) => void) { this.onPushCb = cb; }
+  onPull(cb: (room: string) => void) { this.onPullCb = cb; }
+  onFetch(cb: (room: string) => void) { this.onFetchCb = cb; }
   onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
     this.onCdCb = cb;
   }
@@ -570,29 +599,69 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** Remember a toon's walk state so a transient disappearance (a mid-refresh
+   *  re-layout that unplaces it, or the agent blinking out of one poll) can
+   *  resume from where it was instead of respawning the dev at the door. */
+  private parkToon(id: string, tn: Toon) {
+    if (tn.x === 0) return; // never placed yet → nothing worth resuming
+    this.parked.set(id, {
+      x: tn.x, base: tn.base, lift: tn.lift, entering: tn.entering,
+      enterPhase: tn.enterPhase, sitting: tn.sitting, frame: this.frame,
+      skills: tn.skills, booksShown: tn.booksShown, booksInHand: tn.booksInHand,
+    });
+  }
+
   setAgents(agents: CrewAgent[]) {
     const seen = new Set(agents.map((a) => a.id));
     for (const [id, tn] of this.toons) {
       if (!seen.has(id)) {
+        // the agent dropped out of this poll. It may be a genuine departure or a
+        // one-refresh blip (e.g. a PR refresh momentarily drops it). Park its spot
+        // so a quick return resumes here; meanwhile it walks out, and if it comes
+        // back the recreate below cancels that exit.
+        this.parkToon(id, tn);
         tn.leaving = true;
         this.leaving.push(tn);
         this.toons.delete(id);
       }
     }
+    // drop parked state once the toon is back on screen, or after it has gone
+    // stale (~10s) so genuinely-departed devs don't linger in the cache
+    for (const [id, p] of this.parked) {
+      if (this.toons.has(id) || this.frame - p.frame > 600) this.parked.delete(id);
+    }
     for (const a of agents) {
       let tn = this.toons.get(a.id);
       if (!tn) {
+        // resume a dev that vanished briefly (unplaced by a mid-refresh re-layout,
+        // or blinked out of a poll) so it keeps walking from where it was rather
+        // than teleporting back to the door
+        const resume = this.parked.get(a.id);
+        this.parked.delete(a.id);
+        // if it was mid-walkout from the removal above, cancel that exit
+        if (resume) this.leaving = this.leaving.filter((t) => t.agent.id !== a.id);
         tn = {
-          agent: a, p: persona(a.id), x: 0, targetX: 0, base: 0, x0: 0,
+          agent: a, p: persona(a.id), x: resume?.x ?? 0, targetX: 0, base: resume?.base ?? 0, x0: 0,
           seatCol: 0, wbSlot: 0, deskIdx: 0,
-          row: 0, lift: 0,
-          huddle: false, sitting: false, entering: true, leaving: false,
+          row: 0, lift: resume?.lift ?? 0,
+          huddle: false, sitting: resume?.sitting ?? false,
+          entering: resume?.entering ?? true, enterPhase: resume?.enterPhase,
+          leaving: false,
+          // resume the dev's book state so a transient cull doesn't replay the
+          // whole shelf trip; a fresh spawn starts with the books it already owns
+          // already on the desk (no animation for skills used before it appeared)
+          skills: resume?.skills ?? [...(a.skills ?? [])],
+          booksShown: resume?.booksShown ?? (a.skills?.length ?? 0),
+          booksInHand: resume?.booksInHand ?? 0,
           ph: (hash(a.id) % 628) / 100,
         };
         this.toons.set(a.id, tn);
-        this.newToonIds.add(a.id);
+        if (!resume) this.newToonIds.add(a.id);
       }
       tn.agent = a;
+      // accumulate newly-used skills; the tick walks the dev to the shelf to
+      // fetch a book for each one beyond what's already on its desk
+      for (const s of a.skills ?? []) if (!tn.skills.includes(s)) tn.skills.push(s);
     }
     this.agents = agents;
     this.layout();
@@ -999,9 +1068,13 @@ class PixelCrew {
     }
 
     // cull toons whose room wasn't added to the UI — an agent only appears once
-    // its directory/worktree has a room (its session keeps running regardless)
+    // its directory/worktree has a room (its session keeps running regardless).
+    // Stash the toon's walk state first: if this was just a transient unplacing
+    // mid-refresh, setAgents re-creates the toon and resumes from here rather
+    // than teleporting the dev back to the door.
     for (const [id, tn] of this.toons) {
       if (!placed.has(id)) {
+        this.parkToon(id, tn);
         tn.bkey = undefined;
         this.toons.delete(id);
       }
@@ -1356,9 +1429,20 @@ class PixelCrew {
     }
 
     // re-glue seated/working devs to their building's live position so they ride
-    // the collapse instead of snapping to the final desk
+    // the collapse instead of snapping to the final desk. Also drive book errands:
+    // a dev that used a new skill walks to the left-window shelf, then back.
     for (const tn of this.toons.values()) {
-      if (!tn.leaving && !tn.entering) this.retargetToon(tn);
+      if (tn.leaving || tn.entering) continue;
+      this.retargetToon(tn); // glue base/x0 + aim at the desk seat
+      const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
+      if (!room) continue;
+      // start a trip once settled at the desk and a skill's book is still missing
+      // (neither on the desk nor already in hand)
+      if (!tn.errand && !tn.huddle && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
+        tn.errand = { phase: "out", grab: 0 };
+      }
+      // out/grab: head for (and hold at) the shelf; back: keep the desk aim above
+      if (tn.errand && tn.errand.phase !== "back") tn.targetX = room.x0 + SHELF_REACH;
     }
 
     // upper-floor arrivals climb the staircase in the floor below to their door
@@ -1385,12 +1469,42 @@ class PixelCrew {
       const dx = tn.targetX - tn.x;
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
-      tn.sitting = tn.agent.state === "active" && !tn.huddle && !tn.entering && Math.abs(dx) <= 1;
+      tn.sitting = tn.agent.state === "active" && !tn.huddle && !tn.entering && !tn.errand && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
-      // (lift -> 0) whenever walking, entering, leaving, or huddling
-      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.huddle;
+      // (lift -> 0) whenever walking, entering, leaving, huddling, or off on a
+      // book errand (so the dev rides the near floor to the shelf and back)
+      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.huddle && !tn.errand;
       const targetLift = atDesk ? tn.row * ROW_DY : 0;
       tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
+    }
+    // advance book errands now that this frame's walk has been applied: arrive at
+    // the shelf → pause to grab → carry home → read at the desk
+    for (const tn of this.toons.values()) {
+      const er = tn.errand;
+      if (!er) continue;
+      const arrived = Math.abs(tn.targetX - tn.x) <= 1;
+      if (er.phase === "out") {
+        if (arrived) { er.phase = "grab"; er.grab = 0.55; }
+      } else if (er.phase === "grab") {
+        er.grab -= dt;
+        if (er.grab <= 0) er.phase = "back";
+      } else if (arrived) {
+        // back at the desk: the fetched books are now in hand to read, not yet
+        // set down (they go on the desk once the task stops being active, below)
+        tn.booksInHand = tn.skills.length - tn.booksShown;
+        tn.errand = undefined;
+      }
+    }
+    // a dev reads its fetched book(s) at the desk while the task is live; once the
+    // task is no longer running (idle/complete/error — waiting still counts) it
+    // sets them down on the desk to join the stack
+    for (const tn of this.toons.values()) {
+      if (tn.booksInHand <= 0 || tn.errand) continue;
+      const st = tn.agent.state;
+      if (st !== "active" && st !== "waiting") {
+        tn.booksShown = tn.skills.length;
+        tn.booksInHand = 0;
+      }
     }
     for (let i = this.leaving.length - 1; i >= 0; i--) {
       const tn = this.leaving[i];
@@ -1501,7 +1615,9 @@ class PixelCrew {
     addDev?: { island: string; key: string }; // + DEV on a specific room
     removeBtn?: string; // island (nuke)
     removeWtBtn?: string; // building key (worktree path)
-    syncRoom?: string; // building key → pull/push that branch
+    pushRoom?: string; // building key → push local commits
+    pullRoom?: string; // building key → pull upstream commits
+    fetchRoom?: string; // building key → fetch remote refs (refresh behind/ahead)
   } {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
@@ -1518,8 +1634,10 @@ class PixelCrew {
       if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
         return { addDev: { island: r.island, key: r.name } };
       }
-      const sr = this.commitSyncRect(r);
-      if (sr && this.inRect(mx, my, sr.x, sr.y, sr.w, sr.h)) return { syncRoom: r.name };
+      const btns = this.commitButtons(r);
+      if (btns.push && this.inRect(mx, my, btns.push.x, btns.push.y, btns.push.w, btns.push.h)) return { pushRoom: r.name };
+      if (btns.pull && this.inRect(mx, my, btns.pull.x, btns.pull.y, btns.pull.w, btns.pull.h)) return { pullRoom: r.name };
+      if (btns.fetch && this.inRect(mx, my, btns.fetch.x, btns.fetch.y, btns.fetch.w, btns.fetch.h)) return { fetchRoom: r.name };
     }
     // ghost slots: +building (extend an island) and +island (reserve a directory)
     for (const g of this.ghosts) {
@@ -1546,7 +1664,9 @@ class PixelCrew {
 
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
-    if (hit.syncRoom) { this.syncSuppress.set(hit.syncRoom, Date.now()); this.onSyncCb(hit.syncRoom); }
+    if (hit.fetchRoom) { this.onFetchCb(hit.fetchRoom); }
+    else if (hit.pushRoom) { this.syncSuppress.set(hit.pushRoom, Date.now()); this.onPushCb(hit.pushRoom); }
+    else if (hit.pullRoom) { this.syncSuppress.set(hit.pullRoom, Date.now()); this.onPullCb(hit.pullRoom); }
     else if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
     else if (hit.removeBtn) this.onRemoveRoomCb(hit.removeBtn);
     else if (hit.addDev) this.onAddDevCb(hit.addDev.island, hit.addDev.key);
@@ -2012,7 +2132,10 @@ class PixelCrew {
       const yB = base + (byB - base) * t;
       return { x: xL, y: yT + (yB - yT) * f };
     };
-    const wp = [onWall(0.3, 0.26), onWall(0.64, 0.3), onWall(0.64, 0.66), onWall(0.3, 0.7)];
+    // window edges run along constant-f wall lines (same as the bookshelf below),
+    // so both slant with the wall's perspective and line up
+    const winT0 = 0.3, winT1 = 0.64, winFTop = 0.28, winFBot = 0.66;
+    const wp = [onWall(winT0, winFTop), onWall(winT1, winFTop), onWall(winT1, winFBot), onWall(winT0, winFBot)];
     const quad = (pts: { x: number; y: number }[], fill: string | CanvasGradient) => {
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
@@ -2050,6 +2173,10 @@ class PixelCrew {
     ctx.beginPath(); ctx.moveTo(mt.x, mt.y); ctx.lineTo(mb.x, mb.y); ctx.stroke();
     const ml = mid(wp[0], wp[3]), mr = mid(wp[1], wp[2]);
     ctx.beginPath(); ctx.moveTo(ml.x, ml.y); ctx.lineTo(mr.x, mr.y); ctx.stroke();
+
+    // the skills library: a long bookshelf running the full left wall, slanted
+    // to the wall's perspective, just below the window
+    this.drawBookshelf(ctx, r, onWall);
 
     // plant + hash decor
     const px = x + w - DOOR_W - 6;
@@ -2156,21 +2283,35 @@ class PixelCrew {
   /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
    *  plus live git stats (files changed, lines +/-). It glows when the worktree's
    *  files change (see the packets fired from the desks in tick). */
-  /** World rect of the COMMITS-cell sync button when the branch is out of date
-   *  (has unpushed or behind commits); null otherwise. Shared by the renderer and
-   *  the hit-test so they always agree. Must mirror drawBoard's cell geometry. */
-  private commitSyncRect(r: Room): { x: number; y: number; w: number; h: number } | null {
+  /** Buttons in the bottom band of the COMMITS cell, shared by the renderer and
+   *  the hit-test so they always agree. `push` (↑) appears when there are local
+   *  commits to push, `pull` (↓) when the branch is behind upstream, and `fetch`
+   *  (↻) is always available to refresh behind/ahead from the remote. Geometry
+   *  must mirror drawBoard's cell layout. `synced` flags the all-clear state. */
+  private commitButtons(r: Room): {
+    push?: { x: number; y: number; w: number; h: number };
+    pull?: { x: number; y: number; w: number; h: number };
+    fetch?: { x: number; y: number; w: number; h: number };
+    synced?: boolean;
+  } {
     const bd = r.boardShown ?? r.board;
-    if (!bd || bd.missing || (bd.unpushed <= 0 && bd.behind <= 0)) return null;
+    if (!bd || bd.missing) return {};
     const b = boardRect(r.x0, r.baseY);
-    if (b.w < 20 || b.h < 14) return null;
+    if (b.w < 20 || b.h < 14) return {};
     const pad = 4;
     const innerL = b.x + pad, innerR = b.x + b.w - pad;
     const prW = Math.min(96, (innerR - innerL) * 0.42);
     const gitR = innerR - prW - 4;
     const cw = (gitR - innerL) / 3;
     const cx = innerL + 2 * cw; // COMMITS cell
-    return { x: cx - 1, y: b.y + b.h - 8, w: cw, h: 8 };
+    const cwIn = cw - 4;
+    const y = b.y + b.h - 8.5, h = 7.5, slot = 8.5;
+    let lx = cx - 0.5;
+    const push = bd.unpushed > 0 ? { x: lx, y, w: slot, h } : undefined;
+    if (push) lx += slot;
+    const pull = bd.behind > 0 ? { x: lx, y, w: slot, h } : undefined;
+    const fetch = { x: cx + cwIn - 6.5, y, w: 7, h };
+    return { push, pull, fetch, synced: !push && !pull };
   }
 
   /** Draw a number, rolling the old value up and out while the new value rises in
@@ -2320,7 +2461,6 @@ class PixelCrew {
       { label: "STAGED", count: `${bd.staged} file${bd.staged === 1 ? "" : "s"}`, add: bd.stagedAdd, del: bd.stagedDel, tint: "#3ee089" },
       { label: "COMMITS", count: `${bd.ahead}`, add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" },
     ];
-    const sync = this.commitSyncRect(r); // bottom-of-COMMITS sync button rect (or null)
     const cellKeys = ["unstaged", "staged", "commits"] as const;
     cells.forEach((c, i) => {
       const cx = innerL + i * cw;
@@ -2345,25 +2485,30 @@ class PixelCrew {
       ctx.fillStyle = "#ff6055";
       this.drawRoll(ctx, cx + ctx.measureText(plus).width + 3, bodyTop + 16, `${pfx}.del`, `-${c.del}`, 3.6, r);
       churnBar(cx, bodyTop + 18.5, cwIn, c.add, c.del);
-      // COMMITS cell also shows push/pull sync state + a sync button
+      // COMMITS cell bottom band: push (↑), pull (↓) and fetch (↻) controls
       if (i === 2) {
-        const up = bd.unpushed, bh = bd.behind, sy = bodyBot - 1.5;
-        ctx.font = "3.6px 'Martian Mono', monospace";
-        if (up > 0 || bh > 0) {
-          let sx = cx;
-          if (up > 0) { ctx.fillStyle = "#ffb13d"; ctx.fillText(`⇡${up}`, sx, sy); sx += ctx.measureText(`⇡${up}`).width + 2.5; }
-          if (bh > 0) { ctx.fillStyle = "#56c7ff"; ctx.fillText(`⇣${bh}`, sx, sy); sx += ctx.measureText(`⇣${bh}`).width + 2.5; }
-          if (sync) {
-            // a clear, tappable sync glyph — sized to match the counts beside it
-            ctx.fillStyle = bh > 0 ? "#56c7ff" : "#3ee089";
-            ctx.font = "5.5px 'Martian Mono', monospace";
-            ctx.fillText("⟳", sx + 1, sy + 0.4);
-            ctx.font = "3.6px 'Martian Mono', monospace";
-          }
-        } else {
+        const btns = this.commitButtons(r);
+        const sy = bodyBot - 1.5; // shared baseline for the row
+        ctx.textAlign = "left";
+        if (btns.push) {
+          ctx.fillStyle = "#ffb13d"; // up = push local commits upstream
+          ctx.font = "bold 4px 'Martian Mono', monospace";
+          ctx.fillText(`↑${bd.unpushed}`, btns.push.x + 0.5, sy);
+        }
+        if (btns.pull) {
+          ctx.fillStyle = "#56c7ff"; // down = pull upstream commits
+          ctx.font = "bold 4px 'Martian Mono', monospace";
+          ctx.fillText(`↓${bd.behind}`, btns.pull.x + 0.5, sy);
+        }
+        if (btns.synced) {
           ctx.fillStyle = "rgba(120,200,255,0.5)";
           ctx.font = "3px 'IBM Plex Mono', monospace";
           ctx.fillText("synced", cx, sy);
+        }
+        if (btns.fetch) {
+          ctx.fillStyle = "rgba(120,200,255,0.8)"; // refresh = fetch remote refs
+          ctx.font = "5px 'Martian Mono', monospace";
+          ctx.fillText("↻", btns.fetch.x + 1, sy + 0.4);
         }
       }
     });
@@ -2484,6 +2629,69 @@ class PixelCrew {
     // border pulse anymore, so it's clear which stat changed)
   }
 
+  /** The skills library: a long, low bookshelf that runs the full left wall,
+   *  drawn slanted in the wall's one-point perspective just below the window.
+   *  A dev walks to it when it uses a skill and carries a book back to its desk
+   *  (see the errand state machine in tick + drawDesks' book stack). `onWall`
+   *  maps (t: 0 near opening → 1 far wall, f: 0 ceiling → 1 floor) to world xy. */
+  private drawBookshelf(
+    ctx: CanvasRenderingContext2D,
+    r: Room,
+    onWall: (t: number, f: number) => { x: number; y: number }
+  ) {
+    const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
+    if (eFurn <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = eFurn;
+    const quad = (
+      a: { x: number; y: number }, b: { x: number; y: number },
+      c: { x: number; y: number }, d: { x: number; y: number }, fill: string
+    ) => {
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.lineTo(d.x, d.y);
+      ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+    };
+    // full-wall span, from just below the window's lower edge (f≈0.66) to the
+    // floor. The cabinet stands PROUD of the wall: `front` offsets a wall point
+    // toward the room (and slightly down) to fake depth, the offset shrinking
+    // toward the back wall so it reads in perspective.
+    const t0 = 0.05, t1 = 0.95, fTop = 0.68, fBot = 0.99;
+    const front = (t: number, f: number) => {
+      const p = onWall(t, f);
+      const d = 6 * (1 - t * 0.5); // protrusion: bigger up front, smaller at the back
+      return { x: p.x + d, y: p.y + d * 0.5 };
+    };
+    // left end cap (the cabinet's near side, between the wall and the front face)
+    quad(onWall(t0, fTop), front(t0, fTop), front(t0, fBot), onWall(t0, fBot), "#1f1408");
+    // top surface: from the wall back-edge out to the front lip — catches light
+    quad(onWall(t0, fTop), onWall(t1, fTop), front(t1, fTop), front(t0, fTop), "#6a4d2c");
+    quad(front(t0, fTop), front(t1, fTop), front(t1, fTop + 0.02), front(t0, fTop + 0.02), "#3a2917"); // front lip shadow
+    // front face (dark recess the books sit in)
+    quad(front(t0, fTop + 0.02), front(t1, fTop + 0.02), front(t1, fBot), front(t0, fBot), "#2c1f10");
+    // TWO shelves of book spines so each book is a reasonable size (a single tall
+    // band read as oversized). onWall compresses the far ones for free perspective.
+    const N = 24, hOff = hash(r.name) % BOOK_HUES.length;
+    const board = (f: number) =>
+      quad(front(t0, f), front(t1, f), front(t1, f + 0.015), front(t0, f + 0.015), "#3a2917");
+    const shelfRow = (rowTop: number, rowBot: number, salt: number) => {
+      for (let i = 0; i < N; i++) {
+        const ta = t0 + (t1 - t0) * (i / N);
+        const tb = t0 + (t1 - t0) * ((i + 0.8) / N); // small gap between spines
+        const fT = rowTop + (hash(r.name + salt + i) % 4) * 0.006; // slight height variance
+        const hue = BOOK_HUES[(i + hOff + salt) % BOOK_HUES.length];
+        quad(front(ta, fT), front(tb, fT), front(tb, rowBot), front(ta, rowBot), `hsl(${hue} 42% 42%)`);
+        const tHi = ta + (tb - ta) * 0.26; // near-edge spine highlight
+        quad(front(ta, fT), front(tHi, fT), front(tHi, rowBot), front(ta, rowBot), `hsl(${hue} 42% 54%)`);
+      }
+    };
+    shelfRow(0.715, 0.80, 1);   // upper shelf
+    board(0.805);               // divider board between the two shelves
+    shelfRow(0.835, 0.92, 7);   // lower shelf
+    // plinth/base rail under the books
+    quad(front(t0, 0.93), front(t1, 0.93), front(t1, fBot), front(t0, fBot), "#1a1108");
+    ctx.restore();
+  }
+
   private drawDesks(ctx: CanvasRenderingContext2D, r: Room, row: number) {
     const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
     if (eFurn <= 0 || !r.plan) return;
@@ -2498,17 +2706,19 @@ class PixelCrew {
       const st = occupied ? tn!.agent.state : undefined;
       // contact shadow on the floor so the desk doesn't melt into the boards
       ctx.fillStyle = "rgba(0,0,0,0.3)";
-      ctx.fillRect(dx + 1.5, db - 0.6, 19, 1.8);
-      // desktop — lighter than the floor, with a top highlight + underside shadow
+      ctx.fillRect(dx - 0.5, db - 0.6, 23, 1.8);
+      // desktop — lighter than the floor, with a top highlight + underside shadow.
+      // extended left so the coffee mug sits fully on it, and right to make room
+      // for the dev's stack of skill books fetched from the shelf
       ctx.fillStyle = "#7e5e35";
-      ctx.fillRect(dx + 2, db - 11, 18, 2);
+      ctx.fillRect(dx, db - 11, 22, 2);
       ctx.fillStyle = "#9c7a4c";
-      ctx.fillRect(dx + 2, db - 11, 18, 0.7); // top highlight
+      ctx.fillRect(dx, db - 11, 22, 0.7); // top highlight
       ctx.fillStyle = "#382a16";
-      ctx.fillRect(dx + 2, db - 9.2, 18, 0.7); // shadow line under the top
+      ctx.fillRect(dx, db - 9.2, 22, 0.7); // shadow line under the top
       ctx.fillStyle = "#54401f";
       ctx.fillRect(dx + 3, db - 9, 1.5, 9);
-      ctx.fillRect(dx + 17.5, db - 9, 1.5, 9);
+      ctx.fillRect(dx + 19.5, db - 9, 1.5, 9);
       // monitor: its screen faces the dev (away from us), so we see the dark
       // BACK of the panel; the light it throws lands on the dev (drawn below)
       ctx.fillStyle = "#171c21"; // neck + foot
@@ -2554,6 +2764,18 @@ class PixelCrew {
         ctx.fillStyle = grd;
         // clipped tight to the dev, clear of the monitor back to its left
         ctx.fillRect(dx + 10, db - 24, 8, 20);
+      }
+      // skill books the dev carried back from the shelf, stacked on the desk's
+      // right end (one per skill); the trip itself is animated in tick
+      const books = tn?.booksShown ?? 0;
+      for (let k = 0; k < books; k++) {
+        const hue = BOOK_HUES[k % BOOK_HUES.length];
+        const jx = (k % 2) * 0.7; // stagger so the pile isn't a rigid column
+        const by = db - 11 - k * 1.4; // stack upward from the desktop surface
+        ctx.fillStyle = `hsl(${hue} 45% 44%)`;
+        ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 1.4);
+        ctx.fillStyle = `hsl(${hue} 45% 55%)`;
+        ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 0.4); // top-edge highlight
       }
     }
     ctx.globalAlpha = 1;
@@ -2609,6 +2831,31 @@ class PixelCrew {
       ctx.fillStyle = handC;
       ctx.fillRect(x - 4.4, ty - 3.4 + g, 1.6, 1.6);
       ctx.fillRect(x + 2.6, ty - 3.4 + (1 - g), 1.6, 1.6);
+    } else if (sitting && tn.booksInHand > 0) {
+      // reading the fetched skill book(s) at the desk for the duration of the
+      // active task: hold an open book up at chest/face height (drawn before the
+      // desk so the monitor edge occludes only its far corner)
+      const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
+      const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
+      ctx.fillStyle = p.shirt; // forearms up to the book
+      ctx.fillRect(x - 2.4, ty + 1.4, 1.8, 1.8);
+      ctx.fillRect(x + 2.2, ty + 1.4, 1.8, 1.8);
+      ctx.fillStyle = "#e9e3d2"; // open pages
+      ctx.fillRect(bx, by, bw, bh);
+      const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
+      ctx.fillStyle = `hsl(${hue} 42% 40%)`; // cover edges
+      ctx.fillRect(bx - 0.7, by - 0.4, 0.9, bh + 0.8);
+      ctx.fillRect(bx + bw - 0.2, by - 0.4, 0.9, bh + 0.8);
+      ctx.fillStyle = "#b6ae98"; // center gutter
+      ctx.fillRect(bx + bw / 2 - 0.25, by, 0.5, bh);
+      ctx.fillStyle = "rgba(70,70,70,0.45)"; // a few text lines
+      ctx.fillRect(bx + 0.8, by + 1.1, 1.8, 0.4);
+      ctx.fillRect(bx + 0.8, by + 2.1, 1.5, 0.4);
+      ctx.fillRect(bx + bw / 2 + 0.7, by + 1.1, 1.7, 0.4);
+      ctx.fillRect(bx + bw / 2 + 0.7, by + 2.1, 1.4, 0.4);
+      ctx.fillStyle = handC; // hands gripping the lower corners
+      ctx.fillRect(bx - 0.6, by + bh - 0.4, 1.4, 1.4);
+      ctx.fillRect(bx + bw - 0.8, by + bh - 0.4, 1.4, 1.4);
     } else if (sitting) {
       // typing toward the keyboard/monitor on the left
       const tap = f % 2 === 0 ? 0 : 0.8;
@@ -2704,6 +2951,22 @@ class PixelCrew {
       ctx.strokeRect(x - 1.4, ey - 0.8, 1.9, 1.9);
       ctx.strokeRect(x + 0.9, ey - 0.8, 1.9, 1.9);
     }
+
+    // skill books in the dev's arms on the way back from the shelf (it leaves
+    // empty-handed on the "out" leg and carries the new stack home after grabbing)
+    if (tn.errand && tn.errand.phase !== "out") {
+      const carry = Math.max(0, tn.skills.length - tn.booksShown);
+      const dir = tn.targetX >= tn.x ? 1 : -1; // held in the direction of travel
+      const bx = x - 2 + (dir > 0 ? 1.4 : -0.4);
+      for (let k = 0; k < carry; k++) {
+        const hue = BOOK_HUES[(tn.booksShown + k) % BOOK_HUES.length];
+        const by = ty + 3 - k * 1.4;
+        ctx.fillStyle = `hsl(${hue} 45% 46%)`;
+        ctx.fillRect(bx, by - 1.4, 4, 1.4);
+        ctx.fillStyle = `hsl(${hue} 45% 56%)`;
+        ctx.fillRect(bx, by - 1.4, 4, 0.4);
+      }
+    }
   }
 }
 
@@ -2747,8 +3010,14 @@ class PixelCrew {
   onRemoveWorktree(cb: (worktree: string, island: string) => void) {
     this._instance?.onRemoveWorktree(cb);
   },
-  onSync(cb: (room: string) => void) {
-    this._instance?.onSync(cb);
+  onPush(cb: (room: string) => void) {
+    this._instance?.onPush(cb);
+  },
+  onPull(cb: (room: string) => void) {
+    this._instance?.onPull(cb);
+  },
+  onFetch(cb: (room: string) => void) {
+    this._instance?.onFetch(cb);
   },
   onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
     this._instance?.onCd(cb);

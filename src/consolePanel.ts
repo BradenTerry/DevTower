@@ -164,18 +164,22 @@ export class ConsolePanel {
     await this.refreshState();
   }
 
-  /** Sync a room's branch: fast-forward pull, then push local commits. Surfaces a
-   *  warning if it can't (diverged history / network), leaving the repo untouched. */
-  private async syncBranch(roomKey: string): Promise<void> {
+  /** Fetch a single room's remote refs on demand (the COMMITS-cell ↻ button) so
+   *  its behind/ahead counts reflect upstream right now, then refresh the board.
+   *  Read-only: never changes the working tree. */
+  private async fetchRoom(roomKey: string): Promise<void> {
     const dir = this.roomGitPaths.get(roomKey) ?? roomKey;
     if (!fs.existsSync(dir)) return;
-    try {
-      await runGit(dir, ["pull", "--ff-only"]);
-    } catch (e) {
-      vscode.window.showWarningMessage(`DevTower: can't fast-forward — pull/rebase manually. ${String(e).slice(0, 140)}`);
-      await this.refreshState();
-      return;
-    }
+    await runGit(dir, ["fetch", "--quiet"]).catch(() => "");
+    await this.refreshState();
+  }
+
+  /** Push a room's local commits (the COMMITS-cell ↑ button). Sets the upstream
+   *  on the first push. Surfaces a warning and leaves the repo untouched if it
+   *  can't (e.g. rejected non-fast-forward / network). */
+  private async pushRoom(roomKey: string): Promise<void> {
+    const dir = this.roomGitPaths.get(roomKey) ?? roomKey;
+    if (!fs.existsSync(dir)) return;
     try {
       await runGit(dir, ["push"]);
     } catch {
@@ -184,6 +188,19 @@ export class ConsolePanel {
       } catch (e) {
         vscode.window.showWarningMessage(`DevTower: push failed — ${String(e).slice(0, 140)}`);
       }
+    }
+    await this.refreshState();
+  }
+
+  /** Pull a room's upstream commits (the COMMITS-cell ↓ button), fast-forward
+   *  only so a divergent history is never silently merged. */
+  private async pullRoom(roomKey: string): Promise<void> {
+    const dir = this.roomGitPaths.get(roomKey) ?? roomKey;
+    if (!fs.existsSync(dir)) return;
+    try {
+      await runGit(dir, ["pull", "--ff-only"]);
+    } catch (e) {
+      vscode.window.showWarningMessage(`DevTower: can't fast-forward — pull/rebase manually. ${String(e).slice(0, 140)}`);
     }
     await this.refreshState();
   }
@@ -287,8 +304,14 @@ export class ConsolePanel {
       case "refreshPrs":
         void this.prs.refresh();
         break;
-      case "syncBranch":
-        if (typeof m.room === "string") await this.syncBranch(m.room);
+      case "pushBranch":
+        if (typeof m.room === "string") await this.pushRoom(m.room);
+        break;
+      case "pullBranch":
+        if (typeof m.room === "string") await this.pullRoom(m.room);
+        break;
+      case "fetchBranch":
+        if (typeof m.room === "string") await this.fetchRoom(m.room);
         break;
       case "send":
         if (id) this.handleSend(id, m.text);

@@ -227,6 +227,7 @@ export class ClaudeDiscovery {
           transcriptPath: f.file,
           question: f.question,
           contextTokens: f.contextTokens,
+          skills: f.skills,
           external: false, // DevTower launched/owns this one
         });
       } else {
@@ -246,6 +247,7 @@ export class ClaudeDiscovery {
           transcriptPath: f.file,
           question: f.question,
           contextTokens: f.contextTokens,
+          skills: f.skills,
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
           external: !isAdopted,
@@ -300,6 +302,7 @@ export class ClaudeDiscovery {
           model: meta.model || "claude",
           question: state === "waiting" ? meta.question : undefined,
           contextTokens: meta.contextTokens,
+          skills: meta.skills,
         });
       }
     }
@@ -319,13 +322,14 @@ interface Found {
   model: string;
   question?: string;
   contextTokens?: number;
+  skills?: string[];
 }
 
 /** Read head (for cwd) + tail (for last role / prompt / model) of a transcript. */
 async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[] }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -346,6 +350,29 @@ async function readMeta(
     // newest real model id — synthetic/meta turns carry "model":"<synthetic>",
     // which must not become the agent's displayed model
     const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g, (v) => v !== "<synthetic>");
+
+    // skills the agent used, visible in the tail. Two ways a skill shows up:
+    //   1. the model called the Skill tool ("name":"Skill", input.skill), and
+    //   2. the user typed it as a slash command (/foo) — Claude Code records that
+    //      as a <command-name> turn, NOT a Skill tool_use, so #1 misses it.
+    // Both load the skill body, which carries a "Base directory for this skill:
+    // <abs path>/<name>" line (built-in slashes like /clear do NOT), so that line
+    // is the reliable unified signal. Names are normalised to the bare skill name
+    // so the tool form (plugin:foo) and the path form (.../foo) dedupe to one. The
+    // store unions these across polls so a session's full set survives calls
+    // scrolling out of the window.
+    const skills: string[] = [];
+    const addSkill = (raw: string) => {
+      const n = raw.split(/[/:\\]/).filter(Boolean).pop();
+      if (n && /^[a-z0-9][a-z0-9._-]*$/i.test(n) && !skills.includes(n)) skills.push(n);
+    };
+    for (const re of [
+      /"name"\s*:\s*"Skill"\s*,\s*"input"\s*:\s*\{\s*"skill"\s*:\s*"([^"]+)"/g,
+      /Base directory for this skill:\s*(\/[^\s"\\]+)/g, // slash-invoked + tool-loaded skills
+    ]) {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(tail))) addSkill(m[1]);
+    }
 
     // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
     // Mirrors Claude Code's own `/context`: input + the two cache buckets (all
@@ -407,7 +434,7 @@ async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills };
   } finally {
     await fh.close();
   }

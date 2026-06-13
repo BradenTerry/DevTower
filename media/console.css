@@ -403,6 +403,13 @@ button{ font-family:inherit; }
 .srow:last-child{ margin-bottom:0; }
 .srow b{ font-weight:500; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .srow .a{ color:var(--add); } .srow .d{ color:var(--del); }
+.skills-row{ align-items:flex-start; }
+.skills{ display:flex; flex-wrap:wrap; gap:5px; }
+.skill{
+  font-family:var(--label); font-size:9px; letter-spacing:.04em;
+  color:var(--text-dim); background:var(--glass-2); border:1px solid var(--edge-soft);
+  padding:2px 7px; border-radius:999px; white-space:nowrap;
+}
 
 .p-actions{ display:flex; gap:7px; padding:12px 18px; border-bottom:1px solid var(--edge-soft); }
 .pa{

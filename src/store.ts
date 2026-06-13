@@ -44,6 +44,9 @@ export interface Agent {
   transcriptPath?: string;
   /** Tokens currently in the session's context window. */
   contextTokens?: number;
+  /** Skills (slash commands / Skill tool) this session has used, accumulated in
+   *  order of first use. Drives the tower's bookshelf trips and the panel list. */
+  skills?: string[];
   /** A live session discovered running OUTSIDE DevTower (e.g. an external
    *  terminal). DevTower must not open/resume a terminal for it — it's managed
    *  in its own session. */
@@ -65,6 +68,8 @@ export interface StateEvent {
   /** the actual question the agent asked, when one exists */
   question?: string;
   contextTokens?: number;
+  /** Skills seen in this poll's transcript window; unioned into the agent. */
+  skills?: string[];
   external?: boolean;
 }
 
@@ -75,6 +80,15 @@ export const STATE_LABEL: Record<AgentState, string> = {
   error: "Error",
   idle: "Idle",
 };
+
+/** Union two skill lists, keeping first-seen order and dropping duplicates.
+ *  Returns undefined when neither side has any, so the field stays absent. */
+function mergeSkills(prev?: string[], next?: string[]): string[] | undefined {
+  if (!prev?.length && !next?.length) return prev ?? next;
+  const out = [...(prev ?? [])];
+  for (const s of next ?? []) if (s && !out.includes(s)) out.push(s);
+  return out;
+}
 
 /**
  * Owns the tower of agents. Source of truth for the extension.
@@ -140,6 +154,9 @@ export class DevTowerStore {
       session: existing?.session,
       transcriptPath: ev.transcriptPath ?? existing?.transcriptPath,
       contextTokens: ev.contextTokens ?? existing?.contextTokens,
+      // union, preserving first-seen order, so the full per-session set persists
+      // even as individual Skill calls scroll out of the transcript tail
+      skills: mergeSkills(existing?.skills, ev.skills),
       external: ev.external ?? existing?.external,
     };
     this.agents.set(ev.id, merged);

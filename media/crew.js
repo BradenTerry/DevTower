@@ -46,6 +46,8 @@
   var WB_W = 42;
   var DESK_W = 26;
   var DOOR_W = 18;
+  var SHELF_REACH = 16;
+  var BOOK_HUES = [4, 28, 48, 140, 200, 262, 320];
   var DEPTH_X = 24;
   var DEPTH_Y = 22;
   var ROWS_OF_DESKS = 2;
@@ -158,6 +160,12 @@
       __publicField(this, "packets", []);
       // desk → board "file changed" trails
       __publicField(this, "boardsMap", {});
+      /** Last-known walk state of a toon culled because its room was momentarily
+       *  absent (a refresh pushes new rooms before the matching agents, so a
+       *  re-layout can briefly unplace a dev). Keyed by agent id + the frame it was
+       *  parked, so when setAgents re-creates the toon we resume from where it was
+       *  instead of respawning it at the door. */
+      __publicField(this, "parked", /* @__PURE__ */ new Map());
       __publicField(this, "hasFitted", false);
       // first layout fits the campus; later ones preserve the view
       // ghost slots come in two kinds: "building" extends an island with the next
@@ -207,10 +215,14 @@
       });
       __publicField(this, "onRemoveWorktreeCb", () => {
       });
-      __publicField(this, "onSyncCb", () => {
+      __publicField(this, "onPushCb", () => {
       });
-      /** room key → time a sync was requested, so the board change it causes flashes
-       *  without firing a beam (the agent didn't do that work). */
+      __publicField(this, "onPullCb", () => {
+      });
+      __publicField(this, "onFetchCb", () => {
+      });
+      /** room key → time a push/pull was requested, so the board change it causes
+       *  flashes without firing a beam (the agent didn't do that work). */
       __publicField(this, "syncSuppress", /* @__PURE__ */ new Map());
       __publicField(this, "onCdCb", () => {
       });
@@ -280,7 +292,7 @@
         }
         if (!this.drag.active) {
           const hit = this.pick(e);
-          this.container.style.cursor = hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.syncRoom ? "pointer" : "default";
+          this.container.style.cursor = hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom ? "pointer" : "default";
           return;
         }
         const dx = e.clientX - this.drag.lastX;
@@ -356,8 +368,14 @@
     onRemoveWorktree(cb) {
       this.onRemoveWorktreeCb = cb;
     }
-    onSync(cb) {
-      this.onSyncCb = cb;
+    onPush(cb) {
+      this.onPushCb = cb;
+    }
+    onPull(cb) {
+      this.onPullCb = cb;
+    }
+    onFetch(cb) {
+      this.onFetchCb = cb;
     }
     onCd(cb) {
       this.onCdCb = cb;
@@ -378,40 +396,79 @@
       this.prBranches = new Set((branches || []).filter(Boolean).map((b) => b.toLowerCase()));
       this.invalidate();
     }
+    /** Remember a toon's walk state so a transient disappearance (a mid-refresh
+     *  re-layout that unplaces it, or the agent blinking out of one poll) can
+     *  resume from where it was instead of respawning the dev at the door. */
+    parkToon(id, tn) {
+      if (tn.x === 0)
+        return;
+      this.parked.set(id, {
+        x: tn.x,
+        base: tn.base,
+        lift: tn.lift,
+        entering: tn.entering,
+        enterPhase: tn.enterPhase,
+        sitting: tn.sitting,
+        frame: this.frame,
+        skills: tn.skills,
+        booksShown: tn.booksShown,
+        booksInHand: tn.booksInHand
+      });
+    }
     setAgents(agents) {
       const seen = new Set(agents.map((a) => a.id));
       for (const [id, tn] of this.toons) {
         if (!seen.has(id)) {
+          this.parkToon(id, tn);
           tn.leaving = true;
           this.leaving.push(tn);
           this.toons.delete(id);
         }
       }
+      for (const [id, p] of this.parked) {
+        if (this.toons.has(id) || this.frame - p.frame > 600)
+          this.parked.delete(id);
+      }
       for (const a of agents) {
         let tn = this.toons.get(a.id);
         if (!tn) {
+          const resume = this.parked.get(a.id);
+          this.parked.delete(a.id);
+          if (resume)
+            this.leaving = this.leaving.filter((t) => t.agent.id !== a.id);
           tn = {
             agent: a,
             p: persona(a.id),
-            x: 0,
+            x: resume?.x ?? 0,
             targetX: 0,
-            base: 0,
+            base: resume?.base ?? 0,
             x0: 0,
             seatCol: 0,
             wbSlot: 0,
             deskIdx: 0,
             row: 0,
-            lift: 0,
+            lift: resume?.lift ?? 0,
             huddle: false,
-            sitting: false,
-            entering: true,
+            sitting: resume?.sitting ?? false,
+            entering: resume?.entering ?? true,
+            enterPhase: resume?.enterPhase,
             leaving: false,
+            // resume the dev's book state so a transient cull doesn't replay the
+            // whole shelf trip; a fresh spawn starts with the books it already owns
+            // already on the desk (no animation for skills used before it appeared)
+            skills: resume?.skills ?? [...a.skills ?? []],
+            booksShown: resume?.booksShown ?? (a.skills?.length ?? 0),
+            booksInHand: resume?.booksInHand ?? 0,
             ph: hash(a.id) % 628 / 100
           };
           this.toons.set(a.id, tn);
-          this.newToonIds.add(a.id);
+          if (!resume)
+            this.newToonIds.add(a.id);
         }
         tn.agent = a;
+        for (const s of a.skills ?? [])
+          if (!tn.skills.includes(s))
+            tn.skills.push(s);
       }
       this.agents = agents;
       this.layout();
@@ -837,6 +894,7 @@
       }
       for (const [id, tn] of this.toons) {
         if (!placed.has(id)) {
+          this.parkToon(id, tn);
           tn.bkey = void 0;
           this.toons.delete(id);
         }
@@ -1192,8 +1250,17 @@
         }
       }
       for (const tn of this.toons.values()) {
-        if (!tn.leaving && !tn.entering)
-          this.retargetToon(tn);
+        if (tn.leaving || tn.entering)
+          continue;
+        this.retargetToon(tn);
+        const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
+        if (!room)
+          continue;
+        if (!tn.errand && !tn.huddle && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
+          tn.errand = { phase: "out", grab: 0 };
+        }
+        if (tn.errand && tn.errand.phase !== "back")
+          tn.targetX = room.x0 + SHELF_REACH;
       }
       for (const tn of this.toons.values()) {
         if (!tn.entering || tn.enterPhase !== "stairs")
@@ -1224,10 +1291,38 @@
           tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
         else if (tn.entering)
           tn.entering = false;
-        tn.sitting = tn.agent.state === "active" && !tn.huddle && !tn.entering && Math.abs(dx) <= 1;
-        const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.huddle;
+        tn.sitting = tn.agent.state === "active" && !tn.huddle && !tn.entering && !tn.errand && Math.abs(dx) <= 1;
+        const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.huddle && !tn.errand;
         const targetLift = atDesk ? tn.row * ROW_DY : 0;
         tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
+      }
+      for (const tn of this.toons.values()) {
+        const er = tn.errand;
+        if (!er)
+          continue;
+        const arrived = Math.abs(tn.targetX - tn.x) <= 1;
+        if (er.phase === "out") {
+          if (arrived) {
+            er.phase = "grab";
+            er.grab = 0.55;
+          }
+        } else if (er.phase === "grab") {
+          er.grab -= dt;
+          if (er.grab <= 0)
+            er.phase = "back";
+        } else if (arrived) {
+          tn.booksInHand = tn.skills.length - tn.booksShown;
+          tn.errand = void 0;
+        }
+      }
+      for (const tn of this.toons.values()) {
+        if (tn.booksInHand <= 0 || tn.errand)
+          continue;
+        const st = tn.agent.state;
+        if (st !== "active" && st !== "waiting") {
+          tn.booksShown = tn.skills.length;
+          tn.booksInHand = 0;
+        }
       }
       for (let i = this.leaving.length - 1; i >= 0; i--) {
         const tn = this.leaving[i];
@@ -1342,9 +1437,13 @@
         if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
           return { addDev: { island: r.island, key: r.name } };
         }
-        const sr = this.commitSyncRect(r);
-        if (sr && this.inRect(mx, my, sr.x, sr.y, sr.w, sr.h))
-          return { syncRoom: r.name };
+        const btns = this.commitButtons(r);
+        if (btns.push && this.inRect(mx, my, btns.push.x, btns.push.y, btns.push.w, btns.push.h))
+          return { pushRoom: r.name };
+        if (btns.pull && this.inRect(mx, my, btns.pull.x, btns.pull.y, btns.pull.w, btns.pull.h))
+          return { pullRoom: r.name };
+        if (btns.fetch && this.inRect(mx, my, btns.fetch.x, btns.fetch.y, btns.fetch.w, btns.fetch.h))
+          return { fetchRoom: r.name };
       }
       for (const g of this.ghosts) {
         if (this.inRect(mx, my, g.x0, g.base - ROOM_H, ROOM_W, ROOM_H)) {
@@ -1367,9 +1466,14 @@
     }
     onClick(e) {
       const hit = this.pick(e);
-      if (hit.syncRoom) {
-        this.syncSuppress.set(hit.syncRoom, Date.now());
-        this.onSyncCb(hit.syncRoom);
+      if (hit.fetchRoom) {
+        this.onFetchCb(hit.fetchRoom);
+      } else if (hit.pushRoom) {
+        this.syncSuppress.set(hit.pushRoom, Date.now());
+        this.onPushCb(hit.pushRoom);
+      } else if (hit.pullRoom) {
+        this.syncSuppress.set(hit.pullRoom, Date.now());
+        this.onPullCb(hit.pullRoom);
       } else if (hit.removeWtBtn)
         this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
       else if (hit.removeBtn)
@@ -1815,7 +1919,8 @@
         const yB = base + (byB - base) * t;
         return { x: xL, y: yT + (yB - yT) * f };
       };
-      const wp = [onWall(0.3, 0.26), onWall(0.64, 0.3), onWall(0.64, 0.66), onWall(0.3, 0.7)];
+      const winT0 = 0.3, winT1 = 0.64, winFTop = 0.28, winFBot = 0.66;
+      const wp = [onWall(winT0, winFTop), onWall(winT1, winFTop), onWall(winT1, winFBot), onWall(winT0, winFBot)];
       const quad = (pts, fill) => {
         ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y);
@@ -1859,6 +1964,7 @@
       ctx.moveTo(ml.x, ml.y);
       ctx.lineTo(mr.x, mr.y);
       ctx.stroke();
+      this.drawBookshelf(ctx, r, onWall);
       const px = x + w - DOOR_W - 6;
       ctx.fillStyle = "#7a4a2a";
       ctx.fillRect(px, base - 4.5, 4, 3);
@@ -1950,23 +2056,33 @@
     /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
      *  plus live git stats (files changed, lines +/-). It glows when the worktree's
      *  files change (see the packets fired from the desks in tick). */
-    /** World rect of the COMMITS-cell sync button when the branch is out of date
-     *  (has unpushed or behind commits); null otherwise. Shared by the renderer and
-     *  the hit-test so they always agree. Must mirror drawBoard's cell geometry. */
-    commitSyncRect(r) {
+    /** Buttons in the bottom band of the COMMITS cell, shared by the renderer and
+     *  the hit-test so they always agree. `push` (↑) appears when there are local
+     *  commits to push, `pull` (↓) when the branch is behind upstream, and `fetch`
+     *  (↻) is always available to refresh behind/ahead from the remote. Geometry
+     *  must mirror drawBoard's cell layout. `synced` flags the all-clear state. */
+    commitButtons(r) {
       const bd = r.boardShown ?? r.board;
-      if (!bd || bd.missing || bd.unpushed <= 0 && bd.behind <= 0)
-        return null;
+      if (!bd || bd.missing)
+        return {};
       const b = boardRect(r.x0, r.baseY);
       if (b.w < 20 || b.h < 14)
-        return null;
+        return {};
       const pad = 4;
       const innerL = b.x + pad, innerR = b.x + b.w - pad;
       const prW = Math.min(96, (innerR - innerL) * 0.42);
       const gitR = innerR - prW - 4;
       const cw = (gitR - innerL) / 3;
       const cx = innerL + 2 * cw;
-      return { x: cx - 1, y: b.y + b.h - 8, w: cw, h: 8 };
+      const cwIn = cw - 4;
+      const y = b.y + b.h - 8.5, h = 7.5, slot = 8.5;
+      let lx = cx - 0.5;
+      const push = bd.unpushed > 0 ? { x: lx, y, w: slot, h } : void 0;
+      if (push)
+        lx += slot;
+      const pull = bd.behind > 0 ? { x: lx, y, w: slot, h } : void 0;
+      const fetch = { x: cx + cwIn - 6.5, y, w: 7, h };
+      return { push, pull, fetch, synced: !push && !pull };
     }
     /** Draw a number, rolling the old value up and out while the new value rises in
      *  when it just changed (a flip-board feel). Uses the caller's font + fillStyle.
@@ -2112,7 +2228,6 @@
         { label: "STAGED", count: `${bd.staged} file${bd.staged === 1 ? "" : "s"}`, add: bd.stagedAdd, del: bd.stagedDel, tint: "#3ee089" },
         { label: "COMMITS", count: `${bd.ahead}`, add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" }
       ];
-      const sync = this.commitSyncRect(r);
       const cellKeys = ["unstaged", "staged", "commits"];
       cells.forEach((c, i) => {
         const cx = innerL + i * cw;
@@ -2138,30 +2253,28 @@
         this.drawRoll(ctx, cx + ctx.measureText(plus).width + 3, bodyTop + 16, `${pfx}.del`, `-${c.del}`, 3.6, r);
         churnBar(cx, bodyTop + 18.5, cwIn, c.add, c.del);
         if (i === 2) {
-          const up = bd.unpushed, bh = bd.behind, sy = bodyBot - 1.5;
-          ctx.font = "3.6px 'Martian Mono', monospace";
-          if (up > 0 || bh > 0) {
-            let sx = cx;
-            if (up > 0) {
-              ctx.fillStyle = "#ffb13d";
-              ctx.fillText(`\u21E1${up}`, sx, sy);
-              sx += ctx.measureText(`\u21E1${up}`).width + 2.5;
-            }
-            if (bh > 0) {
-              ctx.fillStyle = "#56c7ff";
-              ctx.fillText(`\u21E3${bh}`, sx, sy);
-              sx += ctx.measureText(`\u21E3${bh}`).width + 2.5;
-            }
-            if (sync) {
-              ctx.fillStyle = bh > 0 ? "#56c7ff" : "#3ee089";
-              ctx.font = "5.5px 'Martian Mono', monospace";
-              ctx.fillText("\u27F3", sx + 1, sy + 0.4);
-              ctx.font = "3.6px 'Martian Mono', monospace";
-            }
-          } else {
+          const btns = this.commitButtons(r);
+          const sy = bodyBot - 1.5;
+          ctx.textAlign = "left";
+          if (btns.push) {
+            ctx.fillStyle = "#ffb13d";
+            ctx.font = "bold 4px 'Martian Mono', monospace";
+            ctx.fillText(`\u2191${bd.unpushed}`, btns.push.x + 0.5, sy);
+          }
+          if (btns.pull) {
+            ctx.fillStyle = "#56c7ff";
+            ctx.font = "bold 4px 'Martian Mono', monospace";
+            ctx.fillText(`\u2193${bd.behind}`, btns.pull.x + 0.5, sy);
+          }
+          if (btns.synced) {
             ctx.fillStyle = "rgba(120,200,255,0.5)";
             ctx.font = "3px 'IBM Plex Mono', monospace";
             ctx.fillText("synced", cx, sy);
+          }
+          if (btns.fetch) {
+            ctx.fillStyle = "rgba(120,200,255,0.8)";
+            ctx.font = "5px 'Martian Mono', monospace";
+            ctx.fillText("\u21BB", btns.fetch.x + 1, sy + 0.4);
           }
         }
       });
@@ -2294,6 +2407,56 @@
       }
       ctx.restore();
     }
+    /** The skills library: a long, low bookshelf that runs the full left wall,
+     *  drawn slanted in the wall's one-point perspective just below the window.
+     *  A dev walks to it when it uses a skill and carries a book back to its desk
+     *  (see the errand state machine in tick + drawDesks' book stack). `onWall`
+     *  maps (t: 0 near opening → 1 far wall, f: 0 ceiling → 1 floor) to world xy. */
+    drawBookshelf(ctx, r, onWall) {
+      const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
+      if (eFurn <= 0)
+        return;
+      ctx.save();
+      ctx.globalAlpha = eFurn;
+      const quad = (a, b, c, d, fill) => {
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(c.x, c.y);
+        ctx.lineTo(d.x, d.y);
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+      };
+      const t0 = 0.05, t1 = 0.95, fTop = 0.68, fBot = 0.99;
+      const front = (t, f) => {
+        const p = onWall(t, f);
+        const d = 6 * (1 - t * 0.5);
+        return { x: p.x + d, y: p.y + d * 0.5 };
+      };
+      quad(onWall(t0, fTop), front(t0, fTop), front(t0, fBot), onWall(t0, fBot), "#1f1408");
+      quad(onWall(t0, fTop), onWall(t1, fTop), front(t1, fTop), front(t0, fTop), "#6a4d2c");
+      quad(front(t0, fTop), front(t1, fTop), front(t1, fTop + 0.02), front(t0, fTop + 0.02), "#3a2917");
+      quad(front(t0, fTop + 0.02), front(t1, fTop + 0.02), front(t1, fBot), front(t0, fBot), "#2c1f10");
+      const N = 24, hOff = hash(r.name) % BOOK_HUES.length;
+      const board = (f) => quad(front(t0, f), front(t1, f), front(t1, f + 0.015), front(t0, f + 0.015), "#3a2917");
+      const shelfRow = (rowTop, rowBot, salt) => {
+        for (let i = 0; i < N; i++) {
+          const ta = t0 + (t1 - t0) * (i / N);
+          const tb = t0 + (t1 - t0) * ((i + 0.8) / N);
+          const fT = rowTop + hash(r.name + salt + i) % 4 * 6e-3;
+          const hue = BOOK_HUES[(i + hOff + salt) % BOOK_HUES.length];
+          quad(front(ta, fT), front(tb, fT), front(tb, rowBot), front(ta, rowBot), `hsl(${hue} 42% 42%)`);
+          const tHi = ta + (tb - ta) * 0.26;
+          quad(front(ta, fT), front(tHi, fT), front(tHi, rowBot), front(ta, rowBot), `hsl(${hue} 42% 54%)`);
+        }
+      };
+      shelfRow(0.715, 0.8, 1);
+      board(0.805);
+      shelfRow(0.835, 0.92, 7);
+      quad(front(t0, 0.93), front(t1, 0.93), front(t1, fBot), front(t0, fBot), "#1a1108");
+      ctx.restore();
+    }
     drawDesks(ctx, r, row) {
       const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
       if (eFurn <= 0 || !r.plan)
@@ -2309,16 +2472,16 @@
         const occupied = !!tn?.sitting;
         const st = occupied ? tn.agent.state : void 0;
         ctx.fillStyle = "rgba(0,0,0,0.3)";
-        ctx.fillRect(dx + 1.5, db - 0.6, 19, 1.8);
+        ctx.fillRect(dx - 0.5, db - 0.6, 23, 1.8);
         ctx.fillStyle = "#7e5e35";
-        ctx.fillRect(dx + 2, db - 11, 18, 2);
+        ctx.fillRect(dx, db - 11, 22, 2);
         ctx.fillStyle = "#9c7a4c";
-        ctx.fillRect(dx + 2, db - 11, 18, 0.7);
+        ctx.fillRect(dx, db - 11, 22, 0.7);
         ctx.fillStyle = "#382a16";
-        ctx.fillRect(dx + 2, db - 9.2, 18, 0.7);
+        ctx.fillRect(dx, db - 9.2, 22, 0.7);
         ctx.fillStyle = "#54401f";
         ctx.fillRect(dx + 3, db - 9, 1.5, 9);
-        ctx.fillRect(dx + 17.5, db - 9, 1.5, 9);
+        ctx.fillRect(dx + 19.5, db - 9, 1.5, 9);
         ctx.fillStyle = "#171c21";
         ctx.fillRect(dx + 7.2, db - 11.2, 1.6, 1.2);
         ctx.fillRect(dx + 5.4, db - 10.2, 5.4, 1);
@@ -2358,6 +2521,16 @@
           grd.addColorStop(1, `rgba(${c},0)`);
           ctx.fillStyle = grd;
           ctx.fillRect(dx + 10, db - 24, 8, 20);
+        }
+        const books = tn?.booksShown ?? 0;
+        for (let k = 0; k < books; k++) {
+          const hue = BOOK_HUES[k % BOOK_HUES.length];
+          const jx = k % 2 * 0.7;
+          const by = db - 11 - k * 1.4;
+          ctx.fillStyle = `hsl(${hue} 45% 44%)`;
+          ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 1.4);
+          ctx.fillStyle = `hsl(${hue} 45% 55%)`;
+          ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 0.4);
         }
       }
       ctx.globalAlpha = 1;
@@ -2407,6 +2580,28 @@
         ctx.fillStyle = handC;
         ctx.fillRect(x - 4.4, ty - 3.4 + g, 1.6, 1.6);
         ctx.fillRect(x + 2.6, ty - 3.4 + (1 - g), 1.6, 1.6);
+      } else if (sitting && tn.booksInHand > 0) {
+        const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
+        const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
+        ctx.fillStyle = p.shirt;
+        ctx.fillRect(x - 2.4, ty + 1.4, 1.8, 1.8);
+        ctx.fillRect(x + 2.2, ty + 1.4, 1.8, 1.8);
+        ctx.fillStyle = "#e9e3d2";
+        ctx.fillRect(bx, by, bw, bh);
+        const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
+        ctx.fillStyle = `hsl(${hue} 42% 40%)`;
+        ctx.fillRect(bx - 0.7, by - 0.4, 0.9, bh + 0.8);
+        ctx.fillRect(bx + bw - 0.2, by - 0.4, 0.9, bh + 0.8);
+        ctx.fillStyle = "#b6ae98";
+        ctx.fillRect(bx + bw / 2 - 0.25, by, 0.5, bh);
+        ctx.fillStyle = "rgba(70,70,70,0.45)";
+        ctx.fillRect(bx + 0.8, by + 1.1, 1.8, 0.4);
+        ctx.fillRect(bx + 0.8, by + 2.1, 1.5, 0.4);
+        ctx.fillRect(bx + bw / 2 + 0.7, by + 1.1, 1.7, 0.4);
+        ctx.fillRect(bx + bw / 2 + 0.7, by + 2.1, 1.4, 0.4);
+        ctx.fillStyle = handC;
+        ctx.fillRect(bx - 0.6, by + bh - 0.4, 1.4, 1.4);
+        ctx.fillRect(bx + bw - 0.8, by + bh - 0.4, 1.4, 1.4);
       } else if (sitting) {
         const tap = f % 2 === 0 ? 0 : 0.8;
         ctx.fillRect(x - 6, ty + 2.2, 3.4, 1.4);
@@ -2494,6 +2689,19 @@
         ctx.strokeRect(x - 1.4, ey - 0.8, 1.9, 1.9);
         ctx.strokeRect(x + 0.9, ey - 0.8, 1.9, 1.9);
       }
+      if (tn.errand && tn.errand.phase !== "out") {
+        const carry = Math.max(0, tn.skills.length - tn.booksShown);
+        const dir = tn.targetX >= tn.x ? 1 : -1;
+        const bx = x - 2 + (dir > 0 ? 1.4 : -0.4);
+        for (let k = 0; k < carry; k++) {
+          const hue = BOOK_HUES[(tn.booksShown + k) % BOOK_HUES.length];
+          const by = ty + 3 - k * 1.4;
+          ctx.fillStyle = `hsl(${hue} 45% 46%)`;
+          ctx.fillRect(bx, by - 1.4, 4, 1.4);
+          ctx.fillStyle = `hsl(${hue} 45% 56%)`;
+          ctx.fillRect(bx, by - 1.4, 4, 0.4);
+        }
+      }
     }
   };
   window.DevTowerCrew = {
@@ -2535,8 +2743,14 @@
     onRemoveWorktree(cb) {
       this._instance?.onRemoveWorktree(cb);
     },
-    onSync(cb) {
-      this._instance?.onSync(cb);
+    onPush(cb) {
+      this._instance?.onPush(cb);
+    },
+    onPull(cb) {
+      this._instance?.onPull(cb);
+    },
+    onFetch(cb) {
+      this._instance?.onFetch(cb);
     },
     onCd(cb) {
       this._instance?.onCd(cb);
