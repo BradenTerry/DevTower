@@ -49,13 +49,13 @@ jobs:
         run: npm run build
 
       - name: Package extension
-        run: npx --yes @vscode/vsce package --readme-path MARKETPLACE.md --out devtower.vsix
+        run: npx --yes @vscode/vsce package --readme-path MARKETPLACE.md --out DevTower.vsix
 
       - name: Create GitHub release with .vsix
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" devtower.vsix --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" DevTower.vsix --title "$GITHUB_REF_NAME" --generate-notes
 
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
-        run: npx --yes @vscode/vsce publish --packagePath devtower.vsix -p "$VSCE_PAT"
+        run: npx --yes @vscode/vsce publish --packagePath DevTower.vsix -p "$VSCE_PAT"
