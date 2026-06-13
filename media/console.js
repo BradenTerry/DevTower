@@ -1,6 +1,6 @@
 /* DevTower console — pixel scene + glass HUD.
    The agent's NATIVE terminal (auto-attached `claude --resume`) is the chat;
-   the panel is a compact stats card: context %, model, branch, changes. */
+   the panel is a compact stats card: context %, model, plus PR actions. */
 (function () {
   const vscode = acquireVsCodeApi();
   const $ = (s, r = document) => r.querySelector(s);
@@ -11,7 +11,6 @@
   let agents = [], selectedId = null, theme = "dark", panelOpen = false;
   let firstState = true, prboardOpen = false;
   let prs = { crew: [], review: [] };
-  const changes = new Map();
   const prevStates = new Map();
   const get = (id) => agents.find((a) => a.id === id);
   const repos = () => [...new Set(agents.map((a) => a.repo))];
@@ -29,8 +28,10 @@
     window.DevTowerCrew.mount($("#crew-wrap"), $("#crew-canvas"));
     window.DevTowerCrew.onSelect((id) => selectAgent(id, true));
     window.DevTowerCrew.onReserve((floor, col) => vscode.postMessage({ type: "reserveRoom", floor, col }));
-    window.DevTowerCrew.onAddAgent((room) => vscode.postMessage({ type: "addAgent", room }));
+    window.DevTowerCrew.onAddDev((island, worktree) => vscode.postMessage({ type: "addDev", island, worktree }));
+    window.DevTowerCrew.onAddWorktree((island) => vscode.postMessage({ type: "addWorktree", island }));
     window.DevTowerCrew.onRemoveRoom((room) => vscode.postMessage({ type: "removeRoom", room }));
+    window.DevTowerCrew.onRemoveWorktree((worktree, island) => vscode.postMessage({ type: "removeWorktree", worktree, island }));
     window.DevTowerCrew.onCd((id, target) =>
       vscode.postMessage({ type: "cdAgent", id, room: target.room, ghost: target.ghost })
     );
@@ -52,11 +53,8 @@
   function selectAgent(id, open) {
     selectedId = id;
     vscode.postMessage({ type: "select", id }); // reveals the agent's terminal
-    vscode.postMessage({ type: "requestChanges", id });
     if (window.DevTowerCrew) window.DevTowerCrew.setSelected(id);
     if (open) panelOpen = true;
-    const hint = $("#hint");
-    if (hint) hint.style.opacity = panelOpen ? "0" : "1";
     updateInsets();
     renderPanel();
   }
@@ -64,8 +62,6 @@
   function closePanel() {
     panelOpen = false;
     $("#panel").hidden = true;
-    const hint = $("#hint");
-    if (hint) hint.style.opacity = "1";
     if (window.DevTowerCrew) window.DevTowerCrew.setSelected(undefined);
     selectedId = null;
     updateInsets();
@@ -241,25 +237,9 @@
     panel.hidden = false;
 
     const hue = hueOf(a.id);
-    const chg = changes.get(a.id) || [];
-    const adds = chg.reduce((s, f) => s + f.add, 0);
-    const dels = chg.reduce((s, f) => s + f.del, 0);
     const pct = contextOf(a);
     const pctColor = pct === null ? "var(--idle)" : pct < 60 ? "var(--active)" : pct < 85 ? "var(--waiting)" : "var(--error)";
     const tokens = a.contextTokens ? (a.contextTokens >= 1000 ? Math.round(a.contextTokens / 1000) + "k" : a.contextTokens) : null;
-    const nowText = a.state === "waiting" ? (a.question || a.task) : a.task || STATE_LABEL[a.state];
-
-    const row = (f) => {
-      const cut = f.path.lastIndexOf("/") + 1;
-      const btn = f.staged
-        ? `<button class="chg-btn unstage" data-act="unstageFile" data-path="${esc(f.path)}">−</button>`
-        : `<button class="chg-btn stage" data-act="stageFile" data-path="${esc(f.path)}">+</button>`;
-      return `<div class="chg-row" data-path="${esc(f.path)}">
-        <span class="fic">≡</span>
-        <span class="cpath"><span class="dir">${esc(f.path.slice(0, cut))}</span><b>${esc(f.path.slice(cut))}</b></span>
-        <span class="cstat"><span class="a">+${f.add}</span><span class="d">−${f.del}</span></span>
-        ${btn}</div>`;
-    };
 
     panel.innerHTML = `
       <div class="p-head" style="--ac:hsl(${hue} 55% 55%)">
@@ -272,7 +252,6 @@
           </div>
           <span class="statebadge" data-state="${a.state}"><i></i>${STATE_LABEL[a.state]}</span>
         </div>
-        <div class="now ${a.state}"><span class="pulse"></span><span class="nlab">${a.state === "active" ? "Now" : a.state}</span><span class="ntext">${esc(nowText)}</span></div>
         ${prChipHTML(a)}
       </div>
 
@@ -283,8 +262,6 @@
           <b>${pct === null ? "—" : pct + "%"}${tokens ? `<span class="tk"> ${tokens}</span>` : ""}</b>
         </div>
         <div class="srow"><span class="sl">Model</span><b>${esc(a.model || "—")}</b></div>
-        <div class="srow"><span class="sl">Branch</span><b>⌥ ${esc(a.branch || "—")}</b></div>
-        <div class="srow"><span class="sl">Changes</span><b>${chg.length} files <span class="a">+${adds}</span> <span class="d">−${dels}</span></b></div>
       </div>
 
       ${a.state === "waiting" ? `
@@ -296,13 +273,7 @@
 
       <div class="p-actions">
         <button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>
-        <button class="pa" data-tool="diff">⊙ Diff</button>
         <button class="pa" data-tool="pr">⇄ ${prFor(a.id) ? "PR" : "Create PR"}</button>
-      </div>
-
-      <div class="chg-section">
-        <div class="chg-title">Changed files<span class="cnt">${chg.length}</span></div>
-        ${chg.length ? chg.slice(0, 10).map(row).join("") : `<div class="chg-empty">Clean worktree.</div>`}
       </div>`;
 
     // wiring
@@ -317,11 +288,6 @@
         return;
       }
       vscode.postMessage({ type: "action", id: a.id, act: t.dataset.tool });
-    }));
-    $$(".chg-row", panel).forEach((r) => (r.onclick = () => vscode.postMessage({ type: "action", id: a.id, act: "openFileDiff", path: r.dataset.path })));
-    $$(".chg-btn", panel).forEach((b) => (b.onclick = (e) => {
-      e.stopPropagation();
-      vscode.postMessage({ type: "action", id: a.id, act: b.dataset.act, path: b.dataset.path });
     }));
   }
 
@@ -371,12 +337,12 @@
       agents = m.agents || [];
       if (m.selectedId && panelOpen) selectedId = m.selectedId;
       renderTelemetry();
-      if (window.DevTowerCrew) window.DevTowerCrew.setRooms(m.rooms || []);
+      if (window.DevTowerCrew) {
+        window.DevTowerCrew.setBoards(m.boards || {});
+        window.DevTowerCrew.setRooms(m.rooms || []);
+      }
       pushCrew();
       renderPanel();
-    } else if (m.type === "changes") {
-      changes.set(m.id, m.files || []);
-      if (m.id === selectedId) renderPanel();
     } else if (m.type === "prs") {
       prs = { crew: m.crew || [], review: m.review || [] };
       renderPrBoard();

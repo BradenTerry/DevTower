@@ -16,7 +16,16 @@ export class TerminalManager {
   constructor(private store: DevTowerStore) {
     vscode.window.onDidCloseTerminal((t) => {
       for (const [id, term] of this.terminals) {
-        if (term === t) this.terminals.delete(id);
+        if (term !== t) continue;
+        this.terminals.delete(id);
+        // A panel-created placeholder (no live Claude transcript yet) has nothing
+        // else tracking it, so stopping its terminal means the operator dropped
+        // the agent — remove it from the tower. Discovered/adopted sessions
+        // (transcriptPath set) are left to ClaudeDiscovery, which removes them
+        // once the underlying process exits.
+        const agent = this.store.get(id);
+        if (agent && !agent.transcriptPath) this.store.remove(id);
+        break;
       }
     });
   }
@@ -79,6 +88,15 @@ export class TerminalManager {
     term.show(true);
     term.sendText(`\x1b[200~${text}\x1b[201~`, false); // bracketed paste, no newline
     term.sendText("", true); // Enter → submit
+  }
+
+  /** Kill one agent's terminal (and the session process running in it). */
+  disposeAgent(agentId: string): void {
+    const term = this.terminals.get(agentId);
+    if (term) {
+      term.dispose();
+      this.terminals.delete(agentId);
+    }
   }
 
   dispose(): void {

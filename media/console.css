@@ -195,14 +195,6 @@ button{ font-family:inherit; }
 .feed-item .repo{ margin-left:auto; font-family:var(--label); font-size:7.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint); padding-left:8px; }
 @keyframes feedin{ from{ opacity:0; transform:translateY(14px) scale(.95); } }
 
-/* hint pill */
-.hint{
-  position:fixed; bottom:18px; left:50%; transform:translateX(-50%); z-index:5;
-  font-family:var(--label); font-size:8.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--text-dim);
-  background:var(--glass); border:1px solid var(--edge); padding:8px 18px; border-radius:20px;
-  backdrop-filter:var(--blur); box-shadow:var(--shadow); pointer-events:none; transition:opacity .4s;
-}
-
 /* ============ AGENT PANEL (right) ============ */
 .panel{
   position:fixed; top:64px; right:16px; z-index:20;

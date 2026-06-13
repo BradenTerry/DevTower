@@ -4,7 +4,7 @@ import { TerminalManager } from "./terminals";
 import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
-import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, currentBranch } from "./git";
+import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary } from "./git";
 import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
 import * as fs from "fs";
@@ -19,6 +19,35 @@ function shellQuote(s: string): string {
 interface UsageWindow {
   pct: number;
   resetsAt?: number;
+}
+
+/** Everything a room's back-wall board renders: file/staged/commit columns plus
+ *  a matched pull request with its check + review status. */
+interface BoardData {
+  branch: string;
+  modified: number;
+  staged: number;
+  modifiedFiles: string[];
+  stagedFiles: string[];
+  unstagedAdd: number;
+  unstagedDel: number;
+  stagedAdd: number;
+  stagedDel: number;
+  committedAdd: number;
+  committedDel: number;
+  ahead: number;
+  commits: string[];
+  /** Set when the room's directory no longer exists on disk (a worktree removed
+   *  out from under us). The board renders a distinct "missing" state. */
+  missing?: boolean;
+  pr?: {
+    number: number;
+    title: string;
+    url: string;
+    draft: boolean;
+    checks: "pass" | "fail" | "pending" | "none";
+    review: "approved" | "changes" | "required" | "none";
+  };
 }
 
 /** A grid cell the user reserved for a directory (persisted per-workspace). */
@@ -38,6 +67,14 @@ export class ConsolePanel {
   private disposables: vscode.Disposable[] = [];
   /** Rooms with an add-agent flow in flight, so a double-click can't spawn two. */
   private addingRooms = new Set<string>();
+  /** Live board data per ROOM KEY (building key = its checkout path): modified vs
+   *  staged files, commits, and a matched PR. Keyed by the same string the room
+   *  uses so they line up. */
+  private boardsByPath = new Map<string, BoardData>();
+  /** Branch name per room key, so the main building shows its real branch. */
+  private branchByPath = new Map<string, string>();
+  private statsTimer?: ReturnType<typeof setInterval>;
+  private lastWtSignature = "";
 
   static createOrShow(
     context: vscode.ExtensionContext,
@@ -78,8 +115,13 @@ export class ConsolePanel {
     this.store.onChange(() => this.postState(), null, this.disposables);
     this.store.onDidChangeSelection(() => this.postState(), null, this.disposables);
     this.prs.onChange(() => this.postPrs(), null, this.disposables);
+    this.prs.onChange(() => void this.refreshState(), null, this.disposables); // PR → board column
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
     this.startUsage();
+    // poll each worktree's git stats so the back-wall boards stay live
+    this.statsTimer = setInterval(() => {
+      if (this.panel.visible) void this.refreshState();
+    }, 6_000);
   }
 
   private async onMessage(m: any): Promise<void> {
@@ -88,6 +130,7 @@ export class ConsolePanel {
       case "ready":
         this.postState();
         this.postUsage();
+        void this.refreshState(); // fill in each island's worktree rooms
         break;
       case "select":
         if (id) this.store.setSelected(id);
@@ -107,8 +150,13 @@ export class ConsolePanel {
           typeof m.col === "number" ? m.col : 0
         );
         break;
-      case "addAgent":
-        if (typeof m.room === "string") await this.addAgent(m.room);
+      case "addDev":
+        // + DEV on a room → drop an agent straight into that room's worktree
+        if (typeof m.island === "string" && typeof m.worktree === "string") await this.addDev(m.island, m.worktree);
+        break;
+      case "addWorktree":
+        // + WORKTREE on an island → create a new worktree room (no agent yet)
+        if (typeof m.island === "string") await this.addWorktree(m.island);
         break;
       case "assignReview":
         if (m.pr && typeof m.pr === "object") await this.assignReview(m.pr);
@@ -116,6 +164,9 @@ export class ConsolePanel {
       case "removeRoom":
         // note: must not truthiness-check — a legacy room can have name ""
         if (typeof m.room === "string") await this.removeRoom(m.room);
+        break;
+      case "removeWorktree":
+        if (typeof m.worktree === "string") await this.removeWorktree(m.worktree, typeof m.island === "string" ? m.island : "");
         break;
       case "cdAgent":
         if (id) await this.cdAgent(id, m.room, m.ghost);
@@ -176,6 +227,20 @@ export class ConsolePanel {
     await this.context.workspaceState.update("devtower.reservedRooms", rooms);
   }
 
+  /** Worktree rooms the user has explicitly assigned to an island. Worktrees do
+   *  NOT auto-appear from git — only these (and rooms an agent is live in) show. */
+  private getWorktreeRooms(): { island: string; path: string; branch: string }[] {
+    const raw = this.context.workspaceState.get<{ island: string; path: string; branch: string }[]>(
+      "devtower.worktreeRooms",
+      []
+    );
+    return (raw || []).filter((w) => w && typeof w.path === "string" && w.path && typeof w.island === "string");
+  }
+
+  private async saveWorktreeRooms(rows: { island: string; path: string; branch: string }[]): Promise<void> {
+    await this.context.workspaceState.update("devtower.worktreeRooms", rows);
+  }
+
   /** Click on an empty grid slot → pick a directory → reserve the room. */
   private async reserveRoom(floor: number, col: number): Promise<void> {
     const picked = await vscode.window.showOpenDialog({
@@ -199,100 +264,266 @@ export class ConsolePanel {
     while (rooms.some((r) => r.name === name)) name = `${base}-${n++}`;
     rooms.push({ name, path: dir, floor, col });
     await this.saveRooms(rooms);
-    this.postState();
+    await this.refreshState(); // surfaces the required main building right away
   }
 
-  /** ✕ on a reserved room → confirm → drop the reservation (files untouched). */
+  /** ✕ on the root building → nuke the whole directory: stop every agent in the
+   *  island, optionally delete all its worktrees, and drop the reservation. The
+   *  root checkout itself is never deleted from disk. */
   private async removeRoom(name: string): Promise<void> {
-    const rooms = this.getRooms();
-    if (!rooms.some((r) => r.name === name)) return;
+    const reserved = this.getRooms().find((r) => r.name === name);
+    const agents = this.store.list().filter((a) => a.repo === name);
+    const rootDir = reserved?.path;
+    // worktrees we could delete from disk = any checkout that isn't the root
+    const canDelete = agents.some((a) => a.worktree && a.worktree !== rootDir && resolveCwd(a) !== rootDir);
+    const choices = canDelete ? ["Remove directory", "Remove + delete worktrees"] : ["Remove directory"];
     const pick = await vscode.window.showWarningMessage(
-      `Remove room "${name}" from the tower? The directory and any running agents are untouched.`,
+      `Remove the entire "${name}" directory${agents.length ? ` and its ${agents.length} room(s)` : ""}? ` +
+        `Agents will stop.${canDelete ? " You can also delete the worktrees from disk." : ""}`,
       { modal: true },
-      "Remove room"
-    );
-    if (pick !== "Remove room") return;
-    await this.saveRooms(rooms.filter((r) => r.name !== name));
-    this.postState();
-  }
-
-  /** "+ dev" button on a room → choose worktree vs base dir → spawn an agent. */
-  private async addAgent(roomName: string): Promise<void> {
-    // guard against a double-click queuing two adds before the first applies
-    if (this.addingRooms.has(roomName)) return;
-    this.addingRooms.add(roomName);
-    try {
-      await this.addAgentInner(roomName);
-    } finally {
-      this.addingRooms.delete(roomName);
-    }
-  }
-
-  private async addAgentInner(roomName: string): Promise<void> {
-    // resolve the room's directory: reserved room first, else any agent in that repo
-    const reserved = this.getRooms().find((r) => r.name === roomName);
-    let dir = reserved?.path;
-    if (!dir) {
-      const peer = this.store.list().find((a) => a.repo === roomName);
-      dir = peer ? resolveCwd(peer) : undefined;
-    }
-    if (!dir) {
-      vscode.window.showWarningMessage(`DevTower: no directory known for room "${roomName}".`);
-      return;
-    }
-
-    const repoReady = await isRepo(dir);
-    const pick = await vscode.window.showQuickPick(
-      [
-        {
-          label: "$(git-branch) Create a worktree",
-          description: repoReady ? "new branch + isolated working copy" : "unavailable — not a git repository",
-          id: "wt",
-        },
-        { label: "$(folder) Use the project directory", description: dir, id: "base" },
-      ],
-      { title: `Add agent to ${roomName}` }
+      ...choices
     );
     if (!pick) return;
 
-    const n = this.store.list().filter((a) => a.repo === roomName).length + 1;
-    let worktree = dir;
-    let branch = await currentBranch(dir);
-    if (pick.id === "wt") {
-      if (!repoReady) {
-        vscode.window.showWarningMessage("DevTower: not a git repository — using the project directory instead.");
-      } else {
-        try {
-          const wt = await worktreeAdd(dir, roomName, n);
-          worktree = wt.wtPath;
-          branch = wt.branch;
-        } catch (e) {
-          vscode.window.showErrorMessage(`DevTower: worktree creation failed (${String(e).slice(0, 120)}) — using the project directory.`);
+    for (const a of agents) {
+      this.terminals.disposeAgent(a.id);
+      this.store.remove(a.id);
+    }
+    if (pick === "Remove + delete worktrees") {
+      const dir = reserved?.path ?? this.dirForRepo(name);
+      if (dir) {
+        for (const a of agents) {
+          if (!a.worktree || a.worktree === dir) continue; // never the root checkout
+          try {
+            await worktreeRemove(dir, a.worktree, a.branch);
+          } catch (e) {
+            vscode.window.showWarningMessage(`DevTower: couldn't remove worktree ${path.basename(a.worktree)} — ${String(e).slice(0, 120)}`);
+          }
         }
       }
     }
+    if (reserved) await this.saveRooms(this.getRooms().filter((r) => r.name !== name));
+    // forget every worktree room assigned to this island
+    await this.saveWorktreeRooms(this.getWorktreeRooms().filter((w) => w.island !== name));
+    this.postState();
+    void this.refreshState();
+  }
 
-    const id = `${roomName}-a${n}`;
-    this.store.apply({
-      id,
-      name: `${roomName}-${n}`,
-      model: "—",
-      repo: roomName,
-      worktree,
-      branch,
-      state: "idle",
-      task: "Ready — dispatch a task from the panel",
-      elapsed: "new",
-    });
-    this.store.setSelected(id);
+  /** ✕ on a worktree building → confirm → stop its agent(s); optionally delete
+   *  the git worktree (and its branch) from disk too. */
+  private async removeWorktree(worktree: string, island: string): Promise<void> {
+    const agents = this.store
+      .list()
+      .filter((a) => a.worktree === worktree || resolveCwd(a) === worktree);
+    const branch = agents[0]?.branch;
+    const label = branch && branch !== "—" ? branch : path.basename(worktree);
+    const pick = await vscode.window.showWarningMessage(
+      `Remove worktree room "${label}"? Its agent(s) will stop.`,
+      { modal: true },
+      "Remove room",
+      "Remove room + delete worktree"
+    );
+    if (!pick) return;
 
-    // start a real Claude CLI session in the agent's terminal (worktree cwd);
-    // devtower.launchCommand takes precedence if the user configured one
+    for (const a of agents) {
+      this.terminals.disposeAgent(a.id);
+      this.store.remove(a.id);
+    }
+    if (pick === "Remove room + delete worktree") {
+      const dir = this.dirForRepo(island);
+      if (!dir || dir === worktree) {
+        vscode.window.showWarningMessage(`DevTower: couldn't resolve the repo for "${island}" to remove the worktree.`);
+      } else {
+        try {
+          await worktreeRemove(dir, worktree, branch);
+          vscode.window.showInformationMessage(`DevTower: removed worktree ${label}.`);
+        } catch (e) {
+          vscode.window.showErrorMessage(`DevTower: worktree remove failed — ${String(e).slice(0, 160)}`);
+        }
+      }
+    }
+    // unassign this worktree room
+    await this.saveWorktreeRooms(this.getWorktreeRooms().filter((w) => w.path !== worktree));
+    this.postState();
+    void this.refreshState();
+  }
+
+  /** + DEV on a room → drop an agent straight into that room's worktree. No
+   *  prompt — the room already fixes the directory. */
+  private async addDev(island: string, worktree: string): Promise<void> {
+    const key = `dev::${worktree}`;
+    if (this.addingRooms.has(key)) return; // guard a double-click
+    this.addingRooms.add(key);
+    try {
+      if (!worktree) {
+        vscode.window.showWarningMessage(`DevTower: no directory for "${island}".`);
+        return;
+      }
+      const n = this.store.list().filter((a) => a.repo === island).length + 1;
+      const branch = await currentBranch(worktree);
+      const id = `${island}-a${n}`;
+      this.store.apply({
+        id,
+        name: `${island}-${n}`,
+        model: "—",
+        repo: island,
+        worktree,
+        branch,
+        state: "idle",
+        task: "Ready — dispatch a task from the panel",
+        elapsed: "new",
+      });
+      this.store.setSelected(id);
+      this.launchSession(id);
+    } finally {
+      this.addingRooms.delete(key);
+    }
+  }
+
+  /** + WORKTREE on an island → prompt to assign an existing worktree as a room
+   *  or create a brand-new one. Worktrees only become rooms once assigned here.
+   *  No agent is spawned; the operator drops one in afterwards with + DEV. */
+  private async addWorktree(island: string): Promise<void> {
+    const key = `wt::${island}`;
+    if (this.addingRooms.has(key)) return;
+    this.addingRooms.add(key);
+    try {
+      const dir = this.dirForRepo(island);
+      if (!dir) {
+        vscode.window.showWarningMessage(`DevTower: no directory known for "${island}".`);
+        return;
+      }
+      if (!(await isRepo(dir))) {
+        vscode.window.showWarningMessage(`DevTower: "${island}" isn't a git repository — can't add a worktree.`);
+        return;
+      }
+      const assigned = this.getWorktreeRooms().filter((w) => w.island === island);
+      const taken = new Set(assigned.map((w) => w.path));
+      // existing on-disk worktrees not already a room (and not the root checkout)
+      const existing = (await worktreeList(dir)).filter((w) => w.path !== dir && !taken.has(w.path));
+      const items: (vscode.QuickPickItem & { id: string; branch?: string })[] = [
+        { label: "$(add) Create a new worktree", description: "new branch + isolated checkout", id: "__new__" },
+        ...existing.map((w) => ({
+          label: `$(git-branch) ${w.branch || path.basename(w.path)}`,
+          description: w.path,
+          id: w.path,
+          branch: w.branch,
+        })),
+      ];
+      const pick = await vscode.window.showQuickPick(items, {
+        title: `Add a worktree to ${island}`,
+        placeHolder: "Assign an existing worktree, or create a new one",
+      });
+      if (!pick) return;
+
+      let row: { island: string; path: string; branch: string };
+      if (pick.id === "__new__") {
+        try {
+          const wt = await worktreeAdd(dir, island, assigned.length + 2);
+          row = { island, path: wt.wtPath, branch: wt.branch };
+        } catch (e) {
+          vscode.window.showErrorMessage(`DevTower: worktree creation failed — ${String(e).slice(0, 160)}`);
+          return;
+        }
+      } else {
+        row = { island, path: pick.id, branch: pick.branch || "" };
+      }
+      const rows = this.getWorktreeRooms().filter((w) => !(w.island === island && w.path === row.path));
+      rows.push(row);
+      await this.saveWorktreeRooms(rows);
+      this.postState(); // show the room right away (don't move the camera)
+      void this.refreshState(); // fill in its branch + stats
+    } finally {
+      this.addingRooms.delete(key);
+    }
+  }
+
+  /** Start the agent's real Claude CLI session in its terminal (worktree cwd);
+   *  devtower.launchCommand takes precedence if the user configured one. */
+  private launchSession(id: string): void {
     const cfg = vscode.workspace.getConfiguration("devtower");
     const launch = cfg.get<string>("launchCommand", "").trim();
     const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim();
     if (!launch && claudeCmd) this.terminals.send(id, claudeCmd);
     else this.terminals.reveal(id);
+  }
+
+  /** Recompute live git stats + branch per ROOM (keyed by the room's checkout
+   *  path, which is exactly the building key the webview uses) and push if it
+   *  changed. Git is resolved from the path even when it lives in a parent dir. */
+  private async refreshState(): Promise<void> {
+    // roomKey → absolute path to run git in. Track which keys are island (main)
+    // rooms vs worktree rooms so a vanished worktree can be auto-pruned while a
+    // vanished island just renders a "missing" board.
+    const pairs = new Map<string, string>();
+    const islandPaths = new Set<string>();
+    const worktreePaths = new Set<string>();
+    for (const isl of this.getRooms()) if (isl.path) { pairs.set(isl.path, isl.path); islandPaths.add(isl.path); }
+    for (const w of this.getWorktreeRooms()) { pairs.set(w.path, w.path); worktreePaths.add(w.path); }
+    for (const a of this.store.list()) {
+      if (a.worktree && a.worktree.trim()) pairs.set(a.worktree, resolveCwd(a) ?? a.worktree);
+    }
+    const prs = [...this.prs.getCrew(), ...this.prs.getReview()];
+    const boards = new Map<string, BoardData>();
+    const branches = new Map<string, string>();
+    const vanishedWorktrees: string[] = [];
+    const emptyBoard = (over: Partial<BoardData>): BoardData => ({
+      branch: "", modified: 0, staged: 0, modifiedFiles: [], stagedFiles: [],
+      unstagedAdd: 0, unstagedDel: 0, stagedAdd: 0, stagedDel: 0,
+      committedAdd: 0, committedDel: 0, ahead: 0, commits: [], ...over,
+    });
+    for (const [roomKey, p] of pairs) {
+      // directory removed out from under us (e.g. a deleted worktree): a worktree
+      // room is auto-pruned; an island room shows a distinct "missing" board so
+      // the user knows its directory is gone rather than just "no git".
+      if (!fs.existsSync(p)) {
+        if (worktreePaths.has(roomKey) && !islandPaths.has(roomKey)) vanishedWorktrees.push(roomKey);
+        else if (islandPaths.has(roomKey)) boards.set(roomKey, emptyBoard({ missing: true }));
+        continue;
+      }
+      try {
+        if (!(await isRepo(p))) continue; // git is found by walking up to the repo root
+        const sum = await branchSummary(p);
+        if (!sum) continue;
+        const branch = await currentBranch(p);
+        branches.set(roomKey, branch);
+        const pr = prs.find((x) => x.branch && x.branch === branch);
+        boards.set(roomKey, {
+          branch,
+          modified: sum.modified,
+          staged: sum.staged,
+          modifiedFiles: sum.modifiedFiles.slice(0, 30),
+          stagedFiles: sum.stagedFiles.slice(0, 30),
+          unstagedAdd: sum.unstagedAdd,
+          unstagedDel: sum.unstagedDel,
+          stagedAdd: sum.stagedAdd,
+          stagedDel: sum.stagedDel,
+          committedAdd: sum.committedAdd,
+          committedDel: sum.committedDel,
+          ahead: sum.ahead,
+          commits: sum.commits,
+          pr: pr
+            ? { number: pr.number, title: pr.title, url: pr.url, draft: pr.isDraft, checks: pr.checks, review: pr.review }
+            : undefined,
+        });
+      } catch {
+        /* path vanished or git hiccup — skip this round */
+      }
+    }
+    // drop rooms whose worktree directory is gone, then re-sync the webview
+    if (vanishedWorktrees.length) {
+      const gone = new Set(vanishedWorktrees);
+      await this.saveWorktreeRooms(this.getWorktreeRooms().filter((w) => !gone.has(w.path)));
+    }
+    this.boardsByPath = boards;
+    this.branchByPath = branches;
+    // only push (and wake the render loop) when something actually changed, so
+    // the idle poll doesn't defeat the webview's park-when-quiet power saving
+    const sig = JSON.stringify([...boards].sort());
+    if (sig !== this.lastWtSignature || vanishedWorktrees.length) {
+      this.lastWtSignature = sig;
+      this.postState(); // pruned rooms also need a re-sync so they stop rendering
+    }
   }
 
   /** Spawn a reviewer agent for a PR. Prompts for review focus, then drops a
@@ -380,6 +611,14 @@ export class ConsolePanel {
   ): Promise<void> {
     const agent = this.store.get(id);
     if (!agent) return;
+    // never relocate an agent mid-task — its /cd would land in the middle of a
+    // running turn. Wait until it's idle/waiting/done.
+    if (agent.state === "active") {
+      vscode.window.showInformationMessage(
+        `DevTower: ${agent.name} is active — wait until it finishes before moving it.`
+      );
+      return;
+    }
 
     let dir: string | undefined;
     let roomName: string | undefined;
@@ -426,17 +665,11 @@ export class ConsolePanel {
     // real session (auto-resumed on first open). Use command() so the path is
     // pasted as a literal block — typing it would trip Claude's /cd autocomplete
     this.terminals.command(id, `/cd ${dir}`);
-    // relocate the toon now; discovery confirms once the transcript reports the
-    // new cwd (expectCd holds the position until then, preventing a snap-back)
-    this.store.apply({
-      id,
-      repo: roomName ?? path.basename(dir),
-      worktree: dir,
-      name: `${roomName ?? path.basename(dir)}·${id.slice(3, 7)}`,
-      state: "active",
-      task: `Moved to ${path.basename(dir)}`,
-    });
-    this.discovery?.expectCd(id, dir);
+    // do NOT move the toon yet — only show it's in transit. Discovery relocates
+    // it (repo/worktree) once the transcript actually reports the new cwd, so a
+    // declined or failed /cd leaves the agent exactly where it was.
+    this.store.apply({ id, task: `Moving to ${path.basename(dir)}…` });
+    this.discovery?.expectCd(id, dir, roomName);
     this.postState();
   }
 
@@ -565,11 +798,22 @@ export class ConsolePanel {
   }
 
   private postState(): void {
+    // each island carries the required main checkout + the worktrees the user has
+    // assigned to it (branches filled from the live cache)
+    const wtRooms = this.getWorktreeRooms();
+    const rooms = this.getRooms().map((r) => {
+      const main = r.path ? [{ path: r.path, branch: this.branchByPath.get(r.path) ?? "" }] : [];
+      const assigned = wtRooms
+        .filter((w) => w.island === r.name)
+        .map((w) => ({ path: w.path, branch: this.branchByPath.get(w.path) ?? w.branch }));
+      return { ...r, worktrees: [...main, ...assigned] };
+    });
     this.panel.webview.postMessage({
       type: "state",
       agents: this.store.list(),
       selectedId: this.store.getSelectedId(),
-      rooms: this.getRooms(),
+      rooms,
+      boards: Object.fromEntries(this.boardsByPath),
     });
   }
 
@@ -618,6 +862,7 @@ export class ConsolePanel {
   private dispose(): void {
     ConsolePanel.current = undefined;
     if (this.usageTimer) clearInterval(this.usageTimer);
+    if (this.statsTimer) clearInterval(this.statsTimer);
     this.usageWatcher?.close();
     this.panel.dispose();
     while (this.disposables.length) this.disposables.pop()?.dispose();
@@ -681,8 +926,6 @@ export class ConsolePanel {
 
   <!-- arrivals / departures feed -->
   <div class="feed" id="feed"></div>
-
-  <div class="hint" id="hint">Click a dev to select · click a floor to zoom · empty floors reserve a directory · + DEV adds an agent</div>
 
   <!-- selected-agent panel: chat + changes -->
   <aside class="panel" id="panel" hidden></aside>

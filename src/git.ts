@@ -232,6 +232,131 @@ export async function worktreeAdd(dir: string, name: string, n: number): Promise
   return { wtPath, branch };
 }
 
+export interface BranchSummary {
+  modified: number; // working-tree (unstaged) changed files
+  staged: number; // index (staged) files
+  modifiedFiles: string[];
+  stagedFiles: string[];
+  unstagedAdd: number; // lines added across unstaged changes
+  unstagedDel: number; // lines removed across unstaged changes
+  stagedAdd: number; // lines added across staged changes
+  stagedDel: number; // lines removed across staged changes
+  committedAdd: number; // lines added across commits ahead of base
+  committedDel: number; // lines removed across commits ahead of base
+  ahead: number; // commits ahead of upstream/base
+  commits: string[]; // recent commit subjects (newest first)
+}
+
+/** Sum added/removed lines from a `git <diff> --numstat` run. Binary files
+ *  report "-\t-" and contribute nothing. Returns {add:0,del:0} on any error. */
+async function numstatTotals(cwd: string, args: string[]): Promise<{ add: number; del: number }> {
+  let out = "";
+  try {
+    out = await runGit(cwd, args);
+  } catch {
+    return { add: 0, del: 0 };
+  }
+  let add = 0, del = 0;
+  for (const line of out.split("\n")) {
+    if (!line.trim()) continue;
+    const [a, d] = line.split("\t");
+    add += a === "-" ? 0 : parseInt(a, 10) || 0;
+    del += d === "-" ? 0 : parseInt(d, 10) || 0;
+  }
+  return { add, del };
+}
+
+/** Per-checkout summary for the room board: modified vs staged file counts (kept
+ *  separate so staging doesn't muddy the numbers), commits ahead + recent log. */
+export async function branchSummary(cwd: string): Promise<BranchSummary | null> {
+  const st = await status(cwd).catch(() => null);
+  if (!st) return null;
+  let ahead = 0;
+  let baseRef = ""; // the base the ahead/committed churn is measured against
+  for (const base of ["@{upstream}", "origin/HEAD"]) {
+    try {
+      ahead = parseInt((await runGit(cwd, ["rev-list", "--count", `${base}..HEAD`])).trim(), 10) || 0;
+      baseRef = base;
+      break;
+    } catch {
+      /* no upstream / base — try the next */
+    }
+  }
+  let commits: string[] = [];
+  try {
+    commits = (await runGit(cwd, ["log", "-12", "--format=%s"])).split("\n").map((s) => s.trim()).filter(Boolean);
+  } catch {
+    /* empty repo with no commits */
+  }
+  // line churn, split by stage: unstaged is working-tree vs index, staged is
+  // index vs HEAD. (untracked files don't show in diff --numstat, so their
+  // additions aren't counted here — the file COUNT still reflects them.)
+  const unstaged = await numstatTotals(cwd, ["diff", "--numstat"]);
+  const stagedLines = await numstatTotals(cwd, ["diff", "--cached", "--numstat"]);
+  // committed churn: total +/- across the commits ahead of the base. No base
+  // (no upstream) → nothing to compare against, so it stays zero.
+  const committed = baseRef
+    ? await numstatTotals(cwd, ["diff", "--numstat", `${baseRef}..HEAD`])
+    : { add: 0, del: 0 };
+  return {
+    modified: st.unstaged.length,
+    staged: st.staged.length,
+    modifiedFiles: st.unstaged.map((f) => f.path),
+    stagedFiles: st.staged.map((f) => f.path),
+    unstagedAdd: unstaged.add,
+    unstagedDel: unstaged.del,
+    stagedAdd: stagedLines.add,
+    stagedDel: stagedLines.del,
+    committedAdd: committed.add,
+    committedDel: committed.del,
+    ahead,
+    commits,
+  };
+}
+
+/** List the worktrees of the repo at `dir` (including the main checkout) as
+ *  {path, branch}. Empty / non-repo dirs return []. */
+export async function worktreeList(dir: string): Promise<{ path: string; branch: string }[]> {
+  let out = "";
+  try {
+    out = await runGit(dir, ["worktree", "list", "--porcelain"]);
+  } catch {
+    return [];
+  }
+  const res: { path: string; branch: string }[] = [];
+  let cur: { path: string; branch: string } | null = null;
+  for (const line of out.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      if (cur) res.push(cur);
+      cur = { path: line.slice(9).trim(), branch: "" };
+    } else if (line.startsWith("branch ") && cur) {
+      cur.branch = line.slice(7).replace(/^refs\/heads\//, "").trim();
+    } else if (line.startsWith("detached") && cur) {
+      cur.branch = "detached";
+    }
+  }
+  if (cur) res.push(cur);
+  return res;
+}
+
+/** Remove a git worktree (force, to drop dirty/locked ones) and optionally its
+ *  branch. `repoDir` is any checkout of the same repo; the worktree being removed
+ *  must not be `repoDir` itself. Best-effort branch delete — never fatal. */
+export async function worktreeRemove(
+  repoDir: string,
+  wtPath: string,
+  branch?: string
+): Promise<void> {
+  await runGit(repoDir, ["worktree", "remove", "--force", wtPath]);
+  if (branch && !/^(main|master|head|develop|trunk)$/i.test(branch)) {
+    try {
+      await runGit(repoDir, ["branch", "-D", branch]);
+    } catch {
+      /* branch may be checked out elsewhere or already gone */
+    }
+  }
+}
+
 /** Content of a file at a ref (e.g. "HEAD", ":0" for index). "" if absent. */
 export async function show(cwd: string, ref: string, file: string): Promise<string> {
   try {

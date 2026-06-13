@@ -36,7 +36,7 @@ export class ClaudeDiscovery {
   // transcript reports the new cwd so the toon doesn't snap back meanwhile. The
   // timestamp bounds the hold: a /cd that fails or is declined never reports the
   // new cwd, so we give up after CD_HOLD_MS and revert to the real location.
-  private cdPending = new Map<string, { dir: string; at: number }>();
+  private cdPending = new Map<string, { dir: string; room?: string; at: number }>();
   private static readonly CD_HOLD_MS = 120_000;
   // session id → the panel-created placeholder agent it was adopted into, so a
   // launched Claude session flows into that agent rather than spawning a dup.
@@ -44,10 +44,12 @@ export class ClaudeDiscovery {
 
   constructor(private store: DevTowerStore) {}
 
-  /** Record that an agent was sent `/cd <dir>`; relocate it optimistically and
-   *  re-scan so the move shows immediately rather than on the next poll. */
-  expectCd(agentId: string, dir: string): void {
-    this.cdPending.set(agentId, { dir, at: Date.now() });
+  /** Record that an agent was sent `/cd <dir>`. The move is NOT applied until a
+   *  scan sees the transcript report `dir` as the live cwd — only then is the
+   *  agent relocated (to `room`). A declined/failed /cd never confirms, so the
+   *  agent stays put; the pending entry expires after CD_HOLD_MS. */
+  expectCd(agentId: string, dir: string, room?: string): void {
+    this.cdPending.set(agentId, { dir, room, at: Date.now() });
     void this.refresh();
   }
 
@@ -131,7 +133,11 @@ export class ClaudeDiscovery {
         // no process info → treat only a single very-fresh session as live
         isLive = used === 0 && Date.now() - f.mtime < 15 * 60_000;
       } else {
-        isLive = used < (liveCounts.get(f.launchCwd) ?? 0);
+        // match by the launch dir, but fall back to the latest cwd — a session
+        // whose directory was renamed mid-run has a stale launchCwd, while lsof
+        // reports the process at its current (renamed) path.
+        const live = Math.max(liveCounts.get(f.launchCwd) ?? 0, liveCounts.get(f.cwd) ?? 0);
+        isLive = used < live;
       }
       if (isLive) {
         usedPerCwd.set(f.launchCwd, used + 1);
@@ -182,23 +188,27 @@ export class ClaudeDiscovery {
       present.add(id);
       this.mine.add(id);
 
-      // honor a pending /cd until the transcript reports the new directory,
-      // or until the hold expires (a failed/declined /cd never lands)
-      let cwd = f.cwd;
+      // a pending /cd only takes effect once the transcript actually reports the
+      // target dir as the live cwd (the move "worked"); until then the agent is
+      // shown wherever it really is. The hold expires so a failed /cd is dropped.
+      const cwd = f.cwd;
       const pend = this.cdPending.get(id);
+      let cdRoom: string | undefined;
       if (pend) {
-        if (cwd === pend.dir || Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
+        if (cwd === pend.dir) {
+          cdRoom = pend.room; // confirmed — relocate to the requested room
           this.cdPending.delete(id);
-        } else {
-          cwd = pend.dir;
+        } else if (Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
+          this.cdPending.delete(id);
         }
       }
+      const cdConfirmed = cdRoom !== undefined || (pend !== undefined && cwd === pend.dir);
       let branch = this.branchCache.get(cwd);
       if (branch === undefined) {
         branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
         this.branchCache.set(cwd, branch);
       }
-      if (isAdopted) {
+      if (isAdopted && !cdConfirmed) {
         // keep the placeholder's identity (name/repo/worktree/branch/task);
         // only flow in the live session fields
         this.store.apply({
@@ -211,15 +221,18 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
         });
       } else {
+        // a discovered agent (or a just-confirmed /cd) is placed at its real cwd.
+        // On a confirmed move, honor the requested room name; keep an adopted
+        // agent's own name rather than renaming it.
         this.store.apply({
           id,
-          name: `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
+          name: isAdopted ? undefined : `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
           model: f.model,
-          repo: path.basename(cwd),
+          repo: cdRoom ?? path.basename(cwd),
           worktree: cwd,
           branch: branch || "—",
           state: f.state,
-          task: f.task,
+          task: isAdopted ? undefined : f.task,
           elapsed: ago(f.mtime),
           transcriptPath: f.file,
           question: f.question,
@@ -354,9 +367,11 @@ async function readMeta(
             const text = flatten(rec.message?.content ?? rec.content);
             if (text) lastAssistantText = text;
           }
-          if (!task && role === "user") {
+          if (!task && role === "user" && rec.isMeta !== true) {
             const text = flatten(rec.message?.content ?? rec.content);
-            if (text) task = text.slice(0, 80);
+            // skip Claude Code's injected turns (synthetic continuations, slash
+            // command wrappers, system reminders) — they aren't the human task
+            if (text && !isSyntheticTask(text)) task = text.slice(0, 80);
           }
           if (lastRole && task && lastAssistantText) break;
         }
@@ -382,6 +397,16 @@ async function readMeta(
   } finally {
     await fh.close();
   }
+}
+
+/** True for non-human user turns Claude Code writes into the transcript:
+ *  synthetic continuations, slash-command wrappers, hook/system-reminder blocks.
+ *  These must never become an agent's displayed task. */
+function isSyntheticTask(text: string): boolean {
+  if (text === "<synthetic>") return true;
+  if (/^<(synthetic|command-|local-command|bash-(input|stdout|stderr)|system-reminder|user-prompt-submit-hook)/i.test(text)) return true;
+  if (/^Caveat: The messages below were generated/i.test(text)) return true;
+  return false;
 }
 
 function lastMatch(s: string, re: RegExp): string | undefined {
