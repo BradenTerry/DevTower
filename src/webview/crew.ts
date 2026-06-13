@@ -176,7 +176,7 @@ interface Room {
   decor: number;
   plan?: SeatPlan; // desks grouped by worktree (recomputed each layout)
   board?: BoardData; // live git/PR data shown on the back-wall screen
-  statTotal: number; // last seen modified+staged+ahead, to detect changes → fire packets
+  statSig: string; // last seen git signature; any change (stage/commit/…) → fire a beam
   statPulse: number; // 0..1 board glow that decays after a change
 }
 
@@ -273,6 +273,25 @@ interface Toon {
 
 const floorBase = (floor: number) => -floor * FLOOR_STEP;
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** Sample a quadratic bezier into `n` points (excluding the start point), so a
+ *  curved cable can be drawn and walked as a plain polyline. */
+function sampleQuad(
+  p0: { x: number; y: number },
+  c: { x: number; y: number },
+  p1: { x: number; y: number },
+  n: number
+): { x: number; y: number }[] {
+  const pts: { x: number; y: number }[] = [];
+  for (let i = 1; i <= n; i++) {
+    const t = i / n, mt = 1 - t;
+    pts.push({
+      x: mt * mt * p0.x + 2 * mt * t * c.x + t * t * p1.x,
+      y: mt * mt * p0.y + 2 * mt * t * c.y + t * t * p1.y,
+    });
+  }
+  return pts;
+}
 
 /** Position at fraction t (0..1) along a polyline, measured by arc length. */
 function pointOnPath(path: { x: number; y: number }[], t: number): { x: number; y: number } {
@@ -645,64 +664,81 @@ class PixelCrew {
     else tn.targetX = deskX + 19;
   }
 
-  /** Where a desk's network cable plugs into the room's screen (bottom-centre of
-   *  the board), shared by the static cable art and the packet route. */
+  /** The cable port: a jack on the wall just BELOW the TV that every desk's
+   *  cable runs into. The light-ball then hops up from here into the screen. */
   private cablePlug(r: Room): { x: number; y: number } {
     const b = boardRect(r.x0, r.baseY);
-    return { x: b.x + b.w / 2, y: b.y + b.h - 1 };
+    return { x: b.x + b.w / 2, y: b.y + b.h + 5 };
   }
 
-  /** The cable polyline for a seat: computer → floor → screen plug. The same
-   *  path the "file changed" light-ball travels along. */
+  /** The cable polyline for a seat: computer → floor → a curved sweep to the
+   *  central floor bus → up the middle into the port below the screen. All
+   *  desks share the central bus, so the cables bundle before going in. */
   private cableRoute(r: Room, seat: { col: number; row: number }): { x: number; y: number }[] {
     const base = r.baseY;
     const dx = this.seatX(r, seat.col, seat.row);
     const db = base - seat.row * ROW_DY;
     const cx = dx + 8; // behind the monitor
-    const plug = this.cablePlug(r);
-    return [{ x: cx, y: db - 12 }, { x: cx, y: db + 0.5 }, plug];
+    const C = { x: cx, y: db - 12 };
+    const F = { x: cx, y: db + 0.5 }; // drop to the floor at the desk
+    const J = { x: r.x0 + ROOM_W / 2, y: base - 3 }; // central floor bus
+    const P = this.cablePlug(r); // port below the screen
+    const cFJ = { x: (cx + J.x) / 2, y: Math.max(F.y, J.y) + 5 }; // bow along the floor to centre
+    const cJP = { x: J.x, y: (J.y + P.y) / 2 }; // sweep up the middle to the port
+    return [C, F, ...sampleQuad(F, cFJ, J, 8), ...sampleQuad(J, cJP, P, 10)];
   }
 
   /** Fire a glowing light-ball from a working dev's computer along its network
-   *  cable to the room's board — the visual "a file just changed" signal. Falls
-   *  back to a straight room-centre → screen lob when no dev/seat is known. */
+   *  cable, through the port, and up into the screen — the "git changed" signal.
+   *  Falls back to a room-centre → port route when no dev/seat is known. */
   private emitPacket(r: Room) {
+    const b = boardRect(r.x0, r.baseY);
     const plug = this.cablePlug(r);
+    const screen = { x: b.x + b.w / 2, y: b.y + b.h * 0.5 }; // into the TV
     const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
     const seat = occ ? r.plan?.seats.get(occ.id) : undefined;
-    const path = seat
+    const cable = seat
       ? this.cableRoute(r, seat)
       : [{ x: r.x0 + ROOM_W / 2, y: r.baseY - 16 }, plug];
+    const path = [...cable, screen]; // ride the cable to the port, then up into the screen
     const s = path[0];
     this.packets.push({
-      x: s.x, y: s.y, sx: s.x, sy: s.y, tx: plug.x, ty: plug.y, t: 0, path,
+      x: s.x, y: s.y, sx: s.x, sy: s.y, tx: screen.x, ty: screen.y, t: 0, path,
       color: Math.random() < 0.6 ? "#3ee089" : "#56c7ff",
     });
   }
 
-  /** Draw each occupied desk's network cable: computer → down to the floor →
-   *  back to the screen plug. Static art; the light-balls (packets) ride this
-   *  same route when a file changes. */
+  /** Draw each occupied desk's network cable: computer → floor → a curved sweep
+   *  to the central floor bus → up into the port below the screen. Static art;
+   *  the light-balls (packets) ride this same route when git changes. */
   private drawCables(ctx: CanvasRenderingContext2D, r: Room) {
     if (r.built < 0.85 || !r.plan) return;
     ctx.save();
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
+    // one pass for the dark bodies, one for the highlights, so overlapping
+    // cables along the shared bus don't stack into a muddy dark band
     for (const [, seat] of r.plan.seats) {
       const route = this.cableRoute(r, seat);
       ctx.beginPath();
       ctx.moveTo(route[0].x, route[0].y);
       for (let i = 1; i < route.length; i++) ctx.lineTo(route[i].x, route[i].y);
-      ctx.strokeStyle = "rgba(8,12,16,0.5)"; // cable body
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "rgba(12,16,20,0.4)"; // cable body
+      ctx.lineWidth = 1.4;
       ctx.stroke();
-      ctx.strokeStyle = "rgba(74,96,116,0.45)"; // faint top highlight
+      ctx.strokeStyle = "rgba(80,102,122,0.4)"; // faint top highlight
       ctx.lineWidth = 0.5;
       ctx.stroke();
-      // a little jack where it plugs into the desk
+      // a little jack where it plugs into the desk computer
       ctx.fillStyle = "#2a3138";
       ctx.fillRect(route[0].x - 1, route[0].y - 1, 2, 2);
     }
+    // the wall port below the screen the whole bundle runs into
+    const plug = this.cablePlug(r);
+    ctx.fillStyle = "#10161c";
+    ctx.fillRect(plug.x - 4, plug.y - 1.5, 8, 3);
+    ctx.fillStyle = "#2a3138";
+    ctx.fillRect(plug.x - 3, plug.y - 0.6, 6, 1.2);
     ctx.restore();
   }
 
@@ -774,7 +810,7 @@ class PixelCrew {
           hue: hash(info.island) % 360, built: 0,
           delay: newIdx++ * 0.45, // buildings rise one after another
           agents: [], scribbles: [], decor: hash(key + "decor"),
-          statTotal: -1, statPulse: 0,
+          statSig: "", statPulse: 0,
         };
         this.rooms.set(key, room);
       }
@@ -1117,19 +1153,21 @@ class PixelCrew {
       this.layout(); // free the cells → ghost slots reappear
     }
 
-    // boards: when a worktree's git stats grow, a file changed → fire packets
-    // from the desks to the board; the glow then decays
+    // boards: any git change (modified/staged/commits/push churn) fires a beam of
+    // light up each desk's cable to the board; the glow then decays
     for (const r of this.rooms.values()) {
       if (r.statPulse > 0) r.statPulse = Math.max(0, r.statPulse - dt * 1.4);
       const b = r.board;
-      const total = b ? b.modified + b.staged + b.ahead : 0;
-      if (r.statTotal < 0) { r.statTotal = total; continue; } // first sync, no burst
-      if (total > r.statTotal && r.built > 0.6) {
-        const burst = this.eco ? 1 : Math.min(5, 1 + Math.floor((total - r.statTotal) / 4));
+      const sig = b
+        ? `${b.modified}|${b.staged}|${b.ahead}|${b.committedAdd}|${b.committedDel}|${b.commits.length}`
+        : "none";
+      if (r.statSig === "") { r.statSig = sig; continue; } // first sync, no burst
+      if (sig !== r.statSig && r.built > 0.6) {
+        const burst = this.eco ? 1 : 4;
         for (let i = 0; i < burst; i++) this.emitPacket(r);
         r.statPulse = 1;
       }
-      r.statTotal = total;
+      r.statSig = sig;
     }
     for (let i = this.packets.length - 1; i >= 0; i--) {
       const p = this.packets[i];
@@ -1486,17 +1524,29 @@ class PixelCrew {
     }
     ctx.globalAlpha = 1;
 
-    // commit packets flying from desks up to the boards
+    // light-balls riding the cables up to the screens
     for (const p of this.packets) {
+      const e = Math.min(1, p.t);
+      const eased = e * e * (3 - 2 * e);
       const fade = p.t < 0.85 ? 1 : clamp((1 - p.t) / 0.15, 0, 1);
-      ctx.globalAlpha = 0.35 * fade; // soft glow halo
+      // a glowing tail trailing behind along the cable path
+      if (p.path && p.path.length >= 2) {
+        for (let k = 1; k <= 4; k++) {
+          const tp = pointOnPath(p.path, Math.max(0, eased - k * 0.035));
+          const s = 2.4 - k * 0.4;
+          ctx.globalAlpha = (0.2 - k * 0.035) * fade;
+          ctx.fillStyle = p.color;
+          ctx.fillRect(tp.x - s / 2, tp.y - s / 2, s, s);
+        }
+      }
       ctx.fillStyle = p.color;
-      ctx.fillRect(p.x - 1.6, p.y - 1.6, 3.2, 3.2);
-      ctx.globalAlpha = fade;
-      ctx.fillRect(p.x - 0.8, p.y - 0.8, 1.6, 1.6);
-      // a short trail back toward the source
-      ctx.globalAlpha = 0.18 * fade;
-      ctx.fillRect(p.x + (p.sx - p.x) * 0.12 - 0.5, p.y + (p.sy - p.y) * 0.12 - 0.5, 1, 1);
+      ctx.globalAlpha = 0.4 * fade; // outer glow
+      ctx.fillRect(p.x - 2.6, p.y - 2.6, 5.2, 5.2);
+      ctx.globalAlpha = 0.85 * fade; // colored body
+      ctx.fillRect(p.x - 1.4, p.y - 1.4, 2.8, 2.8);
+      ctx.globalAlpha = fade; // bright white core
+      ctx.fillStyle = "#eafff4";
+      ctx.fillRect(p.x - 0.7, p.y - 0.7, 1.4, 1.4);
     }
     ctx.globalAlpha = 1;
 
