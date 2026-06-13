@@ -172,6 +172,22 @@
           "type": "string",
           "default": "",
           "description": "Overrides claudeCommand: command run in an agent's terminal on first open. Placeholders: ${worktree}, ${branch}, ${id}."
+        },
+        "devtower.reviewSkills": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["code-review", "security-review", "review", "simplify", "verify"],
+          "description": "Skills (slash commands) offered as selectable chips in the Review Dispatch card when assigning an agent to review a PR."
+        },
+        "devtower.reviewDefaults": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "skills": { "type": "array", "items": { "type": "string" }, "description": "Skills pre-selected when the Review Dispatch card opens." },
+            "effort": { "type": "string", "enum": ["low", "medium", "high", "max"], "description": "Default effort level for code-review/review skills." },
+            "instructions": { "type": "string", "description": "Default reviewer instructions pre-filled in the card." }
+          },
+          "description": "Saved defaults for the Review Dispatch card. Written when you check \"Save as default\" while dispatching a review."
         }
       }
     }

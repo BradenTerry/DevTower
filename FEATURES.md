@@ -46,6 +46,10 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | PR board: fleet PRs (checks + review status) | ✅ | `gh pr list --head <branch>` per worktree; 2-min poll |
 | PR board: PRs requesting my review | ✅ | `gh search prs --review-requested=@me`; badge count in HUD |
 | PR chip on agent panel + Create PR / View PR tool | ✅ | `gh pr create --web` via agent terminal |
+| Review Dispatch modal: skills + instructions + effort + agent md, save defaults | ✅ | Glass modal from a PR row or the billboard; `devtower.reviewSkills` / `devtower.reviewDefaults`; agent md auto-discovered from `.claude/agents` and applied via `--append-system-prompt` |
+| Review in an isolated worktree | ✅ | `worktreeForPr` adds a detached worktree under `.claude/worktrees`, `gh pr checkout` brings the PR branch in; main checkout untouched; registered as its own room |
+| Central "PRs to review" billboard | ✅ | Standalone signboard left of the campus listing review-requested (@me) PRs; click a row → dispatch modal; bounds extend so the overview frames it |
+| Diegetic review: reviewer pose (magnifier + printout) + verdict stamp | ✅ | `reviewOf` tags the agent; verdict derived from polled PR decision flips an APPROVED/CHANGES badge over the dev |
 | Light/dark theme toggle | ✅ | Token-driven; presentation-only |
 
 ## Partial / mock-backed (works in UI, needs real backing)
@@ -64,6 +68,7 @@ Capability map, independent of the current visual theme. The **data contracts** 
 
 | Feature | Needs |
 |---|---|
+| Billboard visual pass: placement/scale/legibility tuning in the running app | Canvas iteration — billboard geometry is in `crew.ts` (`billboardGeom`/`drawReviewBillboard`) but unverified against the live scene |
 | Merge/close PR from the board | `gh pr merge` + confirmation UX |
 | PR event toasts (checks went red, review approved) | Diff PR snapshots between polls → feed |
 | Commit + push from Changes tab | Commit message input + `git commit/push`; sits next to stage/unstage |

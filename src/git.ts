@@ -235,6 +235,26 @@ export async function worktreeAdd(dir: string, name: string, n: number): Promise
   return { wtPath, branch, base };
 }
 
+/** Create an isolated worktree to review a PR in, WITHOUT touching the main
+ *  checkout. The worktree is added detached at HEAD; the caller then runs
+ *  `gh pr checkout <n>` inside it to bring the PR branch (handles forks) into
+ *  that worktree only. Returns the path + the fork-point sha (so the board can
+ *  count just the review worktree's own commits). */
+export async function worktreeForPr(dir: string, prNumber: number): Promise<{ wtPath: string; base: string }> {
+  const top = await topLevel(dir).catch(() => dir);
+  const wtRoot = path.join(top, ".claude", "worktrees");
+  await ensureExcluded(dir, ".claude/worktrees/");
+  let i = 0;
+  let wtPath = path.join(wtRoot, `pr-${prNumber}`);
+  while (fs.existsSync(wtPath) && i < 100) {
+    i++;
+    wtPath = path.join(wtRoot, `pr-${prNumber}-${i}`);
+  }
+  const base = (await runGit(dir, ["rev-parse", "HEAD"]).catch(() => "")).trim();
+  await runGit(dir, ["worktree", "add", "--detach", wtPath]);
+  return { wtPath, base };
+}
+
 export interface BranchSummary {
   modified: number; // working-tree (unstaged) changed files
   staged: number; // index (staged) files

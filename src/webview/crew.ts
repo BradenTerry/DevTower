@@ -6,7 +6,6 @@
  *   that floor for a repo/project.
  * - Bound rooms show a "+ DEV" button: spawn an agent there (the extension
  *   asks worktree vs project dir).
- * - 2+ active agents in one room huddle at the whiteboard.
  *
  * Power model: ~10fps animation tick (6fps eco); renders only on ticks or
  * camera motion; hard-stop when hidden. Same window.DevTowerCrew API as before,
@@ -21,6 +20,8 @@ interface CrewAgent {
   worktree?: string; // git worktree path; groups desks within a room
   branch?: string; // branch name, shown on the cluster sign
   skills?: string[]; // skills this session has used (accumulated, first-use order)
+  reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
+  reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
 }
 
 interface ReservedRoom {
@@ -90,7 +91,7 @@ const DEPTH_Y = 22; // far-wall floor sits this far above the near floor
 // row standing on the far-wall floor line. Devs always walk the aisle on the
 // near floor, then "lift" up to the back row when they settle. The lift is
 // render-only: a dev's true baseline (tn.base) never moves, so floor-detection
-// and the fire-escape exit math stay correct.
+// and the elevator exit math stay correct.
 const ROWS_OF_DESKS = 2;
 // devs fill the front line first (close to the viewer, clear of the back-wall
 // board); only once the front row holds this many do they wrap to the back row
@@ -112,19 +113,6 @@ const backWall = (x0: number, base: number) => ({
   yBot: base - DEPTH_Y, // far-wall floor line
 });
 
-// Roller whiteboard: a freestanding board on an easel that spawns once per
-// worktree group, standing to the left of that group's desks. ROLLER_DEPTH
-// pushes it back from the front floor so devs can gather around it; the board
-// sits ROLLER_LEG above the floor on legs that reach the castors.
-const ROLLER_W = 30; // max board width; clamped to the section it sits in
-const ROLLER_H = 22;
-const ROLLER_DEPTH = 13;
-const ROLLER_LEG = 12; // floor-to-board-bottom (the easel height)
-const rollerPanel = (cx: number, base: number) => {
-  const stand = base - ROLLER_DEPTH; // floor line the castors roll on
-  return { x: cx - ROLLER_W / 2, y: stand - ROLLER_LEG - ROLLER_H, w: ROLLER_W, h: ROLLER_H };
-};
-
 /** Stat-tracker screen: a big flat-panel "TV" that fills the whole back wall
  *  (the windows live on the side walls now). */
 const boardRect = (x0: number, base: number) => {
@@ -140,6 +128,17 @@ const COL_STEP = ROOM_W;
 const cellX0 = (col: number) => col * COL_STEP - ROOM_W / 2;
 const WALK_SPEED = 30;
 
+// Elevator: an external shaft bolted to the right exterior wall of each tower
+// carries devs between the ground and a stacked worktree floor — both on entry
+// (ride up to the floor) and exit (ride down, e.g. when a worktree is removed).
+const SHAFT_GAP = 3; // gap from the building's right wall to the shaft's near edge
+const SHAFT_W = 18; // external shaft (well) width
+const CAR_W = 14; // elevator car (cage) width — sits inside the shaft
+const CAR_H = 26; // car height: floor slab to ceiling slab
+const CAR_SPEED = 64; // vertical travel speed (world units / sec)
+// car/shaft center, just outside the tower's right wall (x0 + ROOM_W)
+const shaftX = (x0: number) => x0 + ROOM_W + SHAFT_GAP + SHAFT_W / 2;
+
 // Island layout: an island is one repo/directory drawn as a vertical tower one
 // column wide — the main (root) checkout on the ground, each worktree stacked a
 // floor higher. Towers stand ISLAND_GAP columns apart so they read as distinct
@@ -148,6 +147,8 @@ const ISLAND_GAP = 1; // empty columns between adjacent islands
 const PLINTH_H = 22; // front-face height of the island pedestal (below ground)
 const PLINTH_APRON = 8; // depth of the pedestal's top surface tilting toward us
 const PLINTH_OV = 9; // how far the pedestal splays out past the tower on each side
+// central "PRs to review" billboard sitting to the left of the campus
+const BB_W = 138, BB_HEADER = 16, BB_ROW = 20, BB_MAX = 6, BB_GAP = 56;
 
 interface Particle {
   x: number; y: number; vx: number; vy: number;
@@ -160,7 +161,6 @@ interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty:
    *  when the beam lands (so the screen shows the data that triggered it, not
    *  whatever the latest poll happens to be at landing time). */
   applyKey?: string; applySnap?: BoardData }
-interface Stroke { x1: number; y1: number; x2: number; y2: number; color: string }
 
 // A "room" is now one BUILDING = one worktree/checkout. Buildings of the same
 // repo share an island; the map key is the building key (worktree path).
@@ -179,9 +179,7 @@ interface Room {
   built: number;
   delay: number; // staggered construction start (seconds)
   dying?: boolean; // queued for demolition once its leavers are out
-  hasUpper?: boolean; // a worktree building stacks on top → draw an internal staircase
   agents: CrewAgent[];
-  scribbles: Stroke[];
   decor: number;
   plan?: SeatPlan; // desks grouped by worktree (recomputed each layout)
   board?: BoardData; // latest live git/PR data from the extension (incoming)
@@ -272,23 +270,18 @@ interface Toon {
   x0: number; // left edge of the toon's room (for lift entry/exit)
   bkey?: string; // building this toon belongs to (so tick can re-glue it)
   seatCol: number; // cached seat within the building (recomputed on layout)
-  wbSlot: number; // cached whiteboard huddle slot
   deskIdx: number;
   row: number; // 0 = front aisle, 1 = back row (drawn higher)
   lift: number; // current render-only vertical offset toward the back row
-  huddle: boolean;
   sitting: boolean;
   entering: boolean;
-  // entry path: upper-floor devs climb the staircase in the floor below to reach
-  // their door; ground-floor devs just walk in.
-  enterPhase?: "stairs" | "walk";
-  stairTopX?: number;
+  // entry path: upper-floor devs ride the elevator up from the ground to their
+  // door; ground-floor devs just walk in.
+  enterPhase?: "elevator" | "walk";
   leaving: boolean;
-  // departure path: walk to the building edge → ladder to ground → away
-  leavePhase?: "walk" | "ladder" | "away";
-  ladderFrom?: number;
-  ladderX?: number;
-  climbing?: boolean;
+  // departure path: walk to the elevator → ride the car down to the ground → away
+  leavePhase?: "walk" | "elevator" | "away";
+  riding?: boolean; // currently inside the elevator car (drives the car render)
   // skills the dev has fetched from the shelf (one book per skill). `skills` is
   // the accumulated set; `booksShown` is how many are resting on the desk and
   // `booksInHand` how many it carried back and is currently reading while the task
@@ -299,6 +292,10 @@ interface Toon {
   booksShown: number;
   booksInHand: number;
   errand?: { phase: "out" | "grab" | "back"; grab: number };
+  // review verdict animation: when a reviewer's PR decision resolves, `stampAt`
+  // records the frame so the APPROVED/CHANGES stamp can "thud" in over ~1s.
+  lastVerdict?: string;
+  stampAt?: number;
   ph: number;
 }
 
@@ -377,7 +374,7 @@ class PixelCrew {
    *  instead of respawning it at the door. */
   private parked = new Map<string, {
     x: number; base: number; lift: number; entering: boolean;
-    enterPhase?: "stairs" | "walk"; sitting: boolean; frame: number;
+    enterPhase?: "elevator" | "walk"; sitting: boolean; frame: number;
     skills: string[]; booksShown: number; booksInHand: number;
   }>();
   private hasFitted = false; // first layout fits the campus; later ones preserve the view
@@ -393,7 +390,19 @@ class PixelCrew {
   private focusRoom_: string | null = null;
   private focusAgentId: string | null = null; // when set, the camera tracks this dev (not the room)
   private focusIsland_: string | null = null; // when set, frame this whole directory (its tower)
+  private focusBillboard_ = false; // when set, the camera frames the review billboard
+  // the view to restore when leaving the billboard (so exiting returns to where
+  // you were, not the overview)
+  private viewBeforeBillboard: null | {
+    focusAgentId: string | null; focusRoom_: string | null; focusIsland_: string | null;
+    focus: { x: number; y: number; spanW: number; spanH: number };
+    panX: number; panY: number; zoomMul: number;
+  } = null;
   private prBranches = new Set<string>(); // branches (lowercased) with an open PR
+  // review-requested PRs shown on the central billboard (left of the campus);
+  // clicking a row opens the dispatch modal to assign a reviewer to it
+  private reviewPrs: { number: number; repo: string; title: string; branch?: string; url?: string }[] = [];
+  private campusMinX = 0; // rooms-only left edge, before the billboard is added in
   private focus = { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 };
   private cam = { x: 0, y: -ROOM_H / 2, z: 4 };
   private zoomMul = 1;
@@ -432,6 +441,8 @@ class PixelCrew {
   private syncSuppress = new Map<string, number>();
   private onCdCb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void =
     () => {};
+  private onAssignReviewCb: (pr: { number: number; repo: string; title: string; branch?: string; url?: string }) => void = () => {};
+  private onRefreshPrsCb: () => void = () => {};
 
   private resizeT: ReturnType<typeof setTimeout> | undefined;
 
@@ -577,6 +588,10 @@ class PixelCrew {
   onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
     this.onCdCb = cb;
   }
+  onAssignReview(cb: (pr: { number: number; repo: string; title: string; branch?: string; url?: string }) => void) {
+    this.onAssignReviewCb = cb;
+  }
+  onRefreshPrs(cb: () => void) { this.onRefreshPrsCb = cb; }
   private newToonIds = new Set<string>();
 
   /* ============ DATA ============ */
@@ -597,6 +612,30 @@ class PixelCrew {
   setPrBranches(branches: string[]) {
     this.prBranches = new Set((branches || []).filter(Boolean).map((b) => b.toLowerCase()));
     this.invalidate();
+  }
+
+  /** Review-requested PRs listed on the central billboard. */
+  setReviewPrs(prs: { number: number; repo: string; title: string; branch?: string; url?: string }[]) {
+    this.reviewPrs = Array.isArray(prs) ? prs : [];
+    this.layout(); // bounds depend on the billboard so the overview frames it
+  }
+
+  /** Geometry for the review billboard, shared by draw + pick. Null when empty. */
+  private billboardGeom(): { x: number; top: number; w: number; bodyH: number; headerH: number; rowH: number; rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number }[]; surfaceY: number; extra: number; refresh: { x: number; y: number; w: number; h: number } } {
+    // always present, always listing its PRs (or an empty-state line); clicking
+    // it flies the camera in rather than expanding in place
+    const n = Math.min(this.reviewPrs.length, BB_MAX);
+    const x = this.campusMinX - BB_GAP - BB_W;
+    const surfaceY = floorBase(0) + SLAB;
+    const bodyH = BB_HEADER + Math.max(n, 1) * BB_ROW + 5;
+    const top = surfaceY - 40 - bodyH;
+    const rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number }[] = [];
+    for (let i = 0; i < n; i++) rows.push({ pr: this.reviewPrs[i], y: top + BB_HEADER + i * BB_ROW });
+    return {
+      x, top, w: BB_W, bodyH, headerH: BB_HEADER, rows, rowH: BB_ROW, surfaceY,
+      extra: this.reviewPrs.length - n,
+      refresh: { x: x + BB_W - 14, y: top + 3, w: 11, h: 11 },
+    };
   }
 
   /** Remember a toon's walk state so a transient disappearance (a mid-refresh
@@ -642,9 +681,9 @@ class PixelCrew {
         if (resume) this.leaving = this.leaving.filter((t) => t.agent.id !== a.id);
         tn = {
           agent: a, p: persona(a.id), x: resume?.x ?? 0, targetX: 0, base: resume?.base ?? 0, x0: 0,
-          seatCol: 0, wbSlot: 0, deskIdx: 0,
+          seatCol: 0, deskIdx: 0,
           row: 0, lift: resume?.lift ?? 0,
-          huddle: false, sitting: resume?.sitting ?? false,
+          sitting: resume?.sitting ?? false,
           entering: resume?.entering ?? true, enterPhase: resume?.enterPhase,
           leaving: false,
           // resume the dev's book state so a transient cull doesn't replay the
@@ -658,6 +697,13 @@ class PixelCrew {
         this.toons.set(a.id, tn);
         if (!resume) this.newToonIds.add(a.id);
       }
+      // a reviewer's decision resolving (pending → approved/changes) thuds the
+      // verdict stamp in; record the frame so the overlay can animate it once
+      const nextV = a.reviewVerdict;
+      if (a.reviewOf && (nextV === "approved" || nextV === "changes") && tn.lastVerdict !== nextV) {
+        tn.stampAt = this.frame;
+      }
+      tn.lastVerdict = nextV;
       tn.agent = a;
       // accumulate newly-used skills; the tick walks the dev to the shelf to
       // fetch a book for each one beyond what's already on its desk
@@ -674,12 +720,15 @@ class PixelCrew {
   private seatPlan(agents: CrewAgent[]): SeatPlan {
     const byTree = new Map<string, CrewAgent[]>();
     for (const a of agents) {
-      const key = a.worktree && a.worktree.trim() ? a.worktree : ".";
+      // a worktree-less agent has no checkout to seat against — skip it, matching
+      // layout()'s grouping, so unrelated agents never merge into one "." block
+      const key = a.worktree && a.worktree.trim() ? a.worktree : "";
+      if (!key) continue;
       if (!byTree.has(key)) byTree.set(key, []);
       byTree.get(key)!.push(a);
     }
     const isMain = (key: string, ags: CrewAgent[]) =>
-      key === "." || key === "" || DEFAULT_BRANCHES.has((ags[0].branch ?? "").toLowerCase());
+      DEFAULT_BRANCHES.has((ags[0].branch ?? "").toLowerCase());
     const treeName = (key: string) => key.split(/[\\/]/).pop() || key;
     const entries = [...byTree.entries()].sort((a, b) => {
       const am = isMain(a[0], a[1]) ? 0 : 1;
@@ -756,7 +805,7 @@ class PixelCrew {
     });
   }
 
-  /** Re-aim a toon at its desk/huddle spot using its building's CURRENT (tweening)
+  /** Re-aim a toon at its desk using its building's CURRENT (tweening)
    *  position, so seated devs ride a collapsing island instead of snapping. */
   private retargetToon(tn: Toon) {
     const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
@@ -764,8 +813,7 @@ class PixelCrew {
     tn.base = room.baseY;
     tn.x0 = room.x0;
     const deskX = this.seatX(room, tn.seatCol, tn.row);
-    if (tn.huddle) tn.targetX = room.x0 + 26 + tn.wbSlot * 9;
-    else if (tn.agent.state === "active") tn.targetX = deskX + 13;
+    if (tn.agent.state === "active") tn.targetX = deskX + 13;
     else tn.targetX = deskX + 19;
   }
 
@@ -961,7 +1009,7 @@ class PixelCrew {
           x0: cellX0(info.col), baseY: floorBase(info.floor), path: info.path,
           hue: hash(info.island) % 360, built: 0,
           delay: newIdx++ * 0.45, // buildings rise one after another
-          agents: [], scribbles: [], decor: hash(key + "decor"),
+          agents: [], decor: hash(key + "decor"),
           statSig: "", statPulse: 0,
           cellPulse: { unstaged: 0, staged: 0, commits: 0, pr: 0 },
           numAnim: {},
@@ -977,18 +1025,6 @@ class PixelCrew {
       room.col = info.col;
       room.path = info.path ?? room.path;
       room.agents = info.agents;
-      room.hasUpper = false; // recomputed below
-    }
-
-    // a building gets an internal staircase when another building stacks on top
-    for (const r of this.rooms.values()) {
-      if (r.dying) continue;
-      for (const u of this.rooms.values()) {
-        if (!u.dying && u.island === r.island && u.col === r.col && u.floor === r.floor + 1) {
-          r.hasUpper = true;
-          break;
-        }
-      }
     }
 
     // 5. ghosts: a "+building" slot on top of each tower (the next worktree),
@@ -1027,15 +1063,17 @@ class PixelCrew {
     if (!isFinite(minX)) {
       minX = -120; maxX = 120; topY = -120; botY = 40;
     }
+    // reserve room for the review billboard on the left so the overview frames it
+    this.campusMinX = minX;
+    const bb = this.billboardGeom();
+    minX = Math.min(minX, bb.x - 14);
+    topY = Math.min(topY, bb.top - 8);
     this.bounds = { minX, maxX, topY, botY, minFloor };
 
     // 7. seat plan + cache each toon's seat; tick re-glues world coords so devs
     //    follow their building as the island collapses.
     const placed = new Set<string>();
     for (const room of this.rooms.values()) {
-      const activeCount = room.agents.filter((a) => a.state === "active").length;
-      const huddle = activeCount >= 2;
-      let wbSlot = 0;
       room.plan = this.seatPlan(room.agents);
       room.agents.forEach((a, di) => {
         const tn = this.toons.get(a.id);
@@ -1046,25 +1084,22 @@ class PixelCrew {
         const seat = room.plan!.seats.get(a.id) ?? { col: 0, row: 0 };
         tn.row = seat.row;
         tn.seatCol = seat.col;
-        tn.huddle = a.state === "active" && huddle;
-        if (tn.huddle) tn.wbSlot = wbSlot++;
         const firstPlace = tn.entering && tn.x === 0;
         this.retargetToon(tn); // desk target + base on this floor
         if (firstPlace) {
           if (room.floor > 0) {
-            // arrive on the floor below and climb the staircase to this door
-            tn.x = room.x0 + ROOM_W - 40;
-            tn.base = floorBase(room.floor - 1);
+            // ride the elevator up the right-wall shaft from the ground to this door
+            tn.x = shaftX(room.x0);
+            tn.base = floorBase(0);
             tn.targetX = tn.x;
-            tn.enterPhase = "stairs";
-            tn.stairTopX = room.x0 + ROOM_W - 24;
+            tn.enterPhase = "elevator";
+            tn.riding = true;
           } else {
             tn.x = room.x0 + ROOM_W + 8; // walk in through the ground-floor door
             tn.enterPhase = "walk";
           }
         }
       });
-      if (!huddle) room.scribbles = [];
     }
 
     // cull toons whose room wasn't added to the UI — an agent only appears once
@@ -1099,6 +1134,10 @@ class PixelCrew {
       }
     } else if (this.focusIsland_) {
       if (!this.frameIsland(this.focusIsland_)) this.focusIsland_ = null; // island gone
+    } else if (this.focusBillboard_) {
+      const bb = this.billboardGeom(); // re-center as the sign grows/shrinks or shifts
+      this.focus.x = bb.x + bb.w / 2;
+      this.focus.y = bb.top + bb.bodyH / 2;
     } else if (!this.hasFitted) {
       this.clearFocus(true, false);
       this.hasFitted = true;
@@ -1116,6 +1155,7 @@ class PixelCrew {
     if (!r) return;
     this.focusAgentId = null; // centering on a building releases any dev zoom
     this.focusIsland_ = null;
+    this.focusBillboard_ = false;
     this.focusRoom_ = r.name;
     this.focus.x = r.x0 + ROOM_W / 2;
     this.focus.y = r.baseY - ROOM_H / 2;
@@ -1124,6 +1164,58 @@ class PixelCrew {
     this.panX = 0;
     this.panY = 0;
     if (resetZoom) this.zoomMul = 1;
+    this.invalidate();
+  }
+
+  /** Toggle the review billboard zoom: fly to it, or (if already there) return to
+   *  the view you were at before. Driven by the HUD PR button. */
+  toggleBillboard() {
+    if (this.focusBillboard_) this.exitBillboard();
+    else this.focusBillboard();
+  }
+
+  /** Fly the camera to the review billboard (and expand it so the PRs show),
+   *  snapshotting the current view so exiting can return to it. */
+  focusBillboard() {
+    if (!this.focusBillboard_) {
+      // remember where we were, but only when entering from a non-billboard view
+      this.viewBeforeBillboard = {
+        focusAgentId: this.focusAgentId, focusRoom_: this.focusRoom_, focusIsland_: this.focusIsland_,
+        focus: { ...this.focus }, panX: this.panX, panY: this.panY, zoomMul: this.zoomMul,
+      };
+    }
+    this.focusAgentId = null;
+    this.focusRoom_ = null;
+    this.focusIsland_ = null;
+    this.focusBillboard_ = true;
+    const bb = this.billboardGeom();
+    this.focus.x = bb.x + bb.w / 2;
+    this.focus.y = bb.top + bb.bodyH / 2;
+    this.focus.spanW = bb.w + 70;
+    this.focus.spanH = bb.bodyH + 56;
+    this.panX = 0;
+    this.panY = 0;
+    this.zoomMul = 1;
+    this.invalidate();
+  }
+
+  /** Leave the billboard, gliding back to the view captured on entry (falling
+   *  back to the campus overview if there was none). */
+  exitBillboard() {
+    const v = this.viewBeforeBillboard;
+    this.viewBeforeBillboard = null;
+    this.focusBillboard_ = false;
+    if (!v) { this.clearFocus(); return; }
+    this.focusAgentId = v.focusAgentId;
+    this.focusRoom_ = v.focusRoom_;
+    this.focusIsland_ = v.focusIsland_;
+    this.focus.x = v.focus.x;
+    this.focus.y = v.focus.y;
+    this.focus.spanW = v.focus.spanW;
+    this.focus.spanH = v.focus.spanH;
+    this.panX = v.panX;
+    this.panY = v.panY;
+    this.zoomMul = v.zoomMul;
     this.invalidate();
   }
 
@@ -1153,6 +1245,7 @@ class PixelCrew {
   focusIslandView(islandName: string) {
     this.focusAgentId = null;
     this.focusRoom_ = null;
+    this.focusBillboard_ = false;
     this.focusIsland_ = islandName;
     if (!this.frameIsland(islandName)) { this.focusIsland_ = null; this.clearFocus(); return; }
     this.panX = 0;
@@ -1170,6 +1263,7 @@ class PixelCrew {
     const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
     this.focusAgentId = id;
     this.focusIsland_ = null;
+    this.focusBillboard_ = false;
     this.focusRoom_ = room?.name ?? null;
     this.focus.x = tn.targetX;
     this.focus.y = tn.base - ROOM_H / 2 + 6;
@@ -1187,6 +1281,7 @@ class PixelCrew {
     this.focusRoom_ = null;
     this.focusAgentId = null;
     this.focusIsland_ = null;
+    this.focusBillboard_ = false;
     this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
     this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
     this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
@@ -1438,42 +1533,43 @@ class PixelCrew {
       if (!room) continue;
       // start a trip once settled at the desk and a skill's book is still missing
       // (neither on the desk nor already in hand)
-      if (!tn.errand && !tn.huddle && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
+      if (!tn.errand && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
         tn.errand = { phase: "out", grab: 0 };
       }
       // out/grab: head for (and hold at) the shelf; back: keep the desk aim above
       if (tn.errand && tn.errand.phase !== "back") tn.targetX = room.x0 + SHELF_REACH;
     }
 
-    // upper-floor arrivals climb the staircase in the floor below to their door
+    // upper-floor arrivals ride the elevator up the shaft to their door
     for (const tn of this.toons.values()) {
-      if (!tn.entering || tn.enterPhase !== "stairs") continue;
+      if (!tn.entering || tn.enterPhase !== "elevator") continue;
       const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
-      if (!room) { tn.enterPhase = "walk"; continue; }
-      tn.climbing = true;
-      const k = Math.min(1, dt * 4);
-      const tx = tn.stairTopX ?? tn.x;
-      tn.x += (tx - tn.x) * k;
-      tn.base += (room.baseY - tn.base) * k;
-      if (Math.abs(room.baseY - tn.base) < 2) {
+      if (!room) { tn.enterPhase = "walk"; tn.riding = false; continue; }
+      tn.riding = true;
+      tn.x0 = room.x0;
+      tn.x = shaftX(room.x0);
+      tn.targetX = tn.x;
+      const dy = room.baseY - tn.base;
+      tn.base += Math.sign(dy) * Math.min(Math.abs(dy), CAR_SPEED * dt);
+      if (Math.abs(room.baseY - tn.base) < 1) {
         tn.base = room.baseY;
-        tn.climbing = false;
+        tn.riding = false;
         tn.enterPhase = "walk";
-        this.retargetToon(tn); // now cross the floor to the desk
+        this.retargetToon(tn); // step out of the car and cross to the desk
       }
     }
 
     const all: Toon[] = [...this.toons.values(), ...this.leaving];
     for (const tn of all) {
-      if (tn.entering && tn.enterPhase === "stairs") continue; // handled above
+      if (tn.entering && tn.enterPhase === "elevator") continue; // handled above
       const dx = tn.targetX - tn.x;
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
-      tn.sitting = tn.agent.state === "active" && !tn.huddle && !tn.entering && !tn.errand && Math.abs(dx) <= 1;
+      tn.sitting = tn.agent.state === "active" && !tn.entering && !tn.errand && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
-      // (lift -> 0) whenever walking, entering, leaving, huddling, or off on a
-      // book errand (so the dev rides the near floor to the shelf and back)
-      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.huddle && !tn.errand;
+      // (lift -> 0) whenever walking, entering, leaving, or off on a book
+      // errand (so the dev rides the near floor to the shelf and back)
+      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand;
       const targetLift = atDesk ? tn.row * ROW_DY : 0;
       tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
     }
@@ -1508,55 +1604,48 @@ class PixelCrew {
     }
     for (let i = this.leaving.length - 1; i >= 0; i--) {
       const tn = this.leaving[i];
-      tn.climbing = false;
       if (!tn.leavePhase) {
-        // walk to the building's edge on this floor (door to door through rooms)
+        tn.riding = false; // clear any stale entry-ride state
         const floor = Math.round(-tn.base / FLOOR_STEP);
-        let maxC = -Infinity;
-        for (const r of this.rooms.values()) {
-          if (r.floor === floor) maxC = Math.max(maxC, r.col);
+        if (floor > 0) {
+          // upper floor: walk to the elevator on this floor, then ride down
+          tn.targetX = shaftX(tn.x0);
+        } else {
+          // ground floor: walk straight out to the building's edge
+          let maxC = -Infinity;
+          for (const r of this.rooms.values()) {
+            if (r.floor === floor) maxC = Math.max(maxC, r.col);
+          }
+          const edge = isFinite(maxC) ? cellX0(maxC) + ROOM_W : tn.x0 + ROOM_W;
+          tn.targetX = edge + 5;
         }
-        const edge = isFinite(maxC) ? cellX0(maxC) + ROOM_W : tn.x0 + ROOM_W;
-        tn.targetX = edge + 5;
         tn.leavePhase = "walk";
       }
       const atX = Math.abs(tn.x - tn.targetX) <= 1.5;
       if (tn.leavePhase === "walk" && atX) {
         if (Math.abs(tn.base) > 1) {
-          // not at ground level → take the fire-escape ladder
-          tn.leavePhase = "ladder";
-          tn.ladderFrom = tn.base;
-          tn.ladderX = tn.x;
+          // not at ground level → board the car and ride down the shaft
+          tn.leavePhase = "elevator";
+          tn.riding = true;
+          tn.x = shaftX(tn.x0);
+          tn.targetX = tn.x;
         } else {
           tn.leavePhase = "away";
           tn.targetX = tn.x + 28;
         }
-      } else if (tn.leavePhase === "ladder") {
-        tn.climbing = true;
-        const step = Math.min(Math.abs(tn.base), 30 * dt);
-        tn.base += Math.sign(-tn.base) * step; // climb toward ground (down or up)
+      } else if (tn.leavePhase === "elevator") {
+        tn.x = shaftX(tn.x0);
+        tn.targetX = tn.x;
+        const step = Math.min(Math.abs(tn.base), CAR_SPEED * dt);
+        tn.base += Math.sign(-tn.base) * step; // descend toward the ground
         if (Math.abs(tn.base) <= 0.5) {
           tn.base = 0;
+          tn.riding = false;
           tn.leavePhase = "away";
-          tn.targetX = tn.x + 28;
+          tn.targetX = tn.x + 28; // step out and walk off the edge
         }
       } else if (tn.leavePhase === "away" && atX) {
         this.leaving.splice(i, 1);
-      }
-    }
-
-    for (const r of this.rooms.values()) {
-      const huddlers = r.agents.filter((a) => {
-        const tn = this.toons.get(a.id);
-        return tn?.huddle;
-      });
-      if (huddlers.length >= 2 && r.scribbles.length < 16 && this.frame % 6 === 0) {
-        const wb = rollerPanel(r.x0 + WB_W / 2, r.baseY); // the main group's roller board
-        r.scribbles.push({
-          x1: wb.x + 3 + Math.random() * (wb.w - 6), y1: wb.y + 3 + Math.random() * (wb.h - 6),
-          x2: wb.x + 3 + Math.random() * (wb.w - 6), y2: wb.y + 3 + Math.random() * (wb.h - 6),
-          color: Math.random() < 0.3 ? "#d9534f" : Math.random() < 0.5 ? "#2b6cb0" : "#2d3438",
-        });
       }
     }
 
@@ -1618,9 +1707,22 @@ class PixelCrew {
     pushRoom?: string; // building key → push local commits
     pullRoom?: string; // building key → pull upstream commits
     fetchRoom?: string; // building key → fetch remote refs (refresh behind/ahead)
+    reviewPr?: { number: number; repo: string; title: string; branch?: string; url?: string };
+    billboardRefresh?: boolean; // ↻ on the review sign
+    billboardZoom?: boolean; // click the sign body → fly the camera to it
   } {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+    // review billboard: refresh button → rows → anywhere else zooms to the sign
+    const bb = this.billboardGeom();
+    {
+      if (this.inRect(mx, my, bb.refresh.x, bb.refresh.y, bb.refresh.w, bb.refresh.h)) return { billboardRefresh: true };
+      for (const { pr, y } of bb.rows) {
+        if (this.inRect(mx, my, bb.x, y, bb.w, bb.rowH)) return { reviewPr: pr };
+      }
+      if (this.inRect(mx, my, bb.x, bb.top, bb.w, bb.bodyH)) return { billboardZoom: true };
+    }
 
     // building buttons (highest priority). Every room has a + DEV (drop an agent
     // into this room's worktree). The main (root) building's ✕ nukes the whole
@@ -1664,7 +1766,10 @@ class PixelCrew {
 
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
-    if (hit.fetchRoom) { this.onFetchCb(hit.fetchRoom); }
+    if (hit.billboardRefresh) { this.onRefreshPrsCb(); }
+    else if (hit.billboardZoom) { this.focusBillboard(); }
+    else if (hit.reviewPr) { this.onAssignReviewCb(hit.reviewPr); }
+    else if (hit.fetchRoom) { this.onFetchCb(hit.fetchRoom); }
     else if (hit.pushRoom) { this.syncSuppress.set(hit.pushRoom, Date.now()); this.onPushCb(hit.pushRoom); }
     else if (hit.pullRoom) { this.syncSuppress.set(hit.pullRoom, Date.now()); this.onPullCb(hit.pullRoom); }
     else if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
@@ -1684,6 +1789,9 @@ class PixelCrew {
       // directory (its tower), not the whole campus
       if (!this.focusAgentId && this.focusRoom_ === hit.room) this.focusIslandView(hit.island ?? "");
       else this.focusOn(hit.room);
+    } else if (this.focusBillboard_) {
+      // leaving the PR billboard returns to the view we were at before flying in
+      this.exitBillboard();
     } else {
       // clicking empty space steps out one level: room / dev → its directory
       // overview → the whole campus
@@ -1771,6 +1879,9 @@ class PixelCrew {
     // island platforms (the foundation the buildings stand on)
     for (const isl of this.islands.values()) this.drawIslandPlatform(ctx, isl);
 
+    // central "PRs to review" billboard, standing to the left of the campus
+    this.drawReviewBillboard(ctx);
+
     // rooms back layer
     for (const r of this.rooms.values()) this.drawRoomBack(ctx, r);
 
@@ -1781,17 +1892,54 @@ class PixelCrew {
     // ghost slots (+building extends an island, +island reserves a directory)
     for (const g of this.ghosts) this.drawGhost(ctx, g);
 
-    // fire-escape ladders under departing climbers
-    for (const tn of this.leaving) {
-      if (tn.ladderFrom === undefined || tn.ladderX === undefined) continue;
-      const top = Math.min(0, tn.ladderFrom);
-      const bot = Math.max(0, tn.ladderFrom);
+    // external elevator shafts: a track bolted to the right exterior wall of
+    // every tower that has an upper floor; the car (below) rides inside it.
+    for (const [col, rng] of this.colRange) {
+      if (rng.max <= 0) continue; // ground-only towers need no lift
+      const sx = shaftX(cellX0(col));
+      const left = sx - SHAFT_W / 2;
+      const top = floorBase(rng.max) - ROOM_H;
+      const bot = SLAB; // foot planted at the ground / pedestal
+      ctx.fillStyle = "#161b21"; // shaft well
+      ctx.fillRect(left, top, SHAFT_W, bot - top);
+      ctx.fillStyle = "#2a3138"; // guide rails up each side
+      ctx.fillRect(left, top, 1.6, bot - top);
+      ctx.fillRect(left + SHAFT_W - 1.6, top, 1.6, bot - top);
+      ctx.fillStyle = "#323b43"; // a landing line at each served floor
+      for (let f = 0; f <= rng.max; f++) ctx.fillRect(left, floorBase(f) - 0.7, SHAFT_W, 1.4);
+      ctx.fillStyle = "#2c353e"; // motor housing capping the shaft
+      ctx.fillRect(left - 1, top - 5, SHAFT_W + 2, 5);
+    }
+
+    // elevator cars: a cage rides the external shaft carrying a dev between
+    // floors (entering up, leaving down). Drawn before the crew so the rider's
+    // toon renders inside the open-front cage.
+    for (const tn of [...this.toons.values(), ...this.leaving]) {
+      if (!tn.riding) continue;
+      const cx = shaftX(tn.x0);
+      const b = tn.base;
+      const halfW = CAR_W / 2;
+      // hoist cable running up the shaft to the motor at the top
+      const col = Math.round((tn.x0 + ROOM_W / 2) / COL_STEP);
+      const rng = this.colRange.get(col);
+      const cableTop = rng ? floorBase(rng.max) - ROOM_H : b - CAR_H - 14;
+      ctx.fillStyle = "#1c2228";
+      ctx.fillRect(cx - 0.6, cableTop, 1.2, b - CAR_H - cableTop);
+      // cage well + interior
+      ctx.fillStyle = "#10161c";
+      ctx.fillRect(cx - halfW, b - CAR_H, CAR_W, CAR_H);
+      ctx.fillStyle = "#222a31";
+      ctx.fillRect(cx - halfW + 1.5, b - CAR_H + 1.5, CAR_W - 3, CAR_H - 3);
+      // ceiling + floor slabs
+      ctx.fillStyle = "#4a545d";
+      ctx.fillRect(cx - halfW, b - CAR_H, CAR_W, 2.4);
+      ctx.fillRect(cx - halfW, b - 2, CAR_W, 2.6);
+      // side posts + a guide-rail glint on the wall side
+      ctx.fillStyle = "#3a434c";
+      ctx.fillRect(cx - halfW, b - CAR_H, 1.8, CAR_H);
+      ctx.fillRect(cx + halfW - 1.8, b - CAR_H, 1.8, CAR_H);
       ctx.fillStyle = "#5a646c";
-      ctx.fillRect(tn.ladderX - 2.6, top, 0.9, bot - top + 1);
-      ctx.fillRect(tn.ladderX + 1.7, top, 0.9, bot - top + 1);
-      for (let y = top + 2; y < bot; y += 4) {
-        ctx.fillRect(tn.ladderX - 2.6, y, 5.2, 0.8);
-      }
+      ctx.fillRect(cx + halfW - 0.6, b - CAR_H, 0.6, CAR_H);
     }
 
     // crew + furniture, layered back row -> front row so the aisle reads with
@@ -1914,6 +2062,35 @@ class PixelCrew {
         ctx.fillStyle = STATE_COLOR[st];
         ctx.font = "bold 9px 'IBM Plex Mono', monospace";
         ctx.fillText(glyph, bx, by + 1.5);
+      }
+      // reviewer badge: a pill above the dev showing the PR under review, which
+      // stamps into APPROVED / CHANGES once the PR's decision resolves
+      if (tn.agent.reviewOf) {
+        const v = tn.agent.reviewVerdict;
+        const resolved = v === "approved" || v === "changes";
+        const label = v === "approved" ? "APPROVED" : v === "changes" ? "CHANGES" : `REVIEWING #${tn.agent.reviewOf.number}`;
+        const col = v === "approved" ? "#3ee089" : v === "changes" ? "#ff6b6b" : "#ffb13d";
+        // thud-in scale when a verdict just landed (overshoot then settle ~0.6s)
+        let scale = 1;
+        if (resolved && tn.stampAt !== undefined) {
+          const dt = this.frame - tn.stampAt;
+          scale = dt < 3 ? 1.5 : dt < 6 ? 1.2 : 1;
+        }
+        ctx.save();
+        const by = s.y - 30;
+        ctx.translate(s.x, by);
+        ctx.scale(scale, scale);
+        ctx.font = "bold 7px 'Martian Mono', monospace";
+        ctx.textAlign = "center";
+        const w = ctx.measureText(label).width + 10;
+        ctx.fillStyle = "rgba(10,15,18,0.88)";
+        ctx.fillRect(-w / 2, -7, w, 11);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = resolved ? 1.4 : 1;
+        ctx.strokeRect(-w / 2, -7, w, 11);
+        ctx.fillStyle = col;
+        ctx.fillText(label, 0, 1.5);
+        ctx.restore();
       }
       if (tn.agent.id === this.selectedId) {
         ctx.fillStyle = "#ffb13d";
@@ -2048,6 +2225,87 @@ class PixelCrew {
     }
     ctx.fillText(label, cx, cy);
     ctx.restore();
+  }
+
+  /** Truncate `s` with a trailing ellipsis so it fits within `maxW` world units
+   *  at the currently-set font. */
+  private fitText(ctx: CanvasRenderingContext2D, s: string, maxW: number): string {
+    if (ctx.measureText(s).width <= maxW) return s;
+    let lo = 0, hi = s.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (ctx.measureText(s.slice(0, mid) + "…").width <= maxW) lo = mid;
+      else hi = mid - 1;
+    }
+    return s.slice(0, lo).trimEnd() + "…";
+  }
+
+  /** The standalone signboard listing review-requested PRs. Each row is a tap
+   *  target (see pick → reviewPr) that opens the dispatch modal for that PR. */
+  private drawReviewBillboard(ctx: CanvasRenderingContext2D) {
+    const bb = this.billboardGeom();
+    const { x, top, w, bodyH, headerH, rows, surfaceY, extra, refresh } = bb;
+    const legTop = top + bodyH;
+    // two posts down to the ground + a soft contact shadow
+    ctx.fillStyle = "#3a2c1d";
+    ctx.fillRect(x + 12, legTop, 5, surfaceY - legTop);
+    ctx.fillRect(x + w - 17, legTop, 5, surfaceY - legTop);
+    ctx.fillStyle = "rgba(0,0,0,0.25)";
+    ctx.fillRect(x + 6, surfaceY - 1, w - 12, 2);
+    // panel body
+    ctx.fillStyle = "#16202b";
+    ctx.fillRect(x, top, w, bodyH);
+    ctx.fillStyle = "rgba(255,255,255,0.05)";
+    ctx.fillRect(x, top, w, 1);
+    ctx.strokeStyle = "#2b3a47";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, top + 0.5, w - 1, bodyH - 1);
+    // header band: chevron + title + count + refresh
+    ctx.fillStyle = "#1d2a36";
+    ctx.fillRect(x, top, w, headerH);
+    ctx.fillStyle = "#ffb13d";
+    ctx.font = "700 8px 'Martian Mono', monospace";
+    ctx.textAlign = "left";
+    ctx.fillText("⌕ PRs TO REVIEW", x + 6, top + 11);
+    ctx.fillStyle = "rgba(255,177,61,0.6)"; // PR count, left of the refresh glyph
+    ctx.textAlign = "right";
+    ctx.fillText(String(this.reviewPrs.length), x + w - 19, top + 11);
+    // refresh button
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fillRect(refresh.x, refresh.y, refresh.w, refresh.h);
+    ctx.fillStyle = "rgba(230,238,240,0.85)";
+    ctx.font = "8px 'IBM Plex Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("↻", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
+    // PR rows
+    ctx.textAlign = "left";
+    for (const { pr, y } of rows) {
+      ctx.fillStyle = "rgba(255,255,255,0.06)"; // separator
+      ctx.fillRect(x + 4, y, w - 8, 0.6);
+      ctx.fillStyle = "#7fb8df"; // PR number
+      ctx.font = "600 7px 'IBM Plex Mono', monospace";
+      ctx.fillText(`#${pr.number}`, x + 6, y + 9);
+      ctx.fillStyle = "rgba(180,190,196,0.55)"; // repo (right, dim)
+      ctx.font = "6px 'IBM Plex Mono', monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.5), x + w - 6, y + 9);
+      ctx.textAlign = "left";
+      ctx.fillStyle = "rgba(230,238,240,0.9)"; // title
+      ctx.font = "7px 'IBM Plex Mono', monospace";
+      ctx.fillText(this.fitText(ctx, pr.title || "", w - 16), x + 6, y + 17);
+    }
+    if (!rows.length) {
+      ctx.fillStyle = "rgba(180,190,196,0.5)";
+      ctx.font = "6.5px 'IBM Plex Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("nothing awaiting you", x + w / 2, top + headerH + BB_ROW / 2 + 2);
+      ctx.textAlign = "left";
+    }
+    if (extra > 0) {
+      ctx.fillStyle = "rgba(180,190,196,0.6)";
+      ctx.font = "6px 'IBM Plex Mono', monospace";
+      ctx.fillText(`+${extra} more`, x + 6, top + bodyH - 3);
+    }
   }
 
   private drawRoomBack(ctx: CanvasRenderingContext2D, r: Room) {
@@ -2254,23 +2512,8 @@ class PixelCrew {
     ctx.fillStyle = "#d9b34a"; // handle on the far (latch) jamb
     ctx.fillRect(pf.x + 0.4, pf.y - 14, 1.4, 1.6);
 
-    // staircase up to the worktree stacked on top: a flight against the right
-    // wall that upper-floor devs climb in to reach their door
-    if (r.hasUpper) {
-      const steps = 8;
-      const botX = x + w - 42, topX = x + w - 22;
-      for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        const sx = botX + (topX - botX) * t;
-        const sy = base - (H - 4) * t;
-        ctx.fillStyle = i % 2 ? "#454c53" : "#3c434a";
-        ctx.fillRect(sx - 5, sy - 2.2, 10, 2.4); // tread
-        ctx.fillStyle = "#20262c";
-        ctx.fillRect(sx - 5, sy + 0.2, 10, 1.8); // riser shadow
-      }
-      ctx.fillStyle = "#2a3138"; // stringer
-      ctx.fillRect(botX - 6, base - H + 2, 1.6, H - 2);
-    }
+    // the elevator shaft rides the right side wall (the lift door above); devs
+    // travel it between floors, so no internal staircase is drawn here.
 
     // vacant reserved rooms sit dark until a dev moves in
     if (!lit && r.path) {
@@ -2793,15 +3036,14 @@ class PixelCrew {
       st === "waiting" && !walking ? -Math.abs(Math.sin(f * 0.35 + tn.ph)) * 1 : 0;
     const slump = st === "error" && !walking ? 1.4 : 0;
     const base = y0 + hop;
-    const facingLeft = tn.huddle || sitting; // seated devs face their monitor (to the left)
+    const facingLeft = sitting; // seated devs face their monitor (to the left)
 
-    const climbing = !!tn.climbing;
     ctx.fillStyle = p.pants;
     if (sitting) {
       ctx.fillRect(x - 3, base - 4, 6, 2);
       ctx.fillRect(x - 3.6, base - 3, 1.6, 3.4);
       ctx.fillRect(x + 2, base - 3, 1.6, 3.4);
-    } else if (walking || climbing) {
+    } else if (walking) {
       const sw = f % 2 === 0;
       ctx.fillRect(x - (sw ? 3 : 1.6), base - 6, 2, 6);
       ctx.fillRect(x + (sw ? 1 : -0.4), base - 6, 2, 6);
@@ -2823,14 +3065,29 @@ class PixelCrew {
 
     ctx.fillStyle = p.shirt;
     const handC = p.skin;
-    if (climbing) {
-      // hand-over-hand on the ladder rungs
-      const g = f % 2;
-      ctx.fillRect(x - 4.2, ty - 2 + g, 1.4, 4);
-      ctx.fillRect(x + 2.8, ty - 2 + (1 - g), 1.4, 4);
-      ctx.fillStyle = handC;
-      ctx.fillRect(x - 4.4, ty - 3.4 + g, 1.6, 1.6);
-      ctx.fillRect(x + 2.6, ty - 3.4 + (1 - g), 1.6, 1.6);
+    if (sitting && tn.agent.reviewOf) {
+      // reviewing a PR: hold a magnifier out over a printout on the desk and
+      // sweep it slowly back and forth as if scanning the diff
+      const sweep = Math.sin(f * 0.12 + tn.ph) * 1.3;
+      const mx = x - 6 + sweep, my = ty + 0.6;
+      ctx.fillStyle = p.shirt; // forearm reaching to the glass
+      ctx.fillRect(x - 5, ty + 2.2, 3, 1.4);
+      ctx.fillStyle = "#e9e3d2"; // PR printout on the desk
+      ctx.fillRect(x - 9.5, ty + 4, 7, 4.2);
+      ctx.fillStyle = "rgba(70,70,70,0.4)"; // a couple of diff lines
+      ctx.fillRect(x - 8.7, ty + 5, 5, 0.5);
+      ctx.fillRect(x - 8.7, ty + 6.2, 4, 0.5);
+      ctx.strokeStyle = "#7a5a2a"; // magnifier handle
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(mx + 1.3, my + 1.3); ctx.lineTo(mx + 2.9, my + 2.9); ctx.stroke();
+      ctx.fillStyle = "rgba(159,216,255,0.4)"; // glass
+      ctx.beginPath(); ctx.arc(mx, my, 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#2a2f35"; // rim
+      ctx.beginPath(); ctx.arc(mx, my, 2.1, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = handC; // hand gripping the handle
+      ctx.fillRect(mx + 2.4, my + 2.4, 1.5, 1.6);
+      ctx.fillStyle = p.shirt; // other hand resting on the desk
+      ctx.fillRect(x + 2.6, ty + 2, 1.4, 2.6);
     } else if (sitting && tn.booksInHand > 0) {
       // reading the fetched skill book(s) at the desk for the duration of the
       // active task: hold an open book up at chest/face height (drawn before the
@@ -2863,21 +3120,6 @@ class PixelCrew {
       ctx.fillStyle = handC;
       ctx.fillRect(x - 7, ty + 2 + tap, 1.4, 1.4);
       ctx.fillRect(x - 7, ty + 3.6 - tap, 1.4, 1.4);
-    } else if (tn.huddle && !walking) {
-      const lead = tn.deskIdx % 2 === 0;
-      if (lead) {
-        const draw = Math.sin(f * 0.5 + tn.ph) * 1.5;
-        ctx.fillRect(x - 5.4, ty - 1.5 + draw * 0.4, 3, 1.4);
-        ctx.fillStyle = handC;
-        ctx.fillRect(x - 6.6, ty - 1.8 + draw * 0.4, 1.4, 1.4);
-      } else {
-        const nod = f % 4 < 2 ? 0 : 0.7;
-        ctx.fillRect(x - 4.6, ty + 1 + nod, 2.4, 1.4);
-        ctx.fillStyle = handC;
-        ctx.fillRect(x - 5.8, ty + 0.8 + nod, 1.2, 1.2);
-        ctx.fillStyle = p.shirt;
-        ctx.fillRect(x + 3.2, ty + 2.4, 1.4, 3);
-      }
     } else if (st === "waiting" && !walking) {
       // asking a question: hand up and WAVING, other hand cupped to mouth
       const wave = Math.sin(f * 0.9 + tn.ph) * 1.1;
@@ -2986,6 +3228,9 @@ class PixelCrew {
   setPrBranches(b: string[]) {
     this._instance?.setPrBranches(b);
   },
+  setReviewPrs(prs: { number: number; repo: string; title: string; branch?: string; url?: string }[]) {
+    this._instance?.setReviewPrs(prs);
+  },
   setBoards(boards: Record<string, any>) {
     this._instance?.setBoards(boards);
   },
@@ -3021,6 +3266,15 @@ class PixelCrew {
   },
   onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
     this._instance?.onCd(cb);
+  },
+  onAssignReview(cb: (pr: { number: number; repo: string; title: string; branch?: string; url?: string }) => void) {
+    this._instance?.onAssignReview(cb);
+  },
+  onRefreshPrs(cb: () => void) {
+    this._instance?.onRefreshPrs(cb);
+  },
+  focusReviewBoard() {
+    this._instance?.toggleBillboard();
   },
   start() {
     this._instance?.start();

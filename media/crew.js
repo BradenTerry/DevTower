@@ -62,14 +62,6 @@
     yBot: base - DEPTH_Y
     // far-wall floor line
   });
-  var ROLLER_W = 30;
-  var ROLLER_H = 22;
-  var ROLLER_DEPTH = 13;
-  var ROLLER_LEG = 12;
-  var rollerPanel = (cx, base) => {
-    const stand = base - ROLLER_DEPTH;
-    return { x: cx - ROLLER_W / 2, y: stand - ROLLER_LEG - ROLLER_H, w: ROLLER_W, h: ROLLER_H };
-  };
   var boardRect = (x0, base) => {
     const bw = backWall(x0, base);
     const left = bw.x0 + 3;
@@ -81,10 +73,21 @@
   var COL_STEP = ROOM_W;
   var cellX0 = (col) => col * COL_STEP - ROOM_W / 2;
   var WALK_SPEED = 30;
+  var SHAFT_GAP = 3;
+  var SHAFT_W = 18;
+  var CAR_W = 14;
+  var CAR_H = 26;
+  var CAR_SPEED = 64;
+  var shaftX = (x0) => x0 + ROOM_W + SHAFT_GAP + SHAFT_W / 2;
   var ISLAND_GAP = 1;
   var PLINTH_H = 22;
   var PLINTH_APRON = 8;
   var PLINTH_OV = 9;
+  var BB_W = 138;
+  var BB_HEADER = 16;
+  var BB_ROW = 20;
+  var BB_MAX = 6;
+  var BB_GAP = 56;
   var GROUP_GAP = 1;
   var DEFAULT_BRANCHES = /* @__PURE__ */ new Set(["main", "master", "head", "develop", "trunk"]);
   var floorBase = (floor) => -floor * FLOOR_STEP;
@@ -178,8 +181,18 @@
       // when set, the camera tracks this dev (not the room)
       __publicField(this, "focusIsland_", null);
       // when set, frame this whole directory (its tower)
+      __publicField(this, "focusBillboard_", false);
+      // when set, the camera frames the review billboard
+      // the view to restore when leaving the billboard (so exiting returns to where
+      // you were, not the overview)
+      __publicField(this, "viewBeforeBillboard", null);
       __publicField(this, "prBranches", /* @__PURE__ */ new Set());
       // branches (lowercased) with an open PR
+      // review-requested PRs shown on the central billboard (left of the campus);
+      // clicking a row opens the dispatch modal to assign a reviewer to it
+      __publicField(this, "reviewPrs", []);
+      __publicField(this, "campusMinX", 0);
+      // rooms-only left edge, before the billboard is added in
       __publicField(this, "focus", { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 });
       __publicField(this, "cam", { x: 0, y: -ROOM_H / 2, z: 4 });
       __publicField(this, "zoomMul", 1);
@@ -225,6 +238,10 @@
        *  flashes without firing a beam (the agent didn't do that work). */
       __publicField(this, "syncSuppress", /* @__PURE__ */ new Map());
       __publicField(this, "onCdCb", () => {
+      });
+      __publicField(this, "onAssignReviewCb", () => {
+      });
+      __publicField(this, "onRefreshPrsCb", () => {
       });
       __publicField(this, "resizeT");
       __publicField(this, "newToonIds", /* @__PURE__ */ new Set());
@@ -380,6 +397,12 @@
     onCd(cb) {
       this.onCdCb = cb;
     }
+    onAssignReview(cb) {
+      this.onAssignReviewCb = cb;
+    }
+    onRefreshPrs(cb) {
+      this.onRefreshPrsCb = cb;
+    }
     /* ============ DATA ============ */
     setRooms(reserved) {
       this.reserved = reserved || [];
@@ -395,6 +418,34 @@
     setPrBranches(branches) {
       this.prBranches = new Set((branches || []).filter(Boolean).map((b) => b.toLowerCase()));
       this.invalidate();
+    }
+    /** Review-requested PRs listed on the central billboard. */
+    setReviewPrs(prs) {
+      this.reviewPrs = Array.isArray(prs) ? prs : [];
+      this.layout();
+    }
+    /** Geometry for the review billboard, shared by draw + pick. Null when empty. */
+    billboardGeom() {
+      const n = Math.min(this.reviewPrs.length, BB_MAX);
+      const x = this.campusMinX - BB_GAP - BB_W;
+      const surfaceY = floorBase(0) + SLAB;
+      const bodyH = BB_HEADER + Math.max(n, 1) * BB_ROW + 5;
+      const top = surfaceY - 40 - bodyH;
+      const rows = [];
+      for (let i = 0; i < n; i++)
+        rows.push({ pr: this.reviewPrs[i], y: top + BB_HEADER + i * BB_ROW });
+      return {
+        x,
+        top,
+        w: BB_W,
+        bodyH,
+        headerH: BB_HEADER,
+        rows,
+        rowH: BB_ROW,
+        surfaceY,
+        extra: this.reviewPrs.length - n,
+        refresh: { x: x + BB_W - 14, y: top + 3, w: 11, h: 11 }
+      };
     }
     /** Remember a toon's walk state so a transient disappearance (a mid-refresh
      *  re-layout that unplaces it, or the agent blinking out of one poll) can
@@ -444,11 +495,9 @@
             base: resume?.base ?? 0,
             x0: 0,
             seatCol: 0,
-            wbSlot: 0,
             deskIdx: 0,
             row: 0,
             lift: resume?.lift ?? 0,
-            huddle: false,
             sitting: resume?.sitting ?? false,
             entering: resume?.entering ?? true,
             enterPhase: resume?.enterPhase,
@@ -465,6 +514,11 @@
           if (!resume)
             this.newToonIds.add(a.id);
         }
+        const nextV = a.reviewVerdict;
+        if (a.reviewOf && (nextV === "approved" || nextV === "changes") && tn.lastVerdict !== nextV) {
+          tn.stampAt = this.frame;
+        }
+        tn.lastVerdict = nextV;
         tn.agent = a;
         for (const s of a.skills ?? [])
           if (!tn.skills.includes(s))
@@ -480,12 +534,14 @@
     seatPlan(agents) {
       const byTree = /* @__PURE__ */ new Map();
       for (const a of agents) {
-        const key = a.worktree && a.worktree.trim() ? a.worktree : ".";
+        const key = a.worktree && a.worktree.trim() ? a.worktree : "";
+        if (!key)
+          continue;
         if (!byTree.has(key))
           byTree.set(key, []);
         byTree.get(key).push(a);
       }
-      const isMain = (key, ags) => key === "." || key === "" || DEFAULT_BRANCHES.has((ags[0].branch ?? "").toLowerCase());
+      const isMain = (key, ags) => DEFAULT_BRANCHES.has((ags[0].branch ?? "").toLowerCase());
       const treeName = (key) => key.split(/[\\/]/).pop() || key;
       const entries = [...byTree.entries()].sort((a, b) => {
         const am = isMain(a[0], a[1]) ? 0 : 1;
@@ -560,7 +616,7 @@
         };
       });
     }
-    /** Re-aim a toon at its desk/huddle spot using its building's CURRENT (tweening)
+    /** Re-aim a toon at its desk using its building's CURRENT (tweening)
      *  position, so seated devs ride a collapsing island instead of snapping. */
     retargetToon(tn) {
       const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
@@ -569,9 +625,7 @@
       tn.base = room.baseY;
       tn.x0 = room.x0;
       const deskX = this.seatX(room, tn.seatCol, tn.row);
-      if (tn.huddle)
-        tn.targetX = room.x0 + 26 + tn.wbSlot * 9;
-      else if (tn.agent.state === "active")
+      if (tn.agent.state === "active")
         tn.targetX = deskX + 13;
       else
         tn.targetX = deskX + 19;
@@ -780,7 +834,6 @@
             delay: newIdx++ * 0.45,
             // buildings rise one after another
             agents: [],
-            scribbles: [],
             decor: hash(key + "decor"),
             statSig: "",
             statPulse: 0,
@@ -798,17 +851,6 @@
         room.col = info.col;
         room.path = info.path ?? room.path;
         room.agents = info.agents;
-        room.hasUpper = false;
-      }
-      for (const r of this.rooms.values()) {
-        if (r.dying)
-          continue;
-        for (const u of this.rooms.values()) {
-          if (!u.dying && u.island === r.island && u.col === r.col && u.floor === r.floor + 1) {
-            r.hasUpper = true;
-            break;
-          }
-        }
       }
       this.ghosts = [];
       for (const isl of this.islands.values()) {
@@ -854,12 +896,13 @@
         topY = -120;
         botY = 40;
       }
+      this.campusMinX = minX;
+      const bb = this.billboardGeom();
+      minX = Math.min(minX, bb.x - 14);
+      topY = Math.min(topY, bb.top - 8);
       this.bounds = { minX, maxX, topY, botY, minFloor };
       const placed = /* @__PURE__ */ new Set();
       for (const room of this.rooms.values()) {
-        const activeCount = room.agents.filter((a) => a.state === "active").length;
-        const huddle = activeCount >= 2;
-        let wbSlot = 0;
         room.plan = this.seatPlan(room.agents);
         room.agents.forEach((a, di) => {
           const tn = this.toons.get(a.id);
@@ -871,26 +914,21 @@
           const seat = room.plan.seats.get(a.id) ?? { col: 0, row: 0 };
           tn.row = seat.row;
           tn.seatCol = seat.col;
-          tn.huddle = a.state === "active" && huddle;
-          if (tn.huddle)
-            tn.wbSlot = wbSlot++;
           const firstPlace = tn.entering && tn.x === 0;
           this.retargetToon(tn);
           if (firstPlace) {
             if (room.floor > 0) {
-              tn.x = room.x0 + ROOM_W - 40;
-              tn.base = floorBase(room.floor - 1);
+              tn.x = shaftX(room.x0);
+              tn.base = floorBase(0);
               tn.targetX = tn.x;
-              tn.enterPhase = "stairs";
-              tn.stairTopX = room.x0 + ROOM_W - 24;
+              tn.enterPhase = "elevator";
+              tn.riding = true;
             } else {
               tn.x = room.x0 + ROOM_W + 8;
               tn.enterPhase = "walk";
             }
           }
         });
-        if (!huddle)
-          room.scribbles = [];
       }
       for (const [id, tn] of this.toons) {
         if (!placed.has(id)) {
@@ -914,6 +952,10 @@
       } else if (this.focusIsland_) {
         if (!this.frameIsland(this.focusIsland_))
           this.focusIsland_ = null;
+      } else if (this.focusBillboard_) {
+        const bb2 = this.billboardGeom();
+        this.focus.x = bb2.x + bb2.w / 2;
+        this.focus.y = bb2.top + bb2.bodyH / 2;
       } else if (!this.hasFitted) {
         this.clearFocus(true, false);
         this.hasFitted = true;
@@ -931,6 +973,7 @@
         return;
       this.focusAgentId = null;
       this.focusIsland_ = null;
+      this.focusBillboard_ = false;
       this.focusRoom_ = r.name;
       this.focus.x = r.x0 + ROOM_W / 2;
       this.focus.y = r.baseY - ROOM_H / 2;
@@ -940,6 +983,64 @@
       this.panY = 0;
       if (resetZoom)
         this.zoomMul = 1;
+      this.invalidate();
+    }
+    /** Toggle the review billboard zoom: fly to it, or (if already there) return to
+     *  the view you were at before. Driven by the HUD PR button. */
+    toggleBillboard() {
+      if (this.focusBillboard_)
+        this.exitBillboard();
+      else
+        this.focusBillboard();
+    }
+    /** Fly the camera to the review billboard (and expand it so the PRs show),
+     *  snapshotting the current view so exiting can return to it. */
+    focusBillboard() {
+      if (!this.focusBillboard_) {
+        this.viewBeforeBillboard = {
+          focusAgentId: this.focusAgentId,
+          focusRoom_: this.focusRoom_,
+          focusIsland_: this.focusIsland_,
+          focus: { ...this.focus },
+          panX: this.panX,
+          panY: this.panY,
+          zoomMul: this.zoomMul
+        };
+      }
+      this.focusAgentId = null;
+      this.focusRoom_ = null;
+      this.focusIsland_ = null;
+      this.focusBillboard_ = true;
+      const bb = this.billboardGeom();
+      this.focus.x = bb.x + bb.w / 2;
+      this.focus.y = bb.top + bb.bodyH / 2;
+      this.focus.spanW = bb.w + 70;
+      this.focus.spanH = bb.bodyH + 56;
+      this.panX = 0;
+      this.panY = 0;
+      this.zoomMul = 1;
+      this.invalidate();
+    }
+    /** Leave the billboard, gliding back to the view captured on entry (falling
+     *  back to the campus overview if there was none). */
+    exitBillboard() {
+      const v = this.viewBeforeBillboard;
+      this.viewBeforeBillboard = null;
+      this.focusBillboard_ = false;
+      if (!v) {
+        this.clearFocus();
+        return;
+      }
+      this.focusAgentId = v.focusAgentId;
+      this.focusRoom_ = v.focusRoom_;
+      this.focusIsland_ = v.focusIsland_;
+      this.focus.x = v.focus.x;
+      this.focus.y = v.focus.y;
+      this.focus.spanW = v.focus.spanW;
+      this.focus.spanH = v.focus.spanH;
+      this.panX = v.panX;
+      this.panY = v.panY;
+      this.zoomMul = v.zoomMul;
       this.invalidate();
     }
     /** Set the focus box to frame a whole directory (island): all its stacked
@@ -968,6 +1069,7 @@
     focusIslandView(islandName) {
       this.focusAgentId = null;
       this.focusRoom_ = null;
+      this.focusBillboard_ = false;
       this.focusIsland_ = islandName;
       if (!this.frameIsland(islandName)) {
         this.focusIsland_ = null;
@@ -989,6 +1091,7 @@
       const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
       this.focusAgentId = id;
       this.focusIsland_ = null;
+      this.focusBillboard_ = false;
       this.focusRoom_ = room?.name ?? null;
       this.focus.x = tn.targetX;
       this.focus.y = tn.base - ROOM_H / 2 + 6;
@@ -1005,6 +1108,7 @@
       this.focusRoom_ = null;
       this.focusAgentId = null;
       this.focusIsland_ = null;
+      this.focusBillboard_ = false;
       this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
       this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
       this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
@@ -1256,43 +1360,45 @@
         const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
         if (!room)
           continue;
-        if (!tn.errand && !tn.huddle && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
+        if (!tn.errand && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
           tn.errand = { phase: "out", grab: 0 };
         }
         if (tn.errand && tn.errand.phase !== "back")
           tn.targetX = room.x0 + SHELF_REACH;
       }
       for (const tn of this.toons.values()) {
-        if (!tn.entering || tn.enterPhase !== "stairs")
+        if (!tn.entering || tn.enterPhase !== "elevator")
           continue;
         const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
         if (!room) {
           tn.enterPhase = "walk";
+          tn.riding = false;
           continue;
         }
-        tn.climbing = true;
-        const k = Math.min(1, dt * 4);
-        const tx = tn.stairTopX ?? tn.x;
-        tn.x += (tx - tn.x) * k;
-        tn.base += (room.baseY - tn.base) * k;
-        if (Math.abs(room.baseY - tn.base) < 2) {
+        tn.riding = true;
+        tn.x0 = room.x0;
+        tn.x = shaftX(room.x0);
+        tn.targetX = tn.x;
+        const dy = room.baseY - tn.base;
+        tn.base += Math.sign(dy) * Math.min(Math.abs(dy), CAR_SPEED * dt);
+        if (Math.abs(room.baseY - tn.base) < 1) {
           tn.base = room.baseY;
-          tn.climbing = false;
+          tn.riding = false;
           tn.enterPhase = "walk";
           this.retargetToon(tn);
         }
       }
       const all = [...this.toons.values(), ...this.leaving];
       for (const tn of all) {
-        if (tn.entering && tn.enterPhase === "stairs")
+        if (tn.entering && tn.enterPhase === "elevator")
           continue;
         const dx = tn.targetX - tn.x;
         if (Math.abs(dx) > 1)
           tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
         else if (tn.entering)
           tn.entering = false;
-        tn.sitting = tn.agent.state === "active" && !tn.huddle && !tn.entering && !tn.errand && Math.abs(dx) <= 1;
-        const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.huddle && !tn.errand;
+        tn.sitting = tn.agent.state === "active" && !tn.entering && !tn.errand && Math.abs(dx) <= 1;
+        const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand;
         const targetLift = atDesk ? tn.row * ROW_DY : 0;
         tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
       }
@@ -1326,55 +1432,46 @@
       }
       for (let i = this.leaving.length - 1; i >= 0; i--) {
         const tn = this.leaving[i];
-        tn.climbing = false;
         if (!tn.leavePhase) {
+          tn.riding = false;
           const floor = Math.round(-tn.base / FLOOR_STEP);
-          let maxC = -Infinity;
-          for (const r of this.rooms.values()) {
-            if (r.floor === floor)
-              maxC = Math.max(maxC, r.col);
+          if (floor > 0) {
+            tn.targetX = shaftX(tn.x0);
+          } else {
+            let maxC = -Infinity;
+            for (const r of this.rooms.values()) {
+              if (r.floor === floor)
+                maxC = Math.max(maxC, r.col);
+            }
+            const edge = isFinite(maxC) ? cellX0(maxC) + ROOM_W : tn.x0 + ROOM_W;
+            tn.targetX = edge + 5;
           }
-          const edge = isFinite(maxC) ? cellX0(maxC) + ROOM_W : tn.x0 + ROOM_W;
-          tn.targetX = edge + 5;
           tn.leavePhase = "walk";
         }
         const atX = Math.abs(tn.x - tn.targetX) <= 1.5;
         if (tn.leavePhase === "walk" && atX) {
           if (Math.abs(tn.base) > 1) {
-            tn.leavePhase = "ladder";
-            tn.ladderFrom = tn.base;
-            tn.ladderX = tn.x;
+            tn.leavePhase = "elevator";
+            tn.riding = true;
+            tn.x = shaftX(tn.x0);
+            tn.targetX = tn.x;
           } else {
             tn.leavePhase = "away";
             tn.targetX = tn.x + 28;
           }
-        } else if (tn.leavePhase === "ladder") {
-          tn.climbing = true;
-          const step = Math.min(Math.abs(tn.base), 30 * dt);
+        } else if (tn.leavePhase === "elevator") {
+          tn.x = shaftX(tn.x0);
+          tn.targetX = tn.x;
+          const step = Math.min(Math.abs(tn.base), CAR_SPEED * dt);
           tn.base += Math.sign(-tn.base) * step;
           if (Math.abs(tn.base) <= 0.5) {
             tn.base = 0;
+            tn.riding = false;
             tn.leavePhase = "away";
             tn.targetX = tn.x + 28;
           }
         } else if (tn.leavePhase === "away" && atX) {
           this.leaving.splice(i, 1);
-        }
-      }
-      for (const r of this.rooms.values()) {
-        const huddlers = r.agents.filter((a) => {
-          const tn = this.toons.get(a.id);
-          return tn?.huddle;
-        });
-        if (huddlers.length >= 2 && r.scribbles.length < 16 && this.frame % 6 === 0) {
-          const wb = rollerPanel(r.x0 + WB_W / 2, r.baseY);
-          r.scribbles.push({
-            x1: wb.x + 3 + Math.random() * (wb.w - 6),
-            y1: wb.y + 3 + Math.random() * (wb.h - 6),
-            x2: wb.x + 3 + Math.random() * (wb.w - 6),
-            y2: wb.y + 3 + Math.random() * (wb.h - 6),
-            color: Math.random() < 0.3 ? "#d9534f" : Math.random() < 0.5 ? "#2b6cb0" : "#2d3438"
-          });
         }
       }
       if (!this.eco && this.frame % 14 === 0) {
@@ -1427,6 +1524,17 @@
     pick(e) {
       const rect = this.canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const bb = this.billboardGeom();
+      {
+        if (this.inRect(mx, my, bb.refresh.x, bb.refresh.y, bb.refresh.w, bb.refresh.h))
+          return { billboardRefresh: true };
+        for (const { pr, y } of bb.rows) {
+          if (this.inRect(mx, my, bb.x, y, bb.w, bb.rowH))
+            return { reviewPr: pr };
+        }
+        if (this.inRect(mx, my, bb.x, bb.top, bb.w, bb.bodyH))
+          return { billboardZoom: true };
+      }
       for (const r of this.rooms.values()) {
         if (r.built < 0.95)
           continue;
@@ -1466,7 +1574,13 @@
     }
     onClick(e) {
       const hit = this.pick(e);
-      if (hit.fetchRoom) {
+      if (hit.billboardRefresh) {
+        this.onRefreshPrsCb();
+      } else if (hit.billboardZoom) {
+        this.focusBillboard();
+      } else if (hit.reviewPr) {
+        this.onAssignReviewCb(hit.reviewPr);
+      } else if (hit.fetchRoom) {
         this.onFetchCb(hit.fetchRoom);
       } else if (hit.pushRoom) {
         this.syncSuppress.set(hit.pushRoom, Date.now());
@@ -1493,6 +1607,8 @@
           this.focusIslandView(hit.island ?? "");
         else
           this.focusOn(hit.room);
+      } else if (this.focusBillboard_) {
+        this.exitBillboard();
       } else {
         const key = this.focusRoom_ ?? (this.focusAgentId ? this.toons.get(this.focusAgentId)?.bkey : void 0);
         const r = key ? this.rooms.get(key) : void 0;
@@ -1562,23 +1678,54 @@
       }
       for (const isl of this.islands.values())
         this.drawIslandPlatform(ctx, isl);
+      this.drawReviewBillboard(ctx);
       for (const r of this.rooms.values())
         this.drawRoomBack(ctx, r);
       for (const r of this.rooms.values())
         this.drawCables(ctx, r);
       for (const g of this.ghosts)
         this.drawGhost(ctx, g);
-      for (const tn of this.leaving) {
-        if (tn.ladderFrom === void 0 || tn.ladderX === void 0)
+      for (const [col, rng] of this.colRange) {
+        if (rng.max <= 0)
           continue;
-        const top = Math.min(0, tn.ladderFrom);
-        const bot = Math.max(0, tn.ladderFrom);
+        const sx = shaftX(cellX0(col));
+        const left = sx - SHAFT_W / 2;
+        const top = floorBase(rng.max) - ROOM_H;
+        const bot = SLAB;
+        ctx.fillStyle = "#161b21";
+        ctx.fillRect(left, top, SHAFT_W, bot - top);
+        ctx.fillStyle = "#2a3138";
+        ctx.fillRect(left, top, 1.6, bot - top);
+        ctx.fillRect(left + SHAFT_W - 1.6, top, 1.6, bot - top);
+        ctx.fillStyle = "#323b43";
+        for (let f = 0; f <= rng.max; f++)
+          ctx.fillRect(left, floorBase(f) - 0.7, SHAFT_W, 1.4);
+        ctx.fillStyle = "#2c353e";
+        ctx.fillRect(left - 1, top - 5, SHAFT_W + 2, 5);
+      }
+      for (const tn of [...this.toons.values(), ...this.leaving]) {
+        if (!tn.riding)
+          continue;
+        const cx2 = shaftX(tn.x0);
+        const b = tn.base;
+        const halfW = CAR_W / 2;
+        const col = Math.round((tn.x0 + ROOM_W / 2) / COL_STEP);
+        const rng = this.colRange.get(col);
+        const cableTop = rng ? floorBase(rng.max) - ROOM_H : b - CAR_H - 14;
+        ctx.fillStyle = "#1c2228";
+        ctx.fillRect(cx2 - 0.6, cableTop, 1.2, b - CAR_H - cableTop);
+        ctx.fillStyle = "#10161c";
+        ctx.fillRect(cx2 - halfW, b - CAR_H, CAR_W, CAR_H);
+        ctx.fillStyle = "#222a31";
+        ctx.fillRect(cx2 - halfW + 1.5, b - CAR_H + 1.5, CAR_W - 3, CAR_H - 3);
+        ctx.fillStyle = "#4a545d";
+        ctx.fillRect(cx2 - halfW, b - CAR_H, CAR_W, 2.4);
+        ctx.fillRect(cx2 - halfW, b - 2, CAR_W, 2.6);
+        ctx.fillStyle = "#3a434c";
+        ctx.fillRect(cx2 - halfW, b - CAR_H, 1.8, CAR_H);
+        ctx.fillRect(cx2 + halfW - 1.8, b - CAR_H, 1.8, CAR_H);
         ctx.fillStyle = "#5a646c";
-        ctx.fillRect(tn.ladderX - 2.6, top, 0.9, bot - top + 1);
-        ctx.fillRect(tn.ladderX + 1.7, top, 0.9, bot - top + 1);
-        for (let y = top + 2; y < bot; y += 4) {
-          ctx.fillRect(tn.ladderX - 2.6, y, 5.2, 0.8);
-        }
+        ctx.fillRect(cx2 + halfW - 0.6, b - CAR_H, 0.6, CAR_H);
       }
       const chair = (dx, db) => {
         ctx.fillStyle = "#3a4046";
@@ -1696,6 +1843,32 @@
           ctx.fillStyle = STATE_COLOR[st];
           ctx.font = "bold 9px 'IBM Plex Mono', monospace";
           ctx.fillText(glyph, bx, by + 1.5);
+        }
+        if (tn.agent.reviewOf) {
+          const v = tn.agent.reviewVerdict;
+          const resolved = v === "approved" || v === "changes";
+          const label = v === "approved" ? "APPROVED" : v === "changes" ? "CHANGES" : `REVIEWING #${tn.agent.reviewOf.number}`;
+          const col = v === "approved" ? "#3ee089" : v === "changes" ? "#ff6b6b" : "#ffb13d";
+          let scale = 1;
+          if (resolved && tn.stampAt !== void 0) {
+            const dt = this.frame - tn.stampAt;
+            scale = dt < 3 ? 1.5 : dt < 6 ? 1.2 : 1;
+          }
+          ctx.save();
+          const by = s.y - 30;
+          ctx.translate(s.x, by);
+          ctx.scale(scale, scale);
+          ctx.font = "bold 7px 'Martian Mono', monospace";
+          ctx.textAlign = "center";
+          const w = ctx.measureText(label).width + 10;
+          ctx.fillStyle = "rgba(10,15,18,0.88)";
+          ctx.fillRect(-w / 2, -7, w, 11);
+          ctx.strokeStyle = col;
+          ctx.lineWidth = resolved ? 1.4 : 1;
+          ctx.strokeRect(-w / 2, -7, w, 11);
+          ctx.fillStyle = col;
+          ctx.fillText(label, 0, 1.5);
+          ctx.restore();
         }
         if (tn.agent.id === this.selectedId) {
           ctx.fillStyle = "#ffb13d";
@@ -1829,6 +2002,83 @@
       }
       ctx.fillText(label, cx, cy);
       ctx.restore();
+    }
+    /** Truncate `s` with a trailing ellipsis so it fits within `maxW` world units
+     *  at the currently-set font. */
+    fitText(ctx, s, maxW) {
+      if (ctx.measureText(s).width <= maxW)
+        return s;
+      let lo = 0, hi = s.length;
+      while (lo < hi) {
+        const mid = lo + hi + 1 >> 1;
+        if (ctx.measureText(s.slice(0, mid) + "\u2026").width <= maxW)
+          lo = mid;
+        else
+          hi = mid - 1;
+      }
+      return s.slice(0, lo).trimEnd() + "\u2026";
+    }
+    /** The standalone signboard listing review-requested PRs. Each row is a tap
+     *  target (see pick → reviewPr) that opens the dispatch modal for that PR. */
+    drawReviewBillboard(ctx) {
+      const bb = this.billboardGeom();
+      const { x, top, w, bodyH, headerH, rows, surfaceY, extra, refresh } = bb;
+      const legTop = top + bodyH;
+      ctx.fillStyle = "#3a2c1d";
+      ctx.fillRect(x + 12, legTop, 5, surfaceY - legTop);
+      ctx.fillRect(x + w - 17, legTop, 5, surfaceY - legTop);
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(x + 6, surfaceY - 1, w - 12, 2);
+      ctx.fillStyle = "#16202b";
+      ctx.fillRect(x, top, w, bodyH);
+      ctx.fillStyle = "rgba(255,255,255,0.05)";
+      ctx.fillRect(x, top, w, 1);
+      ctx.strokeStyle = "#2b3a47";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, top + 0.5, w - 1, bodyH - 1);
+      ctx.fillStyle = "#1d2a36";
+      ctx.fillRect(x, top, w, headerH);
+      ctx.fillStyle = "#ffb13d";
+      ctx.font = "700 8px 'Martian Mono', monospace";
+      ctx.textAlign = "left";
+      ctx.fillText("\u2315 PRs TO REVIEW", x + 6, top + 11);
+      ctx.fillStyle = "rgba(255,177,61,0.6)";
+      ctx.textAlign = "right";
+      ctx.fillText(String(this.reviewPrs.length), x + w - 19, top + 11);
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fillRect(refresh.x, refresh.y, refresh.w, refresh.h);
+      ctx.fillStyle = "rgba(230,238,240,0.85)";
+      ctx.font = "8px 'IBM Plex Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("\u21BB", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
+      ctx.textAlign = "left";
+      for (const { pr, y } of rows) {
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        ctx.fillRect(x + 4, y, w - 8, 0.6);
+        ctx.fillStyle = "#7fb8df";
+        ctx.font = "600 7px 'IBM Plex Mono', monospace";
+        ctx.fillText(`#${pr.number}`, x + 6, y + 9);
+        ctx.fillStyle = "rgba(180,190,196,0.55)";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.5), x + w - 6, y + 9);
+        ctx.textAlign = "left";
+        ctx.fillStyle = "rgba(230,238,240,0.9)";
+        ctx.font = "7px 'IBM Plex Mono', monospace";
+        ctx.fillText(this.fitText(ctx, pr.title || "", w - 16), x + 6, y + 17);
+      }
+      if (!rows.length) {
+        ctx.fillStyle = "rgba(180,190,196,0.5)";
+        ctx.font = "6.5px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("nothing awaiting you", x + w / 2, top + headerH + BB_ROW / 2 + 2);
+        ctx.textAlign = "left";
+      }
+      if (extra > 0) {
+        ctx.fillStyle = "rgba(180,190,196,0.6)";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillText(`+${extra} more`, x + 6, top + bodyH - 3);
+      }
     }
     drawRoomBack(ctx, r) {
       const base = r.baseY;
@@ -2032,21 +2282,6 @@
       ctx.fill();
       ctx.fillStyle = "#d9b34a";
       ctx.fillRect(pf.x + 0.4, pf.y - 14, 1.4, 1.6);
-      if (r.hasUpper) {
-        const steps = 8;
-        const botX = x + w - 42, topX = x + w - 22;
-        for (let i = 0; i <= steps; i++) {
-          const t = i / steps;
-          const sx = botX + (topX - botX) * t;
-          const sy = base - (H - 4) * t;
-          ctx.fillStyle = i % 2 ? "#454c53" : "#3c434a";
-          ctx.fillRect(sx - 5, sy - 2.2, 10, 2.4);
-          ctx.fillStyle = "#20262c";
-          ctx.fillRect(sx - 5, sy + 0.2, 10, 1.8);
-        }
-        ctx.fillStyle = "#2a3138";
-        ctx.fillRect(botX - 6, base - H + 2, 1.6, H - 2);
-      }
       if (!lit && r.path) {
         ctx.fillStyle = "rgba(8,11,14,0.45)";
         ctx.fillRect(x + 1.5, base - H, w - 3, H);
@@ -2546,14 +2781,13 @@
       const hop = st === "waiting" && !walking ? -Math.abs(Math.sin(f * 0.35 + tn.ph)) * 1 : 0;
       const slump = st === "error" && !walking ? 1.4 : 0;
       const base = y0 + hop;
-      const facingLeft = tn.huddle || sitting;
-      const climbing = !!tn.climbing;
+      const facingLeft = sitting;
       ctx.fillStyle = p.pants;
       if (sitting) {
         ctx.fillRect(x - 3, base - 4, 6, 2);
         ctx.fillRect(x - 3.6, base - 3, 1.6, 3.4);
         ctx.fillRect(x + 2, base - 3, 1.6, 3.4);
-      } else if (walking || climbing) {
+      } else if (walking) {
         const sw = f % 2 === 0;
         ctx.fillRect(x - (sw ? 3 : 1.6), base - 6, 2, 6);
         ctx.fillRect(x + (sw ? 1 : -0.4), base - 6, 2, 6);
@@ -2573,13 +2807,34 @@
       ctx.fillRect(x - 3.2, ty + 5.2, 6.4, 1.2);
       ctx.fillStyle = p.shirt;
       const handC = p.skin;
-      if (climbing) {
-        const g = f % 2;
-        ctx.fillRect(x - 4.2, ty - 2 + g, 1.4, 4);
-        ctx.fillRect(x + 2.8, ty - 2 + (1 - g), 1.4, 4);
+      if (sitting && tn.agent.reviewOf) {
+        const sweep = Math.sin(f * 0.12 + tn.ph) * 1.3;
+        const mx = x - 6 + sweep, my = ty + 0.6;
+        ctx.fillStyle = p.shirt;
+        ctx.fillRect(x - 5, ty + 2.2, 3, 1.4);
+        ctx.fillStyle = "#e9e3d2";
+        ctx.fillRect(x - 9.5, ty + 4, 7, 4.2);
+        ctx.fillStyle = "rgba(70,70,70,0.4)";
+        ctx.fillRect(x - 8.7, ty + 5, 5, 0.5);
+        ctx.fillRect(x - 8.7, ty + 6.2, 4, 0.5);
+        ctx.strokeStyle = "#7a5a2a";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(mx + 1.3, my + 1.3);
+        ctx.lineTo(mx + 2.9, my + 2.9);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(159,216,255,0.4)";
+        ctx.beginPath();
+        ctx.arc(mx, my, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#2a2f35";
+        ctx.beginPath();
+        ctx.arc(mx, my, 2.1, 0, Math.PI * 2);
+        ctx.stroke();
         ctx.fillStyle = handC;
-        ctx.fillRect(x - 4.4, ty - 3.4 + g, 1.6, 1.6);
-        ctx.fillRect(x + 2.6, ty - 3.4 + (1 - g), 1.6, 1.6);
+        ctx.fillRect(mx + 2.4, my + 2.4, 1.5, 1.6);
+        ctx.fillStyle = p.shirt;
+        ctx.fillRect(x + 2.6, ty + 2, 1.4, 2.6);
       } else if (sitting && tn.booksInHand > 0) {
         const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
         const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
@@ -2608,21 +2863,6 @@
         ctx.fillStyle = handC;
         ctx.fillRect(x - 7, ty + 2 + tap, 1.4, 1.4);
         ctx.fillRect(x - 7, ty + 3.6 - tap, 1.4, 1.4);
-      } else if (tn.huddle && !walking) {
-        const lead = tn.deskIdx % 2 === 0;
-        if (lead) {
-          const draw = Math.sin(f * 0.5 + tn.ph) * 1.5;
-          ctx.fillRect(x - 5.4, ty - 1.5 + draw * 0.4, 3, 1.4);
-          ctx.fillStyle = handC;
-          ctx.fillRect(x - 6.6, ty - 1.8 + draw * 0.4, 1.4, 1.4);
-        } else {
-          const nod = f % 4 < 2 ? 0 : 0.7;
-          ctx.fillRect(x - 4.6, ty + 1 + nod, 2.4, 1.4);
-          ctx.fillStyle = handC;
-          ctx.fillRect(x - 5.8, ty + 0.8 + nod, 1.2, 1.2);
-          ctx.fillStyle = p.shirt;
-          ctx.fillRect(x + 3.2, ty + 2.4, 1.4, 3);
-        }
       } else if (st === "waiting" && !walking) {
         const wave = Math.sin(f * 0.9 + tn.ph) * 1.1;
         ctx.fillRect(x + 2.8 + wave * 0.4, ty - 4, 1.5, 5);
@@ -2719,6 +2959,9 @@
     setPrBranches(b) {
       this._instance?.setPrBranches(b);
     },
+    setReviewPrs(prs) {
+      this._instance?.setReviewPrs(prs);
+    },
     setBoards(boards) {
       this._instance?.setBoards(boards);
     },
@@ -2754,6 +2997,15 @@
     },
     onCd(cb) {
       this._instance?.onCd(cb);
+    },
+    onAssignReview(cb) {
+      this._instance?.onAssignReview(cb);
+    },
+    onRefreshPrs(cb) {
+      this._instance?.onRefreshPrs(cb);
+    },
+    focusReviewBoard() {
+      this._instance?.toggleBillboard();
     },
     start() {
       this._instance?.start();
