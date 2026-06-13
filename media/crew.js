@@ -1,1 +1,3080 @@
-"use strict";(()=>{var Ie=Object.defineProperty;var De=(d,e,n)=>e in d?Ie(d,e,{enumerable:!0,configurable:!0,writable:!0,value:n}):d[e]=n;var k=(d,e,n)=>(De(d,typeof e!="symbol"?e+"":e,n),n);var ye={active:"#3ee089",waiting:"#ffb13d",complete:"#56c7ff",error:"#ff6055",idle:"#8a9598"};function K(d){let e=2166136261;for(let n=0;n<d.length;n++)e^=d.charCodeAt(n),e=Math.imul(e,16777619);return e>>>0}var ve=["#f2c8a0","#e0a87e","#c68642","#8d5524","#ffd9b3","#a86b3c"],Re=["#2e2620","#4a342a","#16100c","#7a5230","#b88a4a","#55585e","#6e3a28"],Se=["#ff6055","#56c7ff","#3ee089","#ffb13d","#b98cff","#ff8fc7"];function _e(d){let e=K(d),n=e%360;return{shirt:`hsl(${n} 45% 52%)`,shirtDark:`hsl(${n} 48% 38%)`,pants:`hsl(${(n+200)%360} 16% 30%)`,skin:ve[(e>>3)%ve.length],hair:Re[(e>>5)%Re.length],acc:(e>>7)%4,accColor:Se[(e>>9)%Se.length]}}var D=84,U=8,te=D+U,se=42,ae=26,ee=18,$e=16,J=[4,28,48,140,200,262,320],we=24,be=22,ce=2,fe=6,ie=be,A=260,Ae=(d,e)=>({x0:d+we,x1:d+A-we,yTop:e-D+10,yBot:e-be}),he=(d,e)=>{let n=Ae(d,e),i=n.x0+3,t=n.x1-3,s=n.yTop+3,o=n.yBot-5;return{x:i,y:s,w:Math.max(20,t-i),h:Math.max(14,o-s)}},Ce=A,N=d=>d*Ce-A/2,Xe=30,Ye=3,ne=18,oe=14,q=26,Me=64,Q=d=>d+A+Ye+ne/2,We=1,le=22,ue=8,ke=9,de=138,me=16,re=20,Oe=6,He=56,Te=1,Ee=new Set(["main","master","head","develop","trunk"]),F=d=>-d*te,G=(d,e,n)=>Math.min(n,Math.max(e,d));function Pe(d,e,n,i){let t=[];for(let s=1;s<=i;s++){let o=s/i,l=1-o;t.push({x:l*l*d.x+2*l*o*e.x+o*o*n.x,y:l*l*d.y+2*l*o*e.y+o*o*n.y})}return t}function ze(d,e){if(d.length===1)return d[0];let n=[],i=0;for(let s=0;s<d.length-1;s++){let o=Math.hypot(d[s+1].x-d[s].x,d[s+1].y-d[s].y);n.push(o),i+=o}if(i===0)return d[0];let t=G(e,0,1)*i;for(let s=0;s<n.length;s++){if(t<=n[s]||s===n.length-1){let o=n[s]===0?0:t/n[s];return{x:d[s].x+(d[s+1].x-d[s].x)*o,y:d[s].y+(d[s+1].y-d[s].y)*o}}t-=n[s]}return d[d.length-1]}function Le(d){if(!d)return"none";let e=d.pr?`${d.pr.number}/${d.pr.checks}/${d.pr.checksPass}/${d.pr.checksFailed}/${d.pr.checksRunning}/${d.pr.checksTotal}/${d.pr.review}/${d.pr.approvals}/${d.pr.changesRequested}/${d.pr.reviewersPending}/${d.pr.draft?1:0}/${d.pr.title}`:"no";return[d.modified,d.staged,d.ahead,d.unstagedAdd,d.unstagedDel,d.stagedAdd,d.stagedDel,d.committedAdd,d.committedDel,d.commits.length,d.base,d.prReady?1:0,d.missing?1:0,e].join("|")}var ge=class{constructor(e,n){this.container=e;this.canvas=n;k(this,"ctx");k(this,"toons",new Map);k(this,"leaving",[]);k(this,"rooms",new Map);k(this,"islands",new Map);k(this,"reserved",[]);k(this,"agents",[]);k(this,"particles",[]);k(this,"packets",[]);k(this,"boardsMap",{});k(this,"parked",new Map);k(this,"hasFitted",!1);k(this,"ghosts",[]);k(this,"colRange",new Map);k(this,"bounds",{minX:-120,maxX:120,topY:-120,botY:40,minFloor:0});k(this,"focusRoom_",null);k(this,"focusAgentId",null);k(this,"focusIsland_",null);k(this,"focusBillboard_",!1);k(this,"viewBeforeBillboard",null);k(this,"prBranches",new Set);k(this,"reviewPrs",[]);k(this,"campusMinX",0);k(this,"focus",{x:0,y:-D/2,spanW:A+60,spanH:te+60});k(this,"cam",{x:0,y:-D/2,z:4});k(this,"zoomMul",1);k(this,"panX",0);k(this,"panY",0);k(this,"drag",{active:!1,moved:!1,lastX:0,lastY:0});k(this,"toonDrag",null);k(this,"dropTarget",null);k(this,"running",!1);k(this,"raf",0);k(this,"lastNow",0);k(this,"acc",0);k(this,"frame",0);k(this,"marqueeOn",!1);k(this,"dirty",!0);k(this,"eco",!1);k(this,"insetL",0);k(this,"insetR",0);k(this,"selectedId");k(this,"onSelectCb",()=>{});k(this,"onReserveCb",()=>{});k(this,"onAddDevCb",()=>{});k(this,"onAddWorktreeCb",()=>{});k(this,"onRemoveRoomCb",()=>{});k(this,"onRemoveWorktreeCb",()=>{});k(this,"onPushCb",()=>{});k(this,"onPullCb",()=>{});k(this,"onFetchCb",()=>{});k(this,"syncSuppress",new Map);k(this,"onCdCb",()=>{});k(this,"onAssignReviewCb",()=>{});k(this,"onRefreshPrsCb",()=>{});k(this,"onOpenPrCb",()=>{});k(this,"resizeT");k(this,"newToonIds",new Set);this.ctx=n.getContext("2d"),new ResizeObserver(()=>{clearTimeout(this.resizeT),this.resizeT=setTimeout(()=>this.resize(),80)}).observe(e),this.resize(),document.fonts?.ready?.then(()=>{this.invalidate()}),document.addEventListener("visibilitychange",()=>{document.hidden?this.stop():this.start()});let i=s=>{let o=n.getBoundingClientRect();return{mx:s.clientX-o.left,my:s.clientY-o.top}};n.addEventListener("pointerdown",s=>{n.setPointerCapture(s.pointerId);let o=this.pick(s);if(o.agent){let{mx:l,my:r}=i(s),h=this.toons.get(o.agent)?.agent.state==="active";this.toonDrag={id:o.agent,active:!1,mx:l,my:r,blocked:h};return}this.drag.active=!0,this.drag.moved=!1,this.drag.lastX=s.clientX,this.drag.lastY=s.clientY}),n.addEventListener("pointermove",s=>{if(this.toonDrag){let{mx:r,my:h}=i(s);if(!this.toonDrag.active&&Math.abs(r-this.toonDrag.mx)+Math.abs(h-this.toonDrag.my)>4&&(this.toonDrag.active=!0),this.toonDrag.mx=r,this.toonDrag.my=h,this.toonDrag.active){if(this.toonDrag.blocked){this.dropTarget=null,this.container.style.cursor="not-allowed",this.invalidate();return}let c=this.pick(s);c.island&&!c.ghost?this.dropTarget={room:c.island}:c.ghost?.kind==="building"&&c.ghost.island?this.dropTarget={room:c.ghost.island}:c.ghost?.kind==="island"?this.dropTarget={ghost:{floor:c.ghost.floor,col:c.ghost.col}}:this.dropTarget=null,this.container.style.cursor=this.dropTarget?"copy":"grabbing",this.invalidate()}return}if(!this.drag.active){let r=this.pick(s);this.container.style.cursor=r.agent||r.room||r.ghost||r.addDev||r.removeBtn||r.removeWtBtn||r.pushRoom||r.pullRoom||r.fetchRoom?"pointer":"default";return}let o=s.clientX-this.drag.lastX,l=s.clientY-this.drag.lastY;if(this.drag.moved||Math.abs(o)+Math.abs(l)>4){this.drag.moved=!0,this.drag.lastX=s.clientX,this.drag.lastY=s.clientY;let r=(this.bounds.maxX-this.bounds.minX)/2+A,h=(this.bounds.botY-this.bounds.topY)/2+te;this.panX=G(this.panX-o/this.cam.z,-r,r),this.panY=G(this.panY-l/this.cam.z,-h,h),this.container.style.cursor="grabbing",this.invalidate()}});let t=s=>{if(this.toonDrag){let l=this.toonDrag;this.toonDrag=null,this.container.style.cursor="default",l.active?this.dropTarget&&this.onCdCb(l.id,this.dropTarget):this.onClick(s),this.dropTarget=null,this.invalidate();return}if(!this.drag.active)return;let o=this.drag.moved;this.drag.active=!1,this.drag.moved=!1,this.container.style.cursor="default",o||this.onClick(s)};n.addEventListener("pointerup",t),n.addEventListener("pointercancel",()=>{this.drag.active=!1,this.drag.moved=!1,this.toonDrag=null,this.dropTarget=null,this.invalidate()}),n.addEventListener("wheel",s=>{s.preventDefault(),this.zoomMul=G(this.zoomMul*(1-s.deltaY*.0012),.35,4),this.invalidate()},{passive:!1})}onSelect(e){this.onSelectCb=e}onReserve(e){this.onReserveCb=e}onAddDev(e){this.onAddDevCb=e}onAddWorktree(e){this.onAddWorktreeCb=e}onRemoveRoom(e){this.onRemoveRoomCb=e}onRemoveWorktree(e){this.onRemoveWorktreeCb=e}onPush(e){this.onPushCb=e}onPull(e){this.onPullCb=e}onFetch(e){this.onFetchCb=e}onCd(e){this.onCdCb=e}onAssignReview(e){this.onAssignReviewCb=e}onRefreshPrs(e){this.onRefreshPrsCb=e}onOpenPr(e){this.onOpenPrCb=e}setRooms(e){this.reserved=e||[],this.layout()}setBoards(e){this.boardsMap=e||{},this.layout()}setPrBranches(e){this.prBranches=new Set((e||[]).filter(Boolean).map(n=>n.toLowerCase())),this.invalidate()}setReviewPrs(e){this.reviewPrs=Array.isArray(e)?e:[],this.layout()}billboardGeom(){let e=Math.min(this.reviewPrs.length,Oe),n=this.campusMinX-He-de,i=F(0)+U,t=me+Math.max(e,1)*re+5,s=i-40-t,o=[];for(let l=0;l<e;l++){let r=s+me+l*re;o.push({pr:this.reviewPrs[l],y:r,open:{x:n+de-13,y:r+re-12,w:10,h:10}})}return{x:n,top:s,w:de,bodyH:t,headerH:me,rows:o,rowH:re,surfaceY:i,extra:this.reviewPrs.length-e,refresh:{x:n+de-14,y:s+3,w:11,h:11}}}parkToon(e,n){n.x!==0&&this.parked.set(e,{x:n.x,base:n.base,lift:n.lift,entering:n.entering,enterPhase:n.enterPhase,sitting:n.sitting,frame:this.frame,skills:n.skills,booksShown:n.booksShown,booksInHand:n.booksInHand})}setAgents(e){let n=new Set(e.map(i=>i.id));for(let[i,t]of this.toons)n.has(i)||(this.parkToon(i,t),t.leaving=!0,this.leaving.push(t),this.toons.delete(i));for(let[i,t]of this.parked)(this.toons.has(i)||this.frame-t.frame>600)&&this.parked.delete(i);for(let i of e){let t=this.toons.get(i.id);if(!t){let o=this.parked.get(i.id);this.parked.delete(i.id),o&&(this.leaving=this.leaving.filter(l=>l.agent.id!==i.id)),t={agent:i,p:_e(i.id),x:o?.x??0,targetX:0,base:o?.base??0,x0:0,seatCol:0,deskIdx:0,row:0,lift:o?.lift??0,sitting:o?.sitting??!1,entering:o?.entering??!0,enterPhase:o?.enterPhase,leaving:!1,skills:o?.skills??[...i.skills??[]],booksShown:o?.booksShown??i.skills?.length??0,booksInHand:o?.booksInHand??0,ph:K(i.id)%628/100},this.toons.set(i.id,t),o||this.newToonIds.add(i.id)}let s=i.reviewVerdict;i.reviewOf&&(s==="approved"||s==="changes")&&t.lastVerdict!==s&&(t.stampAt=this.frame),t.lastVerdict=s,t.agent=i;for(let o of i.skills??[])t.skills.includes(o)||t.skills.push(o)}this.agents=e,this.layout()}seatPlan(e){let n=new Map;for(let u of e){let g=u.worktree&&u.worktree.trim()?u.worktree:"";g&&(n.has(g)||n.set(g,[]),n.get(g).push(u))}let i=(u,g)=>Ee.has((g[0].branch??"").toLowerCase()),t=u=>u.split(/[\\/]/).pop()||u,s=[...n.entries()].sort((u,g)=>{let v=i(u[0],u[1])?0:1,f=i(g[0],g[1])?0:1;return v!==f?v-f:t(u[0])<t(g[0])?-1:1}),o=new Map,l=[],r=0,h=!1;for(let[u,g]of s){g.forEach((p,b)=>{let a=Math.floor(b/fe),m=b%fe;a>ce-1&&(a=ce-1,m=b-a*fe),o.set(p.id,{col:r+m,row:a})});let v=Math.max(1,Math.min(g.length,fe)),f=!h&&i(u,g);f&&(h=!0),l.push({name:f?"main":t(u),branch:g[0].branch||"\u2014",isMain:f,startCol:r,cols:v,hue:f?150:K(u)%360}),r+=v+Te}let c=Math.max(0,r-Te),w=A-se-ee-ae,R=c>1?Math.min(ae,w/(c-1)):ae;return{seats:o,groups:l,totalCols:c,pitch:R}}seatX(e,n,i){let t=e.plan?.pitch??ae;return e.x0+se+n*t+i*(t/2)}planBuildings(e,n){let i=e.path,t=l=>l.split(/[\\/]/).pop()||l,s=new Map;s.set(i,"");for(let l of e.worktrees??[])s.get(l.path)||s.set(l.path,l.branch||"");return[i,...[...s.keys()].filter(l=>l!==i)].map(l=>{let r=n.get(l)??[],h=l===i,c=s.get(l)||r[0]?.branch||"";return{key:l,agents:r,isMain:h,path:i,branch:c||"\u2014",label:h?"main":c||t(l)}})}retargetToon(e){let n=e.bkey?this.rooms.get(e.bkey):void 0;if(!n)return;e.base=n.baseY,e.x0=n.x0;let i=this.seatX(n,e.seatCol,e.row);e.agent.state==="active"?e.targetX=i+13:e.targetX=i+19}cablePlug(e){let n=he(e.x0,e.baseY);return{x:n.x+n.w/2,y:n.y+n.h+5}}cableRoute(e,n){let i=e.baseY,t=this.seatX(e,n.col,n.row),s=i-n.row*ie,o=t+8,l={x:o,y:s-12},r={x:o,y:s+.5},h={x:e.x0+A/2,y:i-3},c=this.cablePlug(e),w={x:(o+h.x)/2,y:Math.max(r.y,h.y)+5},R={x:h.x,y:(h.y+c.y)/2};return[l,r,...Pe(r,w,h,8),...Pe(h,R,c,10)]}emitPacket(e,n=0,i){let t=this.cablePlug(e),s=e.agents.find(h=>this.toons.get(h.id)?.sitting)??e.agents[0],o=s?e.plan?.seats.get(s.id):void 0,l=o?this.cableRoute(e,o):[{x:e.x0+A/2,y:e.baseY-16},t],r=l[0];this.packets.push({x:r.x,y:r.y,sx:r.x,sy:r.y,tx:t.x,ty:t.y,t:-n,path:l,color:Math.random()<.6?"#3ee089":"#56c7ff",ph:Math.random()*Math.PI*2,applyKey:i?e.name:void 0,applySnap:i})}syncSuppressed(e){let n=this.syncSuppress.get(e);return n===void 0?!1:Date.now()-n<15e3?!0:(this.syncSuppress.delete(e),!1)}applyBoardSnapshot(e,n){let i=e?this.rooms.get(e):void 0;if(!i)return;let t=i.boardShown,s=i.cellPulse;if(t){let o=t.modified!==n.modified||t.unstagedAdd!==n.unstagedAdd||t.unstagedDel!==n.unstagedDel,l=t.staged!==n.staged||t.stagedAdd!==n.stagedAdd||t.stagedDel!==n.stagedDel,r=t.ahead!==n.ahead||t.committedAdd!==n.committedAdd||t.committedDel!==n.committedDel||t.commits.length!==n.commits.length;o&&(s.unstaged=1),l&&(s.staged=1),r&&(s.commits=1),JSON.stringify(t.pr)!==JSON.stringify(n.pr)&&(s.pr=1);let h=o&&l&&t.modified+t.staged===n.modified+n.staged&&t.modified>n.modified!=t.staged>n.staged,c=u=>({"u.count":`${u.modified} file${u.modified===1?"":"s"}`,"u.add":`+${u.unstagedAdd}`,"u.del":`-${u.unstagedDel}`,"s.count":`${u.staged} file${u.staged===1?"":"s"}`,"s.add":`+${u.stagedAdd}`,"s.del":`-${u.stagedDel}`,"c.count":`${u.ahead}`,"c.add":`+${u.committedAdd}`,"c.del":`-${u.committedDel}`}),w=c(t),R=c(n);for(let u of Object.keys(R))w[u]!==R[u]&&(h&&(u[0]==="u"||u[0]==="s")||(i.numAnim[u]={from:w[u],to:R[u],t:0}))}i.boardShown=n,i.statPulse=1}drawCables(e,n){if(n.built<.85||!n.plan)return;e.save(),e.lineJoin="round",e.lineCap="round";for(let[,t]of n.plan.seats){let s=this.cableRoute(n,t);e.beginPath(),e.moveTo(s[0].x,s[0].y);for(let o=1;o<s.length;o++)e.lineTo(s[o].x,s[o].y);e.strokeStyle="rgba(12,16,20,0.4)",e.lineWidth=1.4,e.stroke(),e.strokeStyle="rgba(80,102,122,0.4)",e.lineWidth=.5,e.stroke(),e.fillStyle="#2a3138",e.fillRect(s[0].x-1,s[0].y-1,2,2)}let i=this.cablePlug(n);e.fillStyle="#10161c",e.fillRect(i.x-4,i.y-1.5,8,3),e.fillStyle="#2a3138",e.fillRect(i.x-3,i.y-.6,6,1.2),e.restore()}layout(){let e=new Map;for(let f of this.agents){let p=f.worktree&&f.worktree.trim()?f.worktree:null;p&&(e.has(p)||e.set(p,[]),e.get(p).push(f))}let n=new Map(this.reserved.map(f=>[f.name,f])),i=[...this.reserved].sort((f,p)=>f.col-p.col||f.floor-p.floor||(f.name<p.name?-1:1)).map(f=>f.name),t=new Map;this.islands.clear();let s=0;for(let f of i){let p=n.get(f);if(!p)continue;let b=this.planBuildings(p,e),a=p.path;b.forEach((m,y)=>{t.set(m.key,{island:f,label:m.label,branch:m.branch,isMain:m.isMain,col:s,floor:y,path:m.path??a,agents:m.agents})}),this.islands.set(f,{name:f,path:a,laneStart:s,cols:1,count:b.length,hue:K(f)%360}),s+=1+We}for(let[f,p]of this.rooms)p.dying=!t.has(f),p.dying&&(p.agents=[]);let o=0;for(let[f,p]of t){let b=this.rooms.get(f);b||(b={name:f,island:p.island,label:p.label,branch:p.branch,isMain:p.isMain,floor:p.floor,col:p.col,x0:N(p.col),baseY:F(p.floor),path:p.path,hue:K(p.island)%360,built:0,delay:o++*.45,agents:[],decor:K(f+"decor"),statSig:"",statPulse:0,cellPulse:{unstaged:0,staged:0,commits:0,pr:0},numAnim:{}},this.rooms.set(f,b)),b.island=p.island,b.label=p.label,b.branch=p.branch,b.isMain=p.isMain,b.board=this.boardsMap[f],b.floor=p.floor,b.col=p.col,b.path=p.path??b.path,b.agents=p.agents}this.ghosts=[];for(let f of this.islands.values()){let p=f.count;this.ghosts.push({col:f.laneStart,floor:p,x0:N(f.laneStart),base:F(p),kind:"building",island:f.name})}let l=this.islands.size===0?0:s;this.ghosts.push({col:l,floor:0,x0:N(l),base:F(0),kind:"island"}),this.colRange.clear();let r=1/0,h=-1/0,c=1/0,w=-1/0,R=0,u=(f,p,b)=>{r=Math.min(r,p),h=Math.max(h,p+A),c=Math.min(c,b-D),w=Math.max(w,b+U+ue+le+2),R=Math.min(R,f)};for(let f of this.rooms.values()){let p=this.colRange.get(f.col)??{min:f.floor,max:f.floor};p.min=Math.min(p.min,f.floor),p.max=Math.max(p.max,f.floor),this.colRange.set(f.col,p),u(f.floor,N(f.col),F(f.floor))}for(let f of this.ghosts)u(f.floor,f.x0,f.base);isFinite(r)||(r=-120,h=120,c=-120,w=40),this.campusMinX=r;let g=this.billboardGeom();r=Math.min(r,g.x-14),c=Math.min(c,g.top-8),this.bounds={minX:r,maxX:h,topY:c,botY:w,minFloor:R};let v=new Set;for(let f of this.rooms.values())f.plan=this.seatPlan(f.agents),f.agents.forEach((p,b)=>{let a=this.toons.get(p.id);if(!a)return;v.add(p.id),a.bkey=f.name,a.deskIdx=b;let m=f.plan.seats.get(p.id)??{col:0,row:0};a.row=m.row,a.seatCol=m.col;let y=a.entering&&a.x===0;this.retargetToon(a),y&&(f.floor>0?(a.x=Q(f.x0),a.base=F(0),a.targetX=a.x,a.enterPhase="elevator",a.riding=!0):(a.x=f.x0+A+8,a.enterPhase="walk"))});for(let[f,p]of this.toons)v.has(f)||(this.parkToon(f,p),p.bkey=void 0,this.toons.delete(f));if(this.focusAgentId){let f=this.toons.get(this.focusAgentId);f&&(this.focus.x=f.targetX,this.focus.y=f.base-D/2+6)}else if(this.focusRoom_){let f=this.rooms.get(this.focusRoom_);f&&(this.focus.x=f.x0+A/2,this.focus.y=f.baseY-D/2)}else if(this.focusIsland_)this.frameIsland(this.focusIsland_)||(this.focusIsland_=null);else if(this.focusBillboard_){let f=this.billboardGeom();this.focus.x=f.x+f.w/2,this.focus.y=f.top+f.bodyH/2}else this.hasFitted||(this.clearFocus(!0,!1),this.hasFitted=!0);this.invalidate()}focusOn(e,n=!0){let i=this.rooms.get(e);i||(i=[...this.rooms.values()].find(t=>t.island===e)),i&&(this.focusAgentId=null,this.focusIsland_=null,this.focusBillboard_=!1,this.focusRoom_=i.name,this.focus.x=i.x0+A/2,this.focus.y=i.baseY-D/2,this.focus.spanW=A+26,this.focus.spanH=te+34,this.panX=0,this.panY=0,n&&(this.zoomMul=1),this.invalidate())}toggleBillboard(){this.focusBillboard_?this.exitBillboard():this.focusBillboard()}focusBillboard(){this.focusBillboard_||(this.viewBeforeBillboard={focusAgentId:this.focusAgentId,focusRoom_:this.focusRoom_,focusIsland_:this.focusIsland_,focus:{...this.focus},panX:this.panX,panY:this.panY,zoomMul:this.zoomMul}),this.focusAgentId=null,this.focusRoom_=null,this.focusIsland_=null,this.focusBillboard_=!0;let e=this.billboardGeom();this.focus.x=e.x+e.w/2,this.focus.y=e.top+e.bodyH/2,this.focus.spanW=e.w+70,this.focus.spanH=e.bodyH+56,this.panX=0,this.panY=0,this.zoomMul=1,this.invalidate()}exitBillboard(){let e=this.viewBeforeBillboard;if(this.viewBeforeBillboard=null,this.focusBillboard_=!1,!e){this.clearFocus();return}this.focusAgentId=e.focusAgentId,this.focusRoom_=e.focusRoom_,this.focusIsland_=e.focusIsland_,this.focus.x=e.focus.x,this.focus.y=e.focus.y,this.focus.spanW=e.focus.spanW,this.focus.spanH=e.focus.spanH,this.panX=e.panX,this.panY=e.panY,this.zoomMul=e.zoomMul,this.invalidate()}frameIsland(e){let n=[...this.rooms.values()].filter(l=>l.island===e&&!l.dying);if(!n.length)return!1;let i=1/0,t=-1/0,s=1/0,o=-1/0;for(let l of n){let r=N(l.col),h=F(l.floor);i=Math.min(i,r),t=Math.max(t,r+A),s=Math.min(s,h-D),o=Math.max(o,h+U)}return o+=34,this.focus.x=(i+t)/2,this.focus.y=(s+o)/2,this.focus.spanW=t-i+46,this.focus.spanH=o-s+40,!0}focusIslandView(e){if(this.focusAgentId=null,this.focusRoom_=null,this.focusBillboard_=!1,this.focusIsland_=e,!this.frameIsland(e)){this.focusIsland_=null,this.clearFocus();return}this.panX=0,this.panY=0,this.zoomMul=1,this.invalidate()}focusAgent(e,n=!0){let i=this.toons.get(e);if(!i)return;let t=i.bkey?this.rooms.get(i.bkey):void 0;this.focusAgentId=e,this.focusIsland_=null,this.focusBillboard_=!1,this.focusRoom_=t?.name??null,this.focus.x=i.targetX,this.focus.y=i.base-D/2+6,this.focus.spanW=96,this.focus.spanH=te+18,n&&(this.panX=0,this.panY=0,this.zoomMul=1),this.invalidate()}clearFocus(e=!0,n=!1){this.focusRoom_=null,this.focusAgentId=null,this.focusIsland_=null,this.focusBillboard_=!1,this.focus.x=(this.bounds.minX+this.bounds.maxX)/2,this.focus.y=(this.bounds.topY+this.bounds.botY)/2,this.focus.spanW=this.bounds.maxX-this.bounds.minX+60,this.focus.spanH=this.bounds.botY-this.bounds.topY+46,n||(this.panX=0,this.panY=0),e&&(this.zoomMul=1),this.invalidate()}setSelected(e){this.selectedId=e,e&&this.newToonIds.has(e)&&(this.newToonIds.delete(e),this.focusAgent(e)),this.invalidate()}setEco(e){this.eco=e,this.invalidate()}resize(){let e=Math.min(window.devicePixelRatio,2),n=this.container.clientWidth||1,i=this.container.clientHeight||1;this.canvas.width=Math.round(n*e),this.canvas.height=Math.round(i*e),this.canvas.style.width=n+"px",this.canvas.style.height=i+"px",this.invalidate()}targetZoom(){let e=Math.max(80,(this.container.clientWidth||1)-this.insetL-this.insetR),n=this.container.clientHeight||1,i=e*.9/this.focus.spanW,t=n*.86/this.focus.spanH;return G(Math.min(i,t)*this.zoomMul,.7,14)}start(){if(this.running)return;this.running=!0,this.lastNow=performance.now();let e=n=>{if(!this.running)return;let i=Math.min(250,n-this.lastNow);this.lastNow=n;let t=this.eco?166:100;this.acc+=i;let s=!1;for(;this.acc>=t;)this.acc-=t,this.frame++,this.tick(t/1e3),s=!0;let o=this.targetZoom(),l=this.focus.x+this.panX,r=this.focus.y+this.panY,h=Math.abs(this.cam.x-l)>.05||Math.abs(this.cam.y-r)>.05||Math.abs(this.cam.z-o)>.01;if(h){let c=Math.min(1,i/1e3*5);this.cam.x+=(l-this.cam.x)*c,this.cam.y+=(r-this.cam.y)*c,this.cam.z+=(o-this.cam.z)*c}if((s||h||this.dirty)&&(this.dirty=!1,this.draw()),!h&&!this.dirty&&this.sceneIdle()){this.running=!1;return}this.raf=requestAnimationFrame(e)};this.raf=requestAnimationFrame(e)}stop(){this.running=!1,cancelAnimationFrame(this.raf)}wake(){!this.running&&!document.hidden&&this.start()}invalidate(){this.dirty=!0,this.wake()}sceneIdle(){if(this.particles.length||this.leaving.length||this.packets.length||this.marqueeOn)return!1;for(let e of this.rooms.values()){if(e.dying||e.delay>0||e.built<1||e.statPulse>.02||e.swapPending)return!1;let n=e.cellPulse;if(n.unstaged>.02||n.staged>.02||n.commits>.02||n.pr>.02)return!1;for(let i in e.numAnim)return!1;if(e.boardShown&&e.boardShown.prReady===!1||e.boardShown?.pr&&e.boardShown.pr.checksRunning>0||Math.abs(N(e.col)-e.x0)>.5||Math.abs(F(e.floor)-e.baseY)>.5)return!1}for(let e of this.toons.values()){if(e.entering||Math.abs(e.targetX-e.x)>1)return!1;let n=e.agent.state;if(n==="active"||n==="waiting")return!1}return!0}tick(e){let n=[];for(let t of this.rooms.values()){if(!t.dying){let s=N(t.col),o=F(t.floor),l=Math.min(1,e*6);t.x0+=(s-t.x0)*l,t.baseY+=(o-t.baseY)*l,Math.abs(s-t.x0)<.4&&(t.x0=s),Math.abs(o-t.baseY)<.4&&(t.baseY=o)}if(t.dying){this.leaving.some(o=>o.bkey===t.name)||(t.built=Math.max(0,t.built-e/1),this.eco||this.particles.push({x:t.x0+Math.random()*A*Math.max(.1,t.built),y:t.baseY-2-Math.random()*10,vx:(Math.random()-.5)*10,vy:-4-Math.random()*6,life:.7,color:"#9a8a72",size:1.2,gravity:14}),t.built<=0&&n.push(t.name));continue}if(t.delay>0){t.delay-=e;continue}t.built<1&&(t.built=Math.min(1,t.built+e/1.4),this.eco||this.particles.push({x:t.x0+Math.random()*A*t.built,y:t.baseY-2-Math.random()*10,vx:(Math.random()-.5)*10,vy:-4-Math.random()*6,life:.7,color:"#9a8a72",size:1.2,gravity:14}))}if(n.length){for(let t of n)this.rooms.delete(t);this.layout()}for(let t of this.rooms.values()){t.statPulse>0&&(t.statPulse=Math.max(0,t.statPulse-e*1.4));let s=t.cellPulse;s.unstaged>0&&(s.unstaged=Math.max(0,s.unstaged-e*.9)),s.staged>0&&(s.staged=Math.max(0,s.staged-e*.9)),s.commits>0&&(s.commits=Math.max(0,s.commits-e*.9)),s.pr>0&&(s.pr=Math.max(0,s.pr-e*.9));for(let c in t.numAnim){let w=t.numAnim[c];w.t+=e*3,w.t>=1&&delete t.numAnim[c]}let o=t.board,l=t.boardShown,r=Le(o);if(t.statSig===""){t.statSig=r,t.boardShown=o;continue}if(r===t.statSig)continue;t.statSig=r;let h=!l||!o?!!o:l.modified!==o.modified||l.staged!==o.staged||l.unstagedAdd!==o.unstagedAdd||l.unstagedDel!==o.unstagedDel||l.stagedAdd!==o.stagedAdd||l.stagedDel!==o.stagedDel||l.ahead!==o.ahead||l.committedAdd!==o.committedAdd||l.committedDel!==o.committedDel||l.commits.length!==o.commits.length||l.unpushed!==o.unpushed;o&&t.built>.6&&h&&!this.syncSuppressed(t.name)?this.emitPacket(t,0,o):o?this.applyBoardSnapshot(t.name,o):t.boardShown=o}for(let t=this.packets.length-1;t>=0;t--){let s=this.packets[t];s.t+=e*.55;let o=G(s.t,0,1);if(s.path&&s.path.length>=2){let l=ze(s.path,o*o*(3-2*o));s.x=l.x,s.y=l.y}else{let l=o*o*(3-2*o);s.x=s.sx+(s.tx-s.sx)*l,s.y=s.sy+(s.ty-s.sy)*l-Math.sin(l*Math.PI)*16}s.t>=1&&(s.applySnap&&this.applyBoardSnapshot(s.applyKey,s.applySnap),this.packets.splice(t,1))}for(let t of this.toons.values()){if(t.leaving||t.entering)continue;this.retargetToon(t);let s=t.bkey?this.rooms.get(t.bkey):void 0;s&&(!t.errand&&t.skills.length>t.booksShown+t.booksInHand&&Math.abs(t.targetX-t.x)<=1&&(t.errand={phase:"out",grab:0}),t.errand&&t.errand.phase!=="back"&&(t.targetX=s.x0+$e))}for(let t of this.toons.values()){if(!t.entering||t.enterPhase!=="elevator")continue;let s=t.bkey?this.rooms.get(t.bkey):void 0;if(!s){t.enterPhase="walk",t.riding=!1;continue}t.riding=!0,t.x0=s.x0,t.x=Q(s.x0),t.targetX=t.x;let o=s.baseY-t.base;t.base+=Math.sign(o)*Math.min(Math.abs(o),Me*e),Math.abs(s.baseY-t.base)<1&&(t.base=s.baseY,t.riding=!1,t.enterPhase="walk",this.retargetToon(t))}let i=[...this.toons.values(),...this.leaving];for(let t of i){if(t.entering&&t.enterPhase==="elevator")continue;let s=t.targetX-t.x;Math.abs(s)>1?t.x+=Math.sign(s)*Math.min(Math.abs(s),Xe*e):t.entering&&(t.entering=!1),t.sitting=t.agent.state==="active"&&!t.entering&&!t.errand&&Math.abs(s)<=1;let l=Math.abs(s)<=1&&!t.entering&&!t.leaving&&!t.errand?t.row*ie:0;t.lift+=(l-t.lift)*Math.min(1,e*9)}for(let t of this.toons.values()){let s=t.errand;if(!s)continue;let o=Math.abs(t.targetX-t.x)<=1;s.phase==="out"?o&&(s.phase="grab",s.grab=.55):s.phase==="grab"?(s.grab-=e,s.grab<=0&&(s.phase="back")):o&&(t.booksInHand=t.skills.length-t.booksShown,t.errand=void 0)}for(let t of this.toons.values()){if(t.booksInHand<=0||t.errand)continue;let s=t.agent.state;s!=="active"&&s!=="waiting"&&(t.booksShown=t.skills.length,t.booksInHand=0)}for(let t=this.leaving.length-1;t>=0;t--){let s=this.leaving[t];if(!s.leavePhase){s.riding=!1;let l=Math.round(-s.base/te);if(l>0)s.targetX=Q(s.x0);else{let r=-1/0;for(let c of this.rooms.values())c.floor===l&&(r=Math.max(r,c.col));let h=isFinite(r)?N(r)+A:s.x0+A;s.targetX=h+5}s.leavePhase="walk"}let o=Math.abs(s.x-s.targetX)<=1.5;if(s.leavePhase==="walk"&&o)Math.abs(s.base)>1?(s.leavePhase="elevator",s.riding=!0,s.x=Q(s.x0),s.targetX=s.x):(s.leavePhase="away",s.targetX=s.x+28);else if(s.leavePhase==="elevator"){s.x=Q(s.x0),s.targetX=s.x;let l=Math.min(Math.abs(s.base),Me*e);s.base+=Math.sign(-s.base)*l,Math.abs(s.base)<=.5&&(s.base=0,s.riding=!1,s.leavePhase="away",s.targetX=s.x+28)}else s.leavePhase==="away"&&o&&this.leaving.splice(t,1)}if(!this.eco&&this.frame%14===0)for(let t of this.toons.values())t.agent.state==="error"&&this.particles.push({x:t.x+6,y:t.base-t.lift-13,vx:2+Math.random()*3,vy:-6-Math.random()*4,life:1,color:"#7a8287",size:1.2,gravity:-4});for(let t=this.particles.length-1;t>=0;t--){let s=this.particles[t];s.x+=s.vx*e,s.y+=s.vy*e,s.vy+=s.gravity*e,s.life-=e*1.1,s.life<=0&&this.particles.splice(t,1)}}screenOf(e,n){let i=this.container.clientWidth,t=this.container.clientHeight;return{x:this.insetL+(i-this.insetL-this.insetR)/2+(e-this.cam.x)*this.cam.z,y:t/2+(n-this.cam.y)*this.cam.z}}setInsets(e,n){this.insetL===e&&this.insetR===n||(this.insetL=e,this.insetR=n,this.invalidate())}inRect(e,n,i,t,s,o){let l=this.screenOf(i,t),r=this.screenOf(i+s,t+o);return e>l.x&&e<r.x&&n>l.y&&n<r.y}pick(e){let n=this.canvas.getBoundingClientRect(),i=e.clientX-n.left,t=e.clientY-n.top,s=this.billboardGeom();{if(this.inRect(i,t,s.refresh.x,s.refresh.y,s.refresh.w,s.refresh.h))return{billboardRefresh:!0};for(let{pr:o,y:l,open:r}of s.rows){if(o.url&&this.inRect(i,t,r.x,r.y,r.w,r.h))return{openPrUrl:o.url};if(this.inRect(i,t,s.x,l,s.w,s.rowH))return{reviewPr:o}}if(this.inRect(i,t,s.x,s.top,s.w,s.bodyH))return{billboardZoom:!0}}for(let o of this.rooms.values()){if(o.built<.95)continue;let l=o.baseY;if(this.inRect(i,t,o.x0+A-10,l-D+2,8,8))return o.isMain?{removeBtn:o.island}:{removeWtBtn:o.name,island:o.island};if(this.inRect(i,t,o.x0+A-ee-17,l-D+3,16,8))return{addDev:{island:o.island,key:o.name}};let r=this.commitButtons(o);if(r.push&&this.inRect(i,t,r.push.x,r.push.y,r.push.w,r.push.h))return{pushRoom:o.name};if(r.pull&&this.inRect(i,t,r.pull.x,r.pull.y,r.pull.w,r.pull.h))return{pullRoom:o.name};if(r.fetch&&this.inRect(i,t,r.fetch.x,r.fetch.y,r.fetch.w,r.fetch.h))return{fetchRoom:o.name};let h=this.prOpenButton(o);if(h&&this.inRect(i,t,h.x,h.y,h.w,h.h))return{openPrUrl:h.url}}for(let o of this.ghosts)if(this.inRect(i,t,o.x0,o.base-D,A,D))return{ghost:{floor:o.floor,col:o.col,kind:o.kind,island:o.island}};for(let o of this.toons.values()){let l=this.screenOf(o.x,o.base-o.lift),r=14*this.cam.z,h=22*this.cam.z;if(i>l.x-r/2&&i<l.x+r/2&&t>l.y-h&&t<l.y+4*this.cam.z)return{agent:o.agent.id}}for(let o of this.rooms.values())if(this.inRect(i,t,o.x0,o.baseY-D,A,D+U))return{room:o.name,island:o.island};return{}}onClick(e){let n=this.pick(e);if(n.billboardRefresh)this.onRefreshPrsCb();else if(n.openPrUrl)this.onOpenPrCb(n.openPrUrl);else if(n.billboardZoom)this.focusBillboard();else if(n.reviewPr)this.onAssignReviewCb(n.reviewPr);else if(n.fetchRoom)this.onFetchCb(n.fetchRoom);else if(n.pushRoom)this.syncSuppress.set(n.pushRoom,Date.now()),this.onPushCb(n.pushRoom);else if(n.pullRoom)this.syncSuppress.set(n.pullRoom,Date.now()),this.onPullCb(n.pullRoom);else if(n.removeWtBtn)this.onRemoveWorktreeCb(n.removeWtBtn,n.island??"");else if(n.removeBtn)this.onRemoveRoomCb(n.removeBtn);else if(n.addDev)this.onAddDevCb(n.addDev.island,n.addDev.key);else if(n.ghost)n.ghost.kind==="island"?this.onReserveCb(n.ghost.floor,n.ghost.col):n.ghost.island&&this.onAddWorktreeCb(n.ghost.island);else if(n.agent)this.onSelectCb(n.agent),this.focusAgent(n.agent);else if(n.room)!this.focusAgentId&&this.focusRoom_===n.room?this.focusIslandView(n.island??""):this.focusOn(n.room);else if(this.focusBillboard_)this.exitBillboard();else{let i=this.focusRoom_??(this.focusAgentId?this.toons.get(this.focusAgentId)?.bkey:void 0),t=i?this.rooms.get(i):void 0;t?this.focusIslandView(t.island):this.clearFocus()}}draw(){this.marqueeOn=!1;let e=this.ctx,n=Math.min(window.devicePixelRatio,2),i=this.container.clientWidth,t=this.container.clientHeight;e.setTransform(n,0,0,n,0,0),e.imageSmoothingEnabled=!1;let s=e.createLinearGradient(0,0,0,t);s.addColorStop(0,"#0a0e14"),s.addColorStop(1,"#141b23"),e.fillStyle=s,e.fillRect(0,0,i,t),e.fillStyle="rgba(255,255,255,0.35)";for(let a=0;a<24;a++){let m=K("star"+a);e.fillRect(m%i,(m>>8)%Math.max(1,Math.round(t*.45)),1.5,1.5)}let o=this.cam.z,r=this.insetL+(i-this.insetL-this.insetR)/2-this.cam.x*o,h=t/2-this.cam.y*o;e.setTransform(n*o,0,0,n*o,Math.round(n*r),Math.round(n*h));let c=F(0)+U,{minX:w,maxX:R,botY:u,minFloor:g}=this.bounds;{let a=w-80,m=R-w+160,y=ue,S=c+y,M=u+50,B=e.createLinearGradient(0,S,0,M);B.addColorStop(0,"#3a2c1d"),B.addColorStop(1,"#140d08"),e.fillStyle=B,e.fillRect(a,S,m,M-S),e.fillStyle="#4a3a26";let W=Math.max(1,Math.round(m)),Z=Math.max(1,Math.round(M-S-4));for(let O=0;O<110;O++){let C=K("rock"+O);e.fillRect(a+C%W,S+3+(C>>7)%Z,2,1.4)}let V=e.createLinearGradient(0,c,0,S);V.addColorStop(0,"#2f5328"),V.addColorStop(1,"#4f7d3f"),e.fillStyle=V,e.fillRect(a,c,m,y),e.fillStyle="#5e9149",e.fillRect(a,c,m,1.2),e.fillStyle="rgba(0,0,0,0.28)",e.fillRect(a,S,m,1.2)}for(let[a,m]of this.colRange){let y=N(a),S=F(m.max)-D;e.fillStyle="#2c353e",e.fillRect(y-1.5,S-3,A+3,3.4)}for(let a of this.islands.values())this.drawIslandPlatform(e,a);this.drawReviewBillboard(e);for(let a of this.rooms.values())this.drawRoomBack(e,a);for(let a of this.rooms.values())this.drawCables(e,a);for(let a of this.ghosts)this.drawGhost(e,a);for(let[a,m]of this.colRange){if(m.max<=0)continue;let S=Q(N(a))-ne/2,M=F(m.max)-D,B=U;e.fillStyle="#161b21",e.fillRect(S,M,ne,B-M),e.fillStyle="#2a3138",e.fillRect(S,M,1.6,B-M),e.fillRect(S+ne-1.6,M,1.6,B-M),e.fillStyle="#323b43";for(let W=0;W<=m.max;W++)e.fillRect(S,F(W)-.7,ne,1.4);e.fillStyle="#2c353e",e.fillRect(S-1,M-5,ne+2,5)}for(let a of[...this.toons.values(),...this.leaving]){if(!a.riding)continue;let m=Q(a.x0),y=a.base,S=oe/2,M=Math.round((a.x0+A/2)/Ce),B=this.colRange.get(M),W=B?F(B.max)-D:y-q-14;e.fillStyle="#1c2228",e.fillRect(m-.6,W,1.2,y-q-W),e.fillStyle="#10161c",e.fillRect(m-S,y-q,oe,q),e.fillStyle="#222a31",e.fillRect(m-S+1.5,y-q+1.5,oe-3,q-3),e.fillStyle="#4a545d",e.fillRect(m-S,y-q,oe,2.4),e.fillRect(m-S,y-2,oe,2.6),e.fillStyle="#3a434c",e.fillRect(m-S,y-q,1.8,q),e.fillRect(m+S-1.8,y-q,1.8,q),e.fillStyle="#5a646c",e.fillRect(m+S-.6,y-q,.6,q)}let v=(a,m)=>{e.fillStyle="#3a4046",e.fillRect(a+10,m-8,7,1.6),e.fillRect(a+15.6,m-14,1.4,7),e.fillRect(a+13,m-6.5,1.4,6.5)},f=a=>a.lift>ie/2?1:0,p=[...this.toons.values()];for(let a=ce-1;a>=0;a--){for(let y of this.rooms.values()){if(y.built<.7||!y.plan)continue;let S=y.baseY;for(let[,M]of y.plan.seats)M.row===a&&v(this.seatX(y,M.col,a),S-a*ie)}let m=p.filter(y=>f(y)===a);for(let y of this.leaving)f(y)===a&&m.push(y);m.sort((y,S)=>y.x-S.x);for(let y of m)this.drawToon(e,y);for(let y of this.rooms.values())this.drawDesks(e,y,a)}for(let a of this.particles)e.globalAlpha=G(a.life,0,1),e.fillStyle=a.color,e.fillRect(a.x,a.y,a.size,a.size);e.globalAlpha=1;for(let a of this.packets){if(a.t<0)continue;let m=a.t<.85?1:G((1-a.t)/.15,0,1),y=.8+.2*Math.sin(this.frame*.55+a.ph),S=.82+Math.random()*.18,M=m*y*S,B=1.3+.45*Math.sin(this.frame*.55+a.ph);e.fillStyle=a.color,e.globalAlpha=.22*M,e.fillRect(a.x-B-1.4,a.y-B-1.4,(B+1.4)*2,(B+1.4)*2),e.globalAlpha=.5*M,e.fillRect(a.x-B,a.y-B,B*2,B*2),e.globalAlpha=Math.min(1,M+.1),e.fillStyle="#e6fff4",e.fillRect(a.x-.6,a.y-.6,1.2,1.2)}e.globalAlpha=1,e.setTransform(n,0,0,n,0,0),e.textAlign="center";let b=(a,m)=>{let y=a.baseY,S=this.screenOf(a.x0+A-10,y-D+2),M=this.screenOf(a.x0+A-2,y-D+10);e.fillStyle="rgba(10,15,18,0.8)",e.fillRect(S.x,S.y,M.x-S.x,M.y-S.y),e.strokeStyle="rgba(255,96,85,0.7)",e.lineWidth=1,e.strokeRect(S.x,S.y,M.x-S.x,M.y-S.y),e.fillStyle="#ff6055",e.font=`bold ${G(2.8*this.cam.z,7,10)}px monospace`,e.textAlign="center",e.fillText(m,(S.x+M.x)/2,(S.y+M.y)/2+3)};for(let a of this.rooms.values()){if(a.built<.95)continue;let m=a.baseY,y=this.screenOf(a.x0+A-ee-17,m-D+3),S=this.screenOf(a.x0+A-ee-1,m-D+11);e.fillStyle="rgba(10,15,18,0.8)",e.fillRect(y.x,y.y,S.x-y.x,S.y-y.y),e.strokeStyle="#3ee089",e.lineWidth=1,e.strokeRect(y.x,y.y,S.x-y.x,S.y-y.y),e.fillStyle="#3ee089",e.font=`600 ${G(3.2*this.cam.z,7,11)}px 'Martian Mono', monospace`,e.textAlign="center",e.fillText("+ DEV",(y.x+S.x)/2,(y.y+S.y)/2+3),b(a,"\u2715")}for(let a of this.ghosts){let m=this.screenOf(a.x0+A/2,a.base-D/2),y=a.kind==="building";e.fillStyle=y?"rgba(110,210,150,0.8)":"rgba(170,180,186,0.75)",e.font=`600 ${G(3*this.cam.z,8,12)}px 'Martian Mono', monospace`,e.textAlign="center",e.fillText(y?"+ WORKTREE":"+ RESERVE",m.x,m.y-2),e.font=`${G(2.4*this.cam.z,7,10)}px 'IBM Plex Mono', monospace`,e.fillStyle="rgba(140,150,156,0.6)",e.fillText(y?"new branch room":"pick a directory",m.x,m.y+11)}for(let a of this.toons.values()){let m=this.screenOf(a.x,a.base-a.lift-23),y=a.agent.state;e.font="9px 'IBM Plex Mono', monospace",e.textAlign="center",e.fillStyle=a.agent.id===this.selectedId?"#ffb13d":"rgba(230,238,240,0.85)",e.fillText(a.agent.name,m.x,m.y-8);let S=y==="waiting"?"?":y==="complete"?"\u2713":y==="error"?"\u2717":"";if(S){let M=y==="waiting"?Math.sin(this.frame*.6+a.ph)*2:0,B=m.x+10,W=m.y-24+M;e.fillStyle="rgba(10,15,18,0.85)",e.fillRect(B-6,W-8,12,12),e.strokeStyle=ye[y],e.lineWidth=1,e.strokeRect(B-6,W-8,12,12),e.fillStyle=ye[y],e.font="bold 9px 'IBM Plex Mono', monospace",e.fillText(S,B,W+1.5)}if(a.agent.reviewOf){let M=a.agent.reviewVerdict,B=M==="approved"||M==="changes",W=M==="approved"?"APPROVED":M==="changes"?"CHANGES":`REVIEWING #${a.agent.reviewOf.number}`,Z=M==="approved"?"#3ee089":M==="changes"?"#ff6b6b":"#ffb13d",V=1;if(B&&a.stampAt!==void 0){let j=this.frame-a.stampAt;V=j<3?1.5:j<6?1.2:1}e.save();let O=m.y-30;e.translate(m.x,O),e.scale(V,V),e.font="bold 7px 'Martian Mono', monospace",e.textAlign="center";let C=e.measureText(W).width+10;e.fillStyle="rgba(10,15,18,0.88)",e.fillRect(-C/2,-7,C,11),e.strokeStyle=Z,e.lineWidth=B?1.4:1,e.strokeRect(-C/2,-7,C,11),e.fillStyle=Z,e.fillText(W,0,1.5),e.restore()}a.agent.id===this.selectedId&&(e.fillStyle="#ffb13d",e.font="bold 11px monospace",e.fillText("\u25BE",m.x,m.y-18+Math.sin(this.frame*.5)*2))}this.toonDrag?.active&&this.paintDropHint()}paintDropHint(){let e=this.ctx,n=Math.min(window.devicePixelRatio,2);e.setTransform(n,0,0,n,0,0);let i=this.dropTarget;if(i?.room){let r=this.islands.get(i.room);if(r){let h=N(r.laneStart),c=N(r.laneStart+r.cols-1)+A,w=F(0);for(let R of this.rooms.values())R.island===r.name&&(w=Math.min(w,R.baseY-D));this.strokeWorldRect(h,w,c-h,F(0)+U-w,"#7fd1ff")}}else if(i?.ghost){let r=this.ghosts.find(h=>h.floor===i.ghost.floor&&h.col===i.ghost.col);r&&this.strokeWorldRect(r.x0,r.base-D,A,D,"#9be38b")}let t=this.toonDrag,s=this.toons.get(t.id)?.agent.name??"agent",o=t.blocked?`${s} \xB7 active, can't move`:s;e.font="11px 'IBM Plex Mono', monospace";let l=e.measureText(o).width+14;e.fillStyle="rgba(12,16,20,0.92)",e.fillRect(t.mx+12,t.my-9,l,18),e.fillStyle=t.blocked?"#ff9a93":i?"#cfe8ff":"#9aa3ab",e.fillText(o,t.mx+19,t.my+3.5)}strokeWorldRect(e,n,i,t,s){let o=this.ctx,l=this.screenOf(e,n),r=this.screenOf(e+i,n+t);o.save(),o.strokeStyle=s,o.lineWidth=2,o.setLineDash([6,4]),o.strokeRect(l.x,l.y,r.x-l.x,r.y-l.y),o.restore()}drawGhost(e,n){let i=n.kind==="building";e.save(),e.strokeStyle=i?"rgba(110,210,150,0.45)":"rgba(140,150,156,0.4)",e.lineWidth=.8,e.setLineDash([3,3]),e.strokeRect(n.x0+1,n.base-D+1,A-2,D-2),e.setLineDash([]),e.strokeStyle=i?"rgba(110,210,150,0.10)":"rgba(86,140,180,0.08)";for(let t=n.x0+12;t<n.x0+A-4;t+=12)e.beginPath(),e.moveTo(t,n.base-D+3),e.lineTo(t,n.base-3),e.stroke();e.restore()}drawIslandPlatform(e,n){let i=N(n.laneStart),t=N(n.laneStart+n.cols-1)+A,s=F(0)+U,o=n.path?26:14,l=m=>`hsl(${n.hue} ${o}% ${m}%)`,r=s,h=s+ue,c=h+le,w=i-ke,R=t+ke;e.fillStyle=l(9),e.beginPath(),e.moveTo(i,r),e.lineTo(w,h),e.lineTo(w,c),e.lineTo(i,c),e.closePath(),e.fill(),e.beginPath(),e.moveTo(t,r),e.lineTo(R,h),e.lineTo(R,c),e.lineTo(t,c),e.closePath(),e.fill();let u=e.createLinearGradient(0,r,0,h);u.addColorStop(0,l(34)),u.addColorStop(1,l(26)),e.fillStyle=u,e.beginPath(),e.moveTo(i,r),e.lineTo(t,r),e.lineTo(R,h),e.lineTo(w,h),e.closePath(),e.fill();let g=e.createLinearGradient(0,h,0,c);g.addColorStop(0,l(19)),g.addColorStop(1,l(11)),e.fillStyle=g,e.fillRect(w,h,R-w,le),e.fillStyle=l(8),e.fillRect(w,c-2,R-w,2),e.save(),e.textAlign="center",e.textBaseline="middle",e.fillStyle=`hsl(${n.hue} 50% 80%)`;let v=(w+R)/2,f=h+le/2+1,p=n.name.toUpperCase(),b=le-10;e.font=`bold ${b}px 'Martian Mono', monospace`;let a=R-w-10;for(;e.measureText(p).width>a&&b>6;)b-=.5,e.font=`bold ${b}px 'Martian Mono', monospace`;e.fillText(p,v,f),e.restore()}fitText(e,n,i){if(e.measureText(n).width<=i)return n;let t=0,s=n.length;for(;t<s;){let o=t+s+1>>1;e.measureText(n.slice(0,o)+"\u2026").width<=i?t=o:s=o-1}return n.slice(0,t).trimEnd()+"\u2026"}drawReviewBillboard(e){let n=this.billboardGeom(),{x:i,top:t,w:s,bodyH:o,headerH:l,rows:r,surfaceY:h,extra:c,refresh:w}=n,R=t+o;e.fillStyle="#3a2c1d",e.fillRect(i+12,R,5,h-R),e.fillRect(i+s-17,R,5,h-R),e.fillStyle="rgba(0,0,0,0.25)",e.fillRect(i+6,h-1,s-12,2),e.fillStyle="#16202b",e.fillRect(i,t,s,o),e.fillStyle="rgba(255,255,255,0.05)",e.fillRect(i,t,s,1),e.strokeStyle="#2b3a47",e.lineWidth=1,e.strokeRect(i+.5,t+.5,s-1,o-1),e.fillStyle="#1d2a36",e.fillRect(i,t,s,l),e.fillStyle="#ffb13d",e.font="700 8px 'Martian Mono', monospace",e.textAlign="left",e.fillText("\u2315 PRs TO REVIEW",i+6,t+11),e.fillStyle="rgba(255,177,61,0.6)",e.textAlign="right",e.fillText(String(this.reviewPrs.length),i+s-19,t+11),e.fillStyle="rgba(255,255,255,0.06)",e.fillRect(w.x,w.y,w.w,w.h),e.fillStyle="rgba(230,238,240,0.85)",e.font="8px 'IBM Plex Mono', monospace",e.textAlign="center",e.fillText("\u21BB",w.x+w.w/2,w.y+w.h-2.5),e.textAlign="left";for(let{pr:u,y:g,open:v}of r)e.fillStyle="rgba(255,255,255,0.06)",e.fillRect(i+4,g,s-8,.6),e.fillStyle="#7fb8df",e.font="600 7px 'IBM Plex Mono', monospace",e.fillText(`#${u.number}`,i+6,g+9),e.fillStyle="rgba(180,190,196,0.55)",e.font="6px 'IBM Plex Mono', monospace",e.textAlign="right",e.fillText(this.fitText(e,u.repo.split("/").pop()??u.repo,s*.45),i+s-6,g+9),e.textAlign="left",e.fillStyle="rgba(230,238,240,0.9)",e.font="7px 'IBM Plex Mono', monospace",e.fillText(this.fitText(e,u.title||"",s-30),i+6,g+17),e.fillStyle="rgba(255,255,255,0.07)",e.fillRect(v.x,v.y,v.w,v.h),e.fillStyle="rgba(230,238,240,0.85)",e.font="7px 'IBM Plex Mono', monospace",e.textAlign="center",e.fillText("\u2197",v.x+v.w/2,v.y+v.h-2.5),e.textAlign="left";r.length||(e.fillStyle="rgba(180,190,196,0.5)",e.font="6.5px 'IBM Plex Mono', monospace",e.textAlign="center",e.fillText("nothing awaiting you",i+s/2,t+l+re/2+2),e.textAlign="left"),c>0&&(e.fillStyle="rgba(180,190,196,0.6)",e.font="6px 'IBM Plex Mono', monospace",e.fillText(`+${c} more`,i+6,t+o-3))}drawRoomBack(e,n){let i=n.baseY,t=G(n.built/.35,0,1),s=G((n.built-.2)/.45,0,1),o=G((n.built-.6)/.4,0,1),l=n.x0,r=A,h=D,c=n.floor<0,w=n.agents.length>0;if(e.fillStyle="#3d2f1f",e.fillRect(l,i-1.5,r*t,U-1),e.fillStyle="#4a3a26",e.fillRect(l,i-1.5,r*t,1.2),s<=0)return;let R=s,u=Ae(l,i),g=i-h*R,v=i-(i-u.yTop)*R,f=i-be*R,p=T=>`hsl(${n.hue} ${c?10:15}% ${T}%)`;if(e.fillStyle=c?"#241c12":"#2b2218",e.beginPath(),e.moveTo(l,i),e.lineTo(l+r,i),e.lineTo(u.x1,f),e.lineTo(u.x0,f),e.closePath(),e.fill(),R>.5){let T=e.createLinearGradient(0,i,0,f);w&&!c?(T.addColorStop(0,"rgba(255,208,130,0.20)"),T.addColorStop(.5,"rgba(255,198,120,0.07)"),T.addColorStop(1,"rgba(255,198,120,0)")):(T.addColorStop(0,"rgba(150,172,196,0.07)"),T.addColorStop(1,"rgba(150,172,196,0)")),e.fillStyle=T,e.beginPath(),e.moveTo(l,i),e.lineTo(l+r,i),e.lineTo(u.x1,f),e.lineTo(u.x0,f),e.closePath(),e.fill()}if(e.fillStyle=p(c?9:11),e.beginPath(),e.moveTo(l,g),e.lineTo(l+r,g),e.lineTo(u.x1,v),e.lineTo(u.x0,v),e.closePath(),e.fill(),e.fillStyle=p(c?12:15),e.beginPath(),e.moveTo(l,g),e.lineTo(u.x0,v),e.lineTo(u.x0,f),e.lineTo(l,i),e.closePath(),e.fill(),e.beginPath(),e.moveTo(l+r,g),e.lineTo(u.x1,v),e.lineTo(u.x1,f),e.lineTo(l+r,i),e.closePath(),e.fill(),e.fillStyle=p(c?17:22),e.fillRect(u.x0,v,u.x1-u.x0,f-v),e.fillStyle=p(c?12:16),e.fillRect(u.x0,f-2,u.x1-u.x0,2),e.fillStyle="#1a2128",e.fillRect(l,g,1.5,i-g+3),e.fillRect(l+r-1.5,g,1.5,i-g+3),R>=1&&e.fillRect(l,i-h-1.5,r,1.5),o<=0)return;e.globalAlpha=o,this.drawBoard(e,n,i);let b=(T,Y)=>{let x=l+(u.x0-l)*T,pe=g+(v-g)*T,Be=i+(f-i)*T;return{x,y:pe+(Be-pe)*Y}},a=.3,m=.64,y=.28,S=.66,M=[b(a,y),b(m,y),b(m,S),b(a,S)],B=(T,Y)=>{e.beginPath(),e.moveTo(T[0].x,T[0].y);for(let x=1;x<T.length;x++)e.lineTo(T[x].x,T[x].y);e.closePath(),e.fillStyle=Y,e.fill()},W=(T,Y)=>({x:(T.x+Y.x)/2,y:(T.y+Y.y)/2});e.strokeStyle="#0c1116",e.lineWidth=3,e.lineJoin="miter",e.beginPath(),e.moveTo(M[0].x,M[0].y);for(let T=1;T<4;T++)e.lineTo(M[T].x,M[T].y);e.closePath(),e.stroke();let Z=Math.min(...M.map(T=>T.y)),V=Math.max(...M.map(T=>T.y));if(c)B(M,"#241a12");else{let T=e.createLinearGradient(0,Z,0,V);T.addColorStop(0,"#2c4a6e"),T.addColorStop(1,"#b86a3a"),B(M,T),e.fillStyle="rgba(255,255,255,0.6)";let Y=W(M[0],M[2]);e.fillRect(Y.x-2,Y.y-2.5,4,1.3)}e.strokeStyle="#0c1116",e.lineWidth=.8;let O=W(M[0],M[1]),C=W(M[3],M[2]);e.beginPath(),e.moveTo(O.x,O.y),e.lineTo(C.x,C.y),e.stroke();let j=W(M[0],M[3]),H=W(M[1],M[2]);e.beginPath(),e.moveTo(j.x,j.y),e.lineTo(H.x,H.y),e.stroke(),this.drawBookshelf(e,n,b);let P=l+r-ee-6;e.fillStyle="#7a4a2a",e.fillRect(P,i-4.5,4,3),e.fillStyle="#3f8a4a",e.fillRect(P+.5,i-9,1.4,4.5),e.fillRect(P+2.2,i-8,1.4,3.5),e.fillRect(P-.8,i-7.5,1.4,3);let _=n.decor%3;if(_===0){let T=l+se-8;e.fillStyle="#cfd6da",e.fillRect(T,i-12,5,10.5),e.fillStyle="#56c7ff",e.fillRect(T+.8,i-15.5,3.4,4)}else if(_===1){let T=l+r-ee-14;e.fillStyle="#171c21",e.fillRect(T,i-16,6,14.5);for(let Y=0;Y<4;Y++){let x=(this.frame+Y*3+n.decor%7)%8<4;e.fillStyle=x?Y===2?"#3ee089":"#ffb13d":"#2a3138",e.fillRect(T+4.2,i-14.5+Y*3.2,1,1)}}else e.fillStyle=`hsl(${(n.hue+120)%360} 40% 45%)`,e.fillRect(l+se+2,i-h+10,7,9),e.fillStyle="rgba(255,255,255,0.6)",e.fillRect(l+se+3.2,i-h+12,4.6,1);let I=3;for(let T=0;T<I;T++){let Y=l+r*(T+1)/(I+1);if(e.fillStyle="#20262c",e.fillRect(Y-.6,i-h,1.2,4),e.fillStyle="#3a4046",e.fillRect(Y-3.5,i-h+4,7,2),e.fillStyle=w?"#ffd27a":"#4a4636",e.fillRect(Y-1.4,i-h+5.4,2.8,1.6),w){let x=e.createRadialGradient(Y,i-h+6.2,0,Y,i-h+6.2,5);x.addColorStop(0,"rgba(255,210,130,0.22)"),x.addColorStop(1,"rgba(255,210,130,0)"),e.fillStyle=x,e.fillRect(Y-5,i-h+1,10,10)}}let z=T=>({x:l+r+(u.x1-(l+r))*T,y:i+(u.yBot-i)*T}),$=z(.18),X=z(.5);e.fillStyle="#4a3520",e.beginPath(),e.moveTo($.x,$.y),e.lineTo($.x,$.y-31),e.lineTo(X.x,X.y-26),e.lineTo(X.x,X.y),e.closePath(),e.fill();let E=z(.22),L=z(.46);e.fillStyle="#6e522f",e.beginPath(),e.moveTo(E.x,E.y-1.5),e.lineTo(E.x,E.y-29),e.lineTo(L.x,L.y-24.5),e.lineTo(L.x,L.y-1.5),e.closePath(),e.fill(),e.fillStyle="#d9b34a",e.fillRect(L.x+.4,L.y-14,1.4,1.6),!w&&n.path&&(e.fillStyle="rgba(8,11,14,0.45)",e.fillRect(l+1.5,i-h,r-3,h)),e.globalAlpha=1}commitButtons(e){let n=e.boardShown??e.board;if(!n||n.missing)return{};let i=he(e.x0,e.baseY);if(i.w<20||i.h<14)return{};let t=4,s=i.x+t,o=i.x+i.w-t,l=Math.min(96,(o-s)*.42),h=(o-l-4-s)/3,c=s+2*h,w=h-4,R=i.y+i.h-8.5,u=7.5,g=8.5,v=c-.5,f=n.unpushed>0?{x:v,y:R,w:g,h:u}:void 0;f&&(v+=g);let p=n.behind>0?{x:v,y:R,w:g,h:u}:void 0,b={x:c+w-6.5,y:R,w:7,h:u};return{push:f,pull:p,fetch:b,synced:!f&&!p}}prOpenButton(e){let n=e.boardShown??e.board;if(!n||n.missing||!n.pr?.url)return null;let i=he(e.x0,e.baseY);if(i.w<20||i.h<14)return null;let t=i.x+i.w-4,s=i.y+12;return{x:t-6,y:s,w:6,h:6,url:n.pr.url}}drawRoll(e,n,i,t,s,o,l){let r=l.numAnim[t];if(!r||r.to!==s){e.fillText(s,n,i);return}let h=r.t*r.t*(3-2*r.t),c=o*1.2,w=Math.max(e.measureText(r.from).width,e.measureText(s).width)+2,R=e.globalAlpha;e.save(),e.beginPath(),e.rect(n-1,i-o,w+2,o+2.5),e.clip(),e.globalAlpha=R*(1-h),e.fillText(r.from,n,i-h*c),e.globalAlpha=R*h,e.fillText(s,n,i+(1-h)*c),e.restore(),e.globalAlpha=R}drawSpinner(e,n,i,t,s){let o=this.frame*.35%(Math.PI*2);e.save(),e.strokeStyle=s,e.lineWidth=.9,e.lineCap="round",e.beginPath(),e.arc(n,i,t,o,o+Math.PI*1.4),e.stroke(),e.restore()}drawBoard(e,n,i){let t=he(n.x0,i);if(t.w<20||t.h<14)return;let s=n.statPulse;e.fillStyle="#05080b",e.fillRect(t.x-2.5,t.y-2.5,t.w+5,t.h+5),e.fillStyle="#0b0f14",e.fillRect(t.x-1.5,t.y-1.5,t.w+3,t.h+3);let o=e.createLinearGradient(0,t.y,0,t.y+t.h);o.addColorStop(0,"#101b27"),o.addColorStop(1,"#0a1118"),e.fillStyle=o,e.fillRect(t.x,t.y,t.w,t.h),e.fillStyle="rgba(120,200,255,0.035)";for(let P=t.y+2;P<t.y+t.h-1;P+=3)e.fillRect(t.x,P,t.w,1);let l=4;e.save(),e.textBaseline="alphabetic",e.textAlign="left";let r=n.branch&&n.branch!=="\u2014"?n.branch:n.isMain?"main":"\u2014",h=(n.boardShown??n.board)?.base||"",c=h&&h!==r?`\u2192 ${h}`:"";e.font="4px 'IBM Plex Mono', monospace";let w=c?e.measureText(c).width+3:0;e.font="bold 5px 'Martian Mono', monospace",e.fillStyle=n.isMain?"hsl(150 60% 80%)":`hsl(${n.hue} 65% 82%)`;let R=`\u2325 ${r}`;for(;e.measureText(R).width>t.w-12-w&&R.length>6;)R=R.slice(0,-2);if(R!==`\u2325 ${r}`&&(R+="\u2026"),e.fillText(R,t.x+l,t.y+7),c){let P=e.measureText(R).width;e.font="bold 4px 'IBM Plex Mono', monospace",e.fillStyle="rgba(205,220,232,0.95)",e.fillText(c,t.x+l+P+3,t.y+7)}e.fillStyle=s>.02?`rgba(62,224,137,${.35+s*.65})`:"rgba(90,100,108,0.5)",e.fillRect(t.x+t.w-l-3,t.y+3,3,3),e.fillStyle="rgba(120,150,170,0.18)",e.fillRect(t.x+l,t.y+9.5,t.w-l*2,.8),e.restore();let u=n.boardShown??n.board,g=(P,_)=>{e.save(),e.textAlign="center",e.textBaseline="alphabetic",e.font="4px 'IBM Plex Mono', monospace",e.fillStyle=_,e.fillText(P,t.x+t.w/2,t.y+t.h/2+4),e.restore()};if(!u){g("no git","rgba(225,233,238,0.6)");return}if(u.missing){g("dir missing","rgba(255,154,147,0.85)");return}let v=t.y+12,f=t.y+t.h-2,p=t.x+l,b=t.x+t.w-l,a=Math.min(96,(b-p)*.42),m=b-a-4,y=(m-p)/3,S=(P,_)=>{if(e.measureText(P).width<=_)return P;let I=P;for(;I.length>1&&e.measureText(I+"\u2026").width>_;)I=I.slice(0,-1);return I+"\u2026"},M=(P,_,I,z,$)=>{e.fillStyle="rgba(120,150,170,0.16)",e.fillRect(P,_,I,2);let X=z+$;if(X<=0)return;let E=Math.max(1,Math.min(I-1,Math.round(I*z/X)));e.fillStyle="#3ee089",e.fillRect(P,_,E,2),e.fillStyle="#ff6055",e.fillRect(P+E,_,I-E,2)},B=(P,_,I)=>{if(I<=.02)return;let z=Math.min(1,I);e.fillStyle=`rgba(62,224,137,${.14*z})`,e.fillRect(P,v-2,_,f-v+4),e.strokeStyle=`rgba(62,224,137,${.9*z})`,e.lineWidth=.8,e.strokeRect(P+.4,v-1.6,_-.8,f-v+3.2)},W=n.cellPulse;e.save(),e.textBaseline="alphabetic";let Z=[{label:"UNSTAGED",count:`${u.modified} file${u.modified===1?"":"s"}`,add:u.unstagedAdd,del:u.unstagedDel,tint:"#ffb13d"},{label:"STAGED",count:`${u.staged} file${u.staged===1?"":"s"}`,add:u.stagedAdd,del:u.stagedDel,tint:"#3ee089"},{label:"COMMITS",count:`${u.ahead}`,add:u.committedAdd,del:u.committedDel,tint:"#56c7ff"}],V=["unstaged","staged","commits"];Z.forEach((P,_)=>{let I=p+_*y,z=y-4;B(I-1.5,y-1,W[V[_]]),_>0&&(e.fillStyle="rgba(120,150,170,0.12)",e.fillRect(I-2,v,.7,f-v));let $=["u","s","c"][_];e.textAlign="left",e.font="3px 'IBM Plex Mono', monospace",e.fillStyle="rgba(170,182,190,0.7)",e.fillText(P.label,I,v+3),e.font="bold 5.5px 'Martian Mono', monospace",e.fillStyle=P.tint,this.drawRoll(e,I,v+10,`${$}.count`,S(P.count,z),5.5,n),e.font="bold 3.6px 'Martian Mono', monospace";let X=`+${P.add}`;if(e.fillStyle="#3ee089",this.drawRoll(e,I,v+16,`${$}.add`,X,3.6,n),e.fillStyle="#ff6055",this.drawRoll(e,I+e.measureText(X).width+3,v+16,`${$}.del`,`-${P.del}`,3.6,n),M(I,v+18.5,z,P.add,P.del),_===2){let E=this.commitButtons(n),L=f-1.5;e.textAlign="left",E.push&&(e.fillStyle="#ffb13d",e.font="bold 4px 'Martian Mono', monospace",e.fillText(`\u2191${u.unpushed}`,E.push.x+.5,L)),E.pull&&(e.fillStyle="#56c7ff",e.font="bold 4px 'Martian Mono', monospace",e.fillText(`\u2193${u.behind}`,E.pull.x+.5,L)),E.synced&&(e.fillStyle="rgba(120,200,255,0.5)",e.font="3px 'IBM Plex Mono', monospace",e.fillText("synced",I,L)),E.fetch&&(e.fillStyle="rgba(120,200,255,0.8)",e.font="5px 'Martian Mono', monospace",e.fillText("\u21BB",E.fetch.x+1,L+.4))}});let O=m+4;B(m+2,b-m-2,W.pr),e.fillStyle="rgba(120,150,170,0.14)",e.fillRect(m+1,v,.7,f-v);let C=v+3;e.textAlign="left",e.font="3px 'IBM Plex Mono', monospace",e.fillStyle="rgba(170,182,190,0.7)",e.fillText("PR",O,C);let j=!u.pr&&!u.prReady,H=u.pr;if(H){H.draft&&(e.font="bold 2.8px 'Martian Mono', monospace",e.fillStyle="rgba(180,190,198,0.85)",e.fillText("DRAFT",O+7,C)),e.font="bold 6px 'Martian Mono', monospace",e.fillStyle=H.draft?"rgba(180,188,196,0.9)":"#b98cff",e.textAlign="right",e.fillText(`#${H.number}`,b-8,C+.4),e.textAlign="left";let P={x:b-6,y:v,w:6,h:6};e.fillStyle="rgba(255,255,255,0.08)",e.fillRect(P.x,P.y,P.w,P.h),e.fillStyle="rgba(220,228,234,0.9)",e.font="5px 'IBM Plex Mono', monospace",e.textAlign="center",e.fillText("\u2197",P.x+P.w/2,P.y+P.h-1.3),e.textAlign="left"}else j&&this.drawSpinner(e,b-2.6,C-1.4,2.4,"rgba(185,140,255,0.9)");if(C+=6,!H)e.font="3.4px 'IBM Plex Mono', monospace",j?(e.fillStyle="rgba(185,140,255,0.7)",e.fillText("checking\u2026",O,C)):(e.fillStyle="rgba(170,182,190,0.55)",e.fillText("no open PR",O,C));else{e.font="bold 3.4px 'IBM Plex Mono', monospace",e.fillStyle="rgba(228,236,240,0.95)";let P=H.title.split(/\s+/).filter(Boolean),_="",I=0;for(;I<P.length;I++){let $=_?`${_} ${P[I]}`:P[I];if(e.measureText($).width>a&&_)break;_=$}let z=P.slice(I).join(" ");if(e.fillText(_,O,C),C+=4.4,z){let $=e.measureText(z).width;if($<=a)e.fillText(z,O,C);else{e.save(),e.beginPath(),e.rect(O,C-4,a,5.5),e.clip();let X=14,E=$+X,L=this.cam.z>3;L?(this.marqueeOn=!0,n.marqueeStart===void 0&&(n.marqueeStart=this.frame)):n.marqueeStart=void 0;let T=L?(this.frame-(n.marqueeStart??this.frame))*.75%E:0;e.fillText(z,O-T,C),e.fillText(z,O-T+E,C),e.restore()}}if(C+=4.5,e.fillStyle="rgba(120,150,170,0.16)",e.fillRect(O,C-2.5,a,.6),C+=3.5,H.checksTotal>0){e.font="bold 4px 'Martian Mono', monospace";let $=O;if(H.checksPass>0){e.fillStyle="#3ee089";let X=`${H.checksPass}\u2713`;e.fillText(X,$,C),$+=e.measureText(X).width+3}if(H.checksFailed>0){e.fillStyle="#ff6055";let X=`${H.checksFailed}\u2717`;e.fillText(X,$,C),$+=e.measureText(X).width+3}if(H.checksRunning>0){let X=.35+.65*(.5+.5*Math.sin(this.frame*.35));e.globalAlpha=X,e.fillStyle="#ffb13d",e.beginPath(),e.arc($+1.4,C-1.3,1.4,0,Math.PI*2),e.fill(),e.globalAlpha=1,e.fillStyle="#ffb13d",e.fillText(`${H.checksRunning}`,$+3.6,C)}}else e.font="3px 'IBM Plex Mono', monospace",e.fillStyle="rgba(150,160,168,0.55)",e.fillText("no checks",O,C);if(C+=5,H.draft&&H.approvals===0&&H.changesRequested===0)e.font="3px 'IBM Plex Mono', monospace",e.fillStyle="#ffb13d",e.fillText("reviewers pending",O,C);else{e.font="3px 'IBM Plex Mono', monospace";let $=O,X=(E,L,T)=>{e.fillStyle=L>0?T:"rgba(150,162,170,0.5)";let Y=`${L} ${E}`;e.fillText(Y,$,C),$+=e.measureText(Y).width+3};X("appr",H.approvals,"#3ee089"),X("chg",H.changesRequested,"#ff6055"),X("req",H.reviewersPending,"#56c7ff"),X("cmt",H.comments,"rgba(210,218,224,0.85)")}}e.restore()}drawBookshelf(e,n,i){let t=G((n.built-.6)/.4,0,1);if(t<=0)return;e.save(),e.globalAlpha=t;let s=(v,f,p,b,a)=>{e.beginPath(),e.moveTo(v.x,v.y),e.lineTo(f.x,f.y),e.lineTo(p.x,p.y),e.lineTo(b.x,b.y),e.closePath(),e.fillStyle=a,e.fill()},o=.05,l=.95,r=.68,h=.99,c=(v,f)=>{let p=i(v,f),b=6*(1-v*.5);return{x:p.x+b,y:p.y+b*.5}};s(i(o,r),c(o,r),c(o,h),i(o,h),"#1f1408"),s(i(o,r),i(l,r),c(l,r),c(o,r),"#6a4d2c"),s(c(o,r),c(l,r),c(l,r+.02),c(o,r+.02),"#3a2917"),s(c(o,r+.02),c(l,r+.02),c(l,h),c(o,h),"#2c1f10");let w=24,R=K(n.name)%J.length,u=v=>s(c(o,v),c(l,v),c(l,v+.015),c(o,v+.015),"#3a2917"),g=(v,f,p)=>{for(let b=0;b<w;b++){let a=o+(l-o)*(b/w),m=o+(l-o)*((b+.8)/w),y=v+K(n.name+p+b)%4*.006,S=J[(b+R+p)%J.length];s(c(a,y),c(m,y),c(m,f),c(a,f),`hsl(${S} 42% 42%)`);let M=a+(m-a)*.26;s(c(a,y),c(M,y),c(M,f),c(a,f),`hsl(${S} 42% 54%)`)}};g(.715,.8,1),u(.805),g(.835,.92,7),s(c(o,.93),c(l,.93),c(l,h),c(o,h),"#1a1108"),e.restore()}drawDesks(e,n,i){let t=G((n.built-.6)/.4,0,1);if(t<=0||!n.plan)return;let o=n.baseY-i*ie;e.globalAlpha=t;for(let[l,r]of n.plan.seats){if(r.row!==i)continue;let h=this.seatX(n,r.col,i),c=this.toons.get(l),w=!!c?.sitting,R=w?c.agent.state:void 0;if(e.fillStyle="rgba(0,0,0,0.3)",e.fillRect(h-.5,o-.6,23,1.8),e.fillStyle="#7e5e35",e.fillRect(h,o-11,22,2),e.fillStyle="#9c7a4c",e.fillRect(h,o-11,22,.7),e.fillStyle="#382a16",e.fillRect(h,o-9.2,22,.7),e.fillStyle="#54401f",e.fillRect(h+3,o-9,1.5,9),e.fillRect(h+19.5,o-9,1.5,9),e.fillStyle="#171c21",e.fillRect(h+7.2,o-11.2,1.6,1.2),e.fillRect(h+5.4,o-10.2,5.4,1),e.fillStyle="#1b2129",e.beginPath(),e.moveTo(h+5,o-18),e.lineTo(h+11,o-16.5),e.lineTo(h+11,o-11),e.lineTo(h+5,o-12.5),e.closePath(),e.fill(),e.fillStyle="#11161c",e.beginPath(),e.moveTo(h+5.9,o-17.2),e.lineTo(h+10.1,o-15.9),e.lineTo(h+10.1,o-11.6),e.lineTo(h+5.9,o-13.1),e.closePath(),e.fill(),e.fillStyle=w?R==="error"?"#d9534f":"#3ee089":"#2a3138",e.fillRect(h+8.8,o-12.6,.9,.9),e.fillStyle="#2a3138",e.fillRect(h+8.5,o-11.2,5.5,1),e.fillStyle="#d9534f",e.fillRect(h+.5,o-13,2,2),w&&this.frame%8<4&&(e.fillStyle="rgba(255,255,255,0.25)",e.fillRect(h+1,o-15,.8,1.4)),w){let g=R==="error"?"217,83,79":"159,216,255",v=R==="error"?.3:R==="active"&&this.frame%8<4?.4:.24,f=h+13,p=o-16,b=e.createRadialGradient(f,p,0,f,p,7);b.addColorStop(0,`rgba(${g},${v})`),b.addColorStop(.6,`rgba(${g},${v*.45})`),b.addColorStop(1,`rgba(${g},0)`),e.fillStyle=b,e.fillRect(h+10,o-24,8,20)}let u=c?.booksShown??0;for(let g=0;g<u;g++){let v=J[g%J.length],f=g%2*.7,p=o-11-g*1.4;e.fillStyle=`hsl(${v} 45% 44%)`,e.fillRect(h+16.6+f,p-1.4,4,1.4),e.fillStyle=`hsl(${v} 45% 55%)`,e.fillRect(h+16.6+f,p-1.4,4,.4)}}e.globalAlpha=1}drawToon(e,n){let i=n.p,t=n.agent.state,s=Math.abs(n.targetX-n.x)>1,o=this.frame+Math.floor(n.ph*10),l=Math.round(n.x*2)/2,r=n.sitting,h=n.base-n.lift+(r?-3.5:0),c=t==="waiting"&&!s?-Math.abs(Math.sin(o*.35+n.ph))*1:0,w=t==="error"&&!s?1.4:0,R=h+c,u=r;if(e.fillStyle=i.pants,r)e.fillRect(l-3,R-4,6,2),e.fillRect(l-3.6,R-3,1.6,3.4),e.fillRect(l+2,R-3,1.6,3.4);else if(s){let b=o%2===0;e.fillRect(l-(b?3:1.6),R-6,2,6),e.fillRect(l+(b?1:-.4),R-6,2,6)}else e.fillRect(l-2.6,R-6,2,6),e.fillRect(l+.6,R-6,2,6);e.fillStyle="#23262a",r||(e.fillRect(l-3,R-.8,2.6,.9),e.fillRect(l+.4,R-.8,2.6,.9));let g=R-12+w*.4;e.fillStyle=i.shirt,e.fillRect(l-3.2,g,6.4,6.4),e.fillStyle=i.shirtDark,e.fillRect(l-3.2,g+5.2,6.4,1.2),e.fillStyle=i.shirt;let v=i.skin;if(r&&n.agent.reviewOf){let b=Math.sin(o*.12+n.ph)*1.3,a=l-6+b,m=g+.6;e.fillStyle=i.shirt,e.fillRect(l-5,g+2.2,3,1.4),e.fillStyle="#e9e3d2",e.fillRect(l-9.5,g+4,7,4.2),e.fillStyle="rgba(70,70,70,0.4)",e.fillRect(l-8.7,g+5,5,.5),e.fillRect(l-8.7,g+6.2,4,.5),e.strokeStyle="#7a5a2a",e.lineWidth=1,e.beginPath(),e.moveTo(a+1.3,m+1.3),e.lineTo(a+2.9,m+2.9),e.stroke(),e.fillStyle="rgba(159,216,255,0.4)",e.beginPath(),e.arc(a,m,1.8,0,Math.PI*2),e.fill(),e.strokeStyle="#2a2f35",e.beginPath(),e.arc(a,m,2.1,0,Math.PI*2),e.stroke(),e.fillStyle=v,e.fillRect(a+2.4,m+2.4,1.5,1.6),e.fillStyle=i.shirt,e.fillRect(l+2.6,g+2,1.4,2.6)}else if(r&&n.booksInHand>0)e.fillStyle=i.shirt,e.fillRect(l-2.4,g+1.4,1.8,1.8),e.fillRect(l+2.2,g+1.4,1.8,1.8);else if(r){let b=o%2===0?0:.8;e.fillRect(l-6,g+2.2,3.4,1.4),e.fillStyle=v,e.fillRect(l-7,g+2+b,1.4,1.4),e.fillRect(l-7,g+3.6-b,1.4,1.4)}else if(t==="waiting"&&!s){let b=Math.sin(o*.9+n.ph)*1.1;e.fillRect(l+2.8+b*.4,g-4,1.5,5),e.fillStyle=v,e.fillRect(l+2.7+b,g-5.6,1.8,1.8),e.fillStyle=i.shirt,e.fillRect(l-4.4,g-.6,1.6,2.8),e.fillStyle=v,e.fillRect(l-3.2,g-2,1.5,1.5)}else if(s){let b=o%2===0?1:-1;e.fillRect(l-4.2,g+1.5+b*.8,1.4,4),e.fillRect(l+2.8,g+1.5-b*.8,1.4,4)}else if(t==="idle"||t==="complete"){e.fillRect(l-4.2,g+1.5,1.4,4),e.fillRect(l+2.6,g+1.2,1.4,2.4),e.fillStyle="#171c21",e.fillRect(l+1.8,g+2.8,2.6,3.6);let b=o%6<3?"#9fd8ff":"#7fb8df";e.fillStyle=b,e.fillRect(l+2.2,g+3.2,1.8,2.8),e.fillStyle=v,e.fillRect(l+3.6,g+3.4+(o%4<2?0:.8),1.2,1.2),e.fillStyle="rgba(159,216,255,0.10)",e.fillRect(l-1.5,g-4.5,4.5,5)}else e.fillRect(l-4.2,g+1.5,1.4,4),e.fillRect(l+2.8,g+1.5,1.4,4);let f=g-6+w;if(e.fillStyle=i.skin,e.fillRect(l-2.8,f,5.6,5.6),e.fillStyle=i.hair,e.fillRect(l-3,f-1,6,2.2),e.fillRect(l-3,f-.5,1.2,3.4),e.fillRect(l+1.8,f-.5,1.2,2.4),i.acc===2?(e.fillStyle=i.accColor,e.fillRect(l-3.2,f-1.6,6.4,1.8),e.fillRect(u?l-4.6:l+1.6,f-.4,3,1)):i.acc===3&&(e.fillStyle=i.accColor,e.fillRect(l-3.6,f+1.6,1.2,2.4),e.fillRect(l+2.4,f+1.6,1.2,2.4),e.fillRect(l-3.4,f-1.6,6.8,1)),!((o+Math.floor(n.ph*7))%40===0)){e.fillStyle="#14181b";let b=(t==="idle"||t==="complete")&&!s&&o%50>6?.9:0,a=f+2.4+w*.5+b;u||s&&n.targetX<n.x?(e.fillRect(l-2.2,a,1.1,1.1),e.fillRect(l-.2,a,1.1,1.1)):(e.fillRect(l-.8,a,1.1,1.1),e.fillRect(l+1.2,a,1.1,1.1))}if(i.acc===1){e.strokeStyle="#23262a",e.lineWidth=.5;let b=f+2.6;e.strokeRect(l-1.4,b-.8,1.9,1.9),e.strokeRect(l+.9,b-.8,1.9,1.9)}if(r&&n.booksInHand>0&&!n.agent.reviewOf){let b=Math.sin(o*.16+n.ph)*.35,a=l-3,m=g-3.5+b,y=6,S=3.6;e.fillStyle="#e9e3d2",e.fillRect(a,m,y,S);let M=J[n.booksShown%J.length];e.fillStyle=`hsl(${M} 42% 40%)`,e.fillRect(a-.7,m-.4,.9,S+.8),e.fillRect(a+y-.2,m-.4,.9,S+.8),e.fillStyle="#b6ae98",e.fillRect(a+y/2-.25,m,.5,S),e.fillStyle="rgba(70,70,70,0.45)",e.fillRect(a+.8,m+1.1,1.8,.4),e.fillRect(a+.8,m+2.1,1.5,.4),e.fillRect(a+y/2+.7,m+1.1,1.7,.4),e.fillRect(a+y/2+.7,m+2.1,1.4,.4),e.fillStyle=v,e.fillRect(a-.6,m+S-.4,1.4,1.4),e.fillRect(a+y-.8,m+S-.4,1.4,1.4)}if(n.errand&&n.errand.phase!=="out"){let b=Math.max(0,n.skills.length-n.booksShown),a=n.targetX>=n.x?1:-1,m=l-2+(a>0?1.4:-.4);for(let y=0;y<b;y++){let S=J[(n.booksShown+y)%J.length],M=g+3-y*1.4;e.fillStyle=`hsl(${S} 45% 46%)`,e.fillRect(m,M-1.4,4,1.4),e.fillStyle=`hsl(${S} 45% 56%)`,e.fillRect(m,M-1.4,4,.4)}}}};window.DevTowerCrew={_instance:null,mount(d,e){return this._instance=new ge(d,e),this._instance},setAgents(d){this._instance?.setAgents(d)},setRooms(d){this._instance?.setRooms(d)},setPrBranches(d){this._instance?.setPrBranches(d)},setReviewPrs(d){this._instance?.setReviewPrs(d)},setBoards(d){this._instance?.setBoards(d)},setSelected(d){this._instance?.setSelected(d)},onSelect(d){this._instance?.onSelect(d)},onReserve(d){this._instance?.onReserve(d)},onAddDev(d){this._instance?.onAddDev(d)},onAddWorktree(d){this._instance?.onAddWorktree(d)},onRemoveRoom(d){this._instance?.onRemoveRoom(d)},onRemoveWorktree(d){this._instance?.onRemoveWorktree(d)},onPush(d){this._instance?.onPush(d)},onPull(d){this._instance?.onPull(d)},onFetch(d){this._instance?.onFetch(d)},onCd(d){this._instance?.onCd(d)},onAssignReview(d){this._instance?.onAssignReview(d)},onRefreshPrs(d){this._instance?.onRefreshPrs(d)},onOpenPr(d){this._instance?.onOpenPr(d)},focusReviewBoard(){this._instance?.toggleBillboard()},start(){this._instance?.start()},stop(){this._instance?.stop()},resize(){this._instance?.resize()},focusIsland(d){this._instance?.focusOn(d)},clearFocus(){this._instance?.clearFocus()},setEco(d){this._instance?.setEco(d)},setInsets(d,e){this._instance?.setInsets(d,e)}};})();
+"use strict";
+(() => {
+  var __defProp = Object.defineProperty;
+  var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+  var __publicField = (obj, key, value) => {
+    __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+    return value;
+  };
+
+  // src/webview/crew.ts
+  var STATE_COLOR = {
+    active: "#3ee089",
+    waiting: "#ffb13d",
+    complete: "#56c7ff",
+    error: "#ff6055",
+    idle: "#8a9598"
+  };
+  function hash(s) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+  var SKINS = ["#f2c8a0", "#e0a87e", "#c68642", "#8d5524", "#ffd9b3", "#a86b3c"];
+  var HAIRS = ["#2e2620", "#4a342a", "#16100c", "#7a5230", "#b88a4a", "#55585e", "#6e3a28"];
+  var ACCENTS = ["#ff6055", "#56c7ff", "#3ee089", "#ffb13d", "#b98cff", "#ff8fc7"];
+  function persona(id) {
+    const h = hash(id);
+    const hue = h % 360;
+    return {
+      shirt: `hsl(${hue} 45% 52%)`,
+      shirtDark: `hsl(${hue} 48% 38%)`,
+      pants: `hsl(${(hue + 200) % 360} 16% 30%)`,
+      skin: SKINS[(h >> 3) % SKINS.length],
+      hair: HAIRS[(h >> 5) % HAIRS.length],
+      acc: (h >> 7) % 4,
+      // 0 none, 1 glasses, 2 cap, 3 headphones
+      accColor: ACCENTS[(h >> 9) % ACCENTS.length]
+    };
+  }
+  var ROOM_H = 84;
+  var SLAB = 8;
+  var FLOOR_STEP = ROOM_H + SLAB;
+  var WB_W = 42;
+  var DESK_W = 26;
+  var DOOR_W = 18;
+  var SHELF_REACH = 16;
+  var BOOK_HUES = [4, 28, 48, 140, 200, 262, 320];
+  var DEPTH_X = 24;
+  var DEPTH_Y = 22;
+  var ROWS_OF_DESKS = 2;
+  var FRONT_CAP = 6;
+  var ROW_DY = DEPTH_Y;
+  var ROOM_W = 260;
+  var backWall = (x0, base) => ({
+    x0: x0 + DEPTH_X,
+    x1: x0 + ROOM_W - DEPTH_X,
+    yTop: base - ROOM_H + 10,
+    // just below the receded ceiling
+    yBot: base - DEPTH_Y
+    // far-wall floor line
+  });
+  var boardRect = (x0, base) => {
+    const bw = backWall(x0, base);
+    const left = bw.x0 + 3;
+    const right = bw.x1 - 3;
+    const top = bw.yTop + 3;
+    const bottom = bw.yBot - 5;
+    return { x: left, y: top, w: Math.max(20, right - left), h: Math.max(14, bottom - top) };
+  };
+  var COL_STEP = ROOM_W;
+  var cellX0 = (col) => col * COL_STEP - ROOM_W / 2;
+  var WALK_SPEED = 30;
+  var SHAFT_GAP = 3;
+  var SHAFT_W = 18;
+  var CAR_W = 14;
+  var CAR_H = 26;
+  var CAR_SPEED = 64;
+  var shaftX = (x0) => x0 + ROOM_W + SHAFT_GAP + SHAFT_W / 2;
+  var ISLAND_GAP = 1;
+  var PLINTH_H = 22;
+  var PLINTH_APRON = 8;
+  var PLINTH_OV = 9;
+  var BB_W = 138;
+  var BB_HEADER = 16;
+  var BB_ROW = 20;
+  var BB_MAX = 6;
+  var BB_GAP = 56;
+  var GROUP_GAP = 1;
+  var DEFAULT_BRANCHES = /* @__PURE__ */ new Set(["main", "master", "head", "develop", "trunk"]);
+  var floorBase = (floor) => -floor * FLOOR_STEP;
+  var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  function sampleQuad(p0, c, p1, n) {
+    const pts = [];
+    for (let i = 1; i <= n; i++) {
+      const t = i / n, mt = 1 - t;
+      pts.push({
+        x: mt * mt * p0.x + 2 * mt * t * c.x + t * t * p1.x,
+        y: mt * mt * p0.y + 2 * mt * t * c.y + t * t * p1.y
+      });
+    }
+    return pts;
+  }
+  function pointOnPath(path, t) {
+    if (path.length === 1)
+      return path[0];
+    const segs = [];
+    let total = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+      const len = Math.hypot(path[i + 1].x - path[i].x, path[i + 1].y - path[i].y);
+      segs.push(len);
+      total += len;
+    }
+    if (total === 0)
+      return path[0];
+    let d = clamp(t, 0, 1) * total;
+    for (let i = 0; i < segs.length; i++) {
+      if (d <= segs[i] || i === segs.length - 1) {
+        const f = segs[i] === 0 ? 0 : d / segs[i];
+        return { x: path[i].x + (path[i + 1].x - path[i].x) * f, y: path[i].y + (path[i + 1].y - path[i].y) * f };
+      }
+      d -= segs[i];
+    }
+    return path[path.length - 1];
+  }
+  function boardSig(b) {
+    if (!b)
+      return "none";
+    const pr = b.pr ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.title}` : "no";
+    return [
+      b.modified,
+      b.staged,
+      b.ahead,
+      b.unstagedAdd,
+      b.unstagedDel,
+      b.stagedAdd,
+      b.stagedDel,
+      b.committedAdd,
+      b.committedDel,
+      b.commits.length,
+      b.base,
+      b.prReady ? 1 : 0,
+      b.missing ? 1 : 0,
+      pr
+    ].join("|");
+  }
+  var PixelCrew = class {
+    constructor(container, canvas) {
+      this.container = container;
+      this.canvas = canvas;
+      __publicField(this, "ctx");
+      __publicField(this, "toons", /* @__PURE__ */ new Map());
+      __publicField(this, "leaving", []);
+      __publicField(this, "rooms", /* @__PURE__ */ new Map());
+      // key = building key (worktree path)
+      __publicField(this, "islands", /* @__PURE__ */ new Map());
+      // key = island name (repo)
+      __publicField(this, "reserved", []);
+      __publicField(this, "agents", []);
+      __publicField(this, "particles", []);
+      __publicField(this, "packets", []);
+      // desk → board "file changed" trails
+      __publicField(this, "boardsMap", {});
+      /** Last-known walk state of a toon culled because its room was momentarily
+       *  absent (a refresh pushes new rooms before the matching agents, so a
+       *  re-layout can briefly unplace a dev). Keyed by agent id + the frame it was
+       *  parked, so when setAgents re-creates the toon we resume from where it was
+       *  instead of respawning it at the door. */
+      __publicField(this, "parked", /* @__PURE__ */ new Map());
+      __publicField(this, "hasFitted", false);
+      // first layout fits the campus; later ones preserve the view
+      // ghost slots come in two kinds: "building" extends an island with the next
+      // worktree (click → add agent there), "island" reserves a brand-new directory.
+      __publicField(this, "ghosts", []);
+      __publicField(this, "colRange", /* @__PURE__ */ new Map());
+      __publicField(this, "bounds", { minX: -120, maxX: 120, topY: -120, botY: 40, minFloor: 0 });
+      __publicField(this, "focusRoom_", null);
+      __publicField(this, "focusAgentId", null);
+      // when set, the camera tracks this dev (not the room)
+      __publicField(this, "focusIsland_", null);
+      // when set, frame this whole directory (its tower)
+      __publicField(this, "focusBillboard_", false);
+      // when set, the camera frames the review billboard
+      // the view to restore when leaving the billboard (so exiting returns to where
+      // you were, not the overview)
+      __publicField(this, "viewBeforeBillboard", null);
+      __publicField(this, "prBranches", /* @__PURE__ */ new Set());
+      // branches (lowercased) with an open PR
+      // review-requested PRs shown on the central billboard (left of the campus);
+      // clicking a row opens the dispatch modal to assign a reviewer to it
+      __publicField(this, "reviewPrs", []);
+      __publicField(this, "campusMinX", 0);
+      // rooms-only left edge, before the billboard is added in
+      __publicField(this, "focus", { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 });
+      __publicField(this, "cam", { x: 0, y: -ROOM_H / 2, z: 4 });
+      __publicField(this, "zoomMul", 1);
+      __publicField(this, "panX", 0);
+      __publicField(this, "panY", 0);
+      __publicField(this, "drag", { active: false, moved: false, lastX: 0, lastY: 0 });
+      // dragging a toon onto a room (or a ghost cell) issues a /cd for that agent
+      __publicField(this, "toonDrag", null);
+      __publicField(this, "dropTarget", null);
+      __publicField(this, "running", false);
+      __publicField(this, "raf", 0);
+      __publicField(this, "lastNow", 0);
+      __publicField(this, "acc", 0);
+      __publicField(this, "frame", 0);
+      __publicField(this, "marqueeOn", false);
+      // a PR title marquee is scrolling → keep the loop awake
+      __publicField(this, "dirty", true);
+      __publicField(this, "eco", false);
+      // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
+      // viewport so rooms frame into the visible area and stay clickable
+      __publicField(this, "insetL", 0);
+      __publicField(this, "insetR", 0);
+      __publicField(this, "selectedId");
+      __publicField(this, "onSelectCb", () => {
+      });
+      __publicField(this, "onReserveCb", () => {
+      });
+      __publicField(this, "onAddDevCb", () => {
+      });
+      __publicField(this, "onAddWorktreeCb", () => {
+      });
+      __publicField(this, "onRemoveRoomCb", () => {
+      });
+      __publicField(this, "onRemoveWorktreeCb", () => {
+      });
+      __publicField(this, "onPushCb", () => {
+      });
+      __publicField(this, "onPullCb", () => {
+      });
+      __publicField(this, "onFetchCb", () => {
+      });
+      /** room key → time a push/pull was requested, so the board change it causes
+       *  flashes without firing a beam (the agent didn't do that work). */
+      __publicField(this, "syncSuppress", /* @__PURE__ */ new Map());
+      __publicField(this, "onCdCb", () => {
+      });
+      __publicField(this, "onAssignReviewCb", () => {
+      });
+      __publicField(this, "onRefreshPrsCb", () => {
+      });
+      __publicField(this, "onOpenPrCb", () => {
+      });
+      __publicField(this, "resizeT");
+      __publicField(this, "newToonIds", /* @__PURE__ */ new Set());
+      this.ctx = canvas.getContext("2d");
+      new ResizeObserver(() => {
+        clearTimeout(this.resizeT);
+        this.resizeT = setTimeout(() => this.resize(), 80);
+      }).observe(container);
+      this.resize();
+      document.fonts?.ready?.then(() => {
+        this.invalidate();
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden)
+          this.stop();
+        else
+          this.start();
+      });
+      const canvasXY = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        return { mx: e.clientX - rect.left, my: e.clientY - rect.top };
+      };
+      canvas.addEventListener("pointerdown", (e) => {
+        canvas.setPointerCapture(e.pointerId);
+        const hit = this.pick(e);
+        if (hit.agent) {
+          const { mx, my } = canvasXY(e);
+          const blocked = this.toons.get(hit.agent)?.agent.state === "active";
+          this.toonDrag = { id: hit.agent, active: false, mx, my, blocked };
+          return;
+        }
+        this.drag.active = true;
+        this.drag.moved = false;
+        this.drag.lastX = e.clientX;
+        this.drag.lastY = e.clientY;
+      });
+      canvas.addEventListener("pointermove", (e) => {
+        if (this.toonDrag) {
+          const { mx, my } = canvasXY(e);
+          if (!this.toonDrag.active && Math.abs(mx - this.toonDrag.mx) + Math.abs(my - this.toonDrag.my) > 4) {
+            this.toonDrag.active = true;
+          }
+          this.toonDrag.mx = mx;
+          this.toonDrag.my = my;
+          if (this.toonDrag.active) {
+            if (this.toonDrag.blocked) {
+              this.dropTarget = null;
+              this.container.style.cursor = "not-allowed";
+              this.invalidate();
+              return;
+            }
+            const hit = this.pick(e);
+            if (hit.island && !hit.ghost)
+              this.dropTarget = { room: hit.island };
+            else if (hit.ghost?.kind === "building" && hit.ghost.island)
+              this.dropTarget = { room: hit.ghost.island };
+            else if (hit.ghost?.kind === "island")
+              this.dropTarget = { ghost: { floor: hit.ghost.floor, col: hit.ghost.col } };
+            else
+              this.dropTarget = null;
+            this.container.style.cursor = this.dropTarget ? "copy" : "grabbing";
+            this.invalidate();
+          }
+          return;
+        }
+        if (!this.drag.active) {
+          const hit = this.pick(e);
+          this.container.style.cursor = hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom ? "pointer" : "default";
+          return;
+        }
+        const dx = e.clientX - this.drag.lastX;
+        const dy = e.clientY - this.drag.lastY;
+        if (this.drag.moved || Math.abs(dx) + Math.abs(dy) > 4) {
+          this.drag.moved = true;
+          this.drag.lastX = e.clientX;
+          this.drag.lastY = e.clientY;
+          const limX = (this.bounds.maxX - this.bounds.minX) / 2 + ROOM_W;
+          const limY = (this.bounds.botY - this.bounds.topY) / 2 + FLOOR_STEP;
+          this.panX = clamp(this.panX - dx / this.cam.z, -limX, limX);
+          this.panY = clamp(this.panY - dy / this.cam.z, -limY, limY);
+          this.container.style.cursor = "grabbing";
+          this.invalidate();
+        }
+      });
+      const endDrag = (e) => {
+        if (this.toonDrag) {
+          const td = this.toonDrag;
+          this.toonDrag = null;
+          this.container.style.cursor = "default";
+          if (!td.active) {
+            this.onClick(e);
+          } else if (this.dropTarget) {
+            this.onCdCb(td.id, this.dropTarget);
+          }
+          this.dropTarget = null;
+          this.invalidate();
+          return;
+        }
+        if (!this.drag.active)
+          return;
+        const wasDrag = this.drag.moved;
+        this.drag.active = false;
+        this.drag.moved = false;
+        this.container.style.cursor = "default";
+        if (!wasDrag)
+          this.onClick(e);
+      };
+      canvas.addEventListener("pointerup", endDrag);
+      canvas.addEventListener("pointercancel", () => {
+        this.drag.active = false;
+        this.drag.moved = false;
+        this.toonDrag = null;
+        this.dropTarget = null;
+        this.invalidate();
+      });
+      canvas.addEventListener(
+        "wheel",
+        (e) => {
+          e.preventDefault();
+          this.zoomMul = clamp(this.zoomMul * (1 - e.deltaY * 12e-4), 0.35, 4);
+          this.invalidate();
+        },
+        { passive: false }
+      );
+    }
+    onSelect(cb) {
+      this.onSelectCb = cb;
+    }
+    onReserve(cb) {
+      this.onReserveCb = cb;
+    }
+    onAddDev(cb) {
+      this.onAddDevCb = cb;
+    }
+    onAddWorktree(cb) {
+      this.onAddWorktreeCb = cb;
+    }
+    onRemoveRoom(cb) {
+      this.onRemoveRoomCb = cb;
+    }
+    onRemoveWorktree(cb) {
+      this.onRemoveWorktreeCb = cb;
+    }
+    onPush(cb) {
+      this.onPushCb = cb;
+    }
+    onPull(cb) {
+      this.onPullCb = cb;
+    }
+    onFetch(cb) {
+      this.onFetchCb = cb;
+    }
+    onCd(cb) {
+      this.onCdCb = cb;
+    }
+    onAssignReview(cb) {
+      this.onAssignReviewCb = cb;
+    }
+    onRefreshPrs(cb) {
+      this.onRefreshPrsCb = cb;
+    }
+    onOpenPr(cb) {
+      this.onOpenPrCb = cb;
+    }
+    /* ============ DATA ============ */
+    setRooms(reserved) {
+      this.reserved = reserved || [];
+      this.layout();
+    }
+    /** Live board data per worktree path (modified/staged/commits/PR), shown on
+     *  each room's back-wall screen. */
+    setBoards(boards) {
+      this.boardsMap = boards || {};
+      this.layout();
+    }
+    /** Branches that currently have an open PR; shown on each worktree's board. */
+    setPrBranches(branches) {
+      this.prBranches = new Set((branches || []).filter(Boolean).map((b) => b.toLowerCase()));
+      this.invalidate();
+    }
+    /** Review-requested PRs listed on the central billboard. */
+    setReviewPrs(prs) {
+      this.reviewPrs = Array.isArray(prs) ? prs : [];
+      this.layout();
+    }
+    /** Geometry for the review billboard, shared by draw + pick. Null when empty. */
+    billboardGeom() {
+      const n = Math.min(this.reviewPrs.length, BB_MAX);
+      const x = this.campusMinX - BB_GAP - BB_W;
+      const surfaceY = floorBase(0) + SLAB;
+      const bodyH = BB_HEADER + Math.max(n, 1) * BB_ROW + 5;
+      const top = surfaceY - 40 - bodyH;
+      const rows = [];
+      for (let i = 0; i < n; i++) {
+        const y = top + BB_HEADER + i * BB_ROW;
+        rows.push({ pr: this.reviewPrs[i], y, open: { x: x + BB_W - 13, y: y + BB_ROW - 12, w: 10, h: 10 } });
+      }
+      return {
+        x,
+        top,
+        w: BB_W,
+        bodyH,
+        headerH: BB_HEADER,
+        rows,
+        rowH: BB_ROW,
+        surfaceY,
+        extra: this.reviewPrs.length - n,
+        refresh: { x: x + BB_W - 14, y: top + 3, w: 11, h: 11 }
+      };
+    }
+    /** Remember a toon's walk state so a transient disappearance (a mid-refresh
+     *  re-layout that unplaces it, or the agent blinking out of one poll) can
+     *  resume from where it was instead of respawning the dev at the door. */
+    parkToon(id, tn) {
+      if (tn.x === 0)
+        return;
+      this.parked.set(id, {
+        x: tn.x,
+        base: tn.base,
+        lift: tn.lift,
+        entering: tn.entering,
+        enterPhase: tn.enterPhase,
+        sitting: tn.sitting,
+        frame: this.frame,
+        skills: tn.skills,
+        booksShown: tn.booksShown,
+        booksInHand: tn.booksInHand
+      });
+    }
+    setAgents(agents) {
+      const seen = new Set(agents.map((a) => a.id));
+      for (const [id, tn] of this.toons) {
+        if (!seen.has(id)) {
+          this.parkToon(id, tn);
+          tn.leaving = true;
+          this.leaving.push(tn);
+          this.toons.delete(id);
+        }
+      }
+      for (const [id, p] of this.parked) {
+        if (this.toons.has(id) || this.frame - p.frame > 600)
+          this.parked.delete(id);
+      }
+      for (const a of agents) {
+        let tn = this.toons.get(a.id);
+        if (!tn) {
+          const resume = this.parked.get(a.id);
+          this.parked.delete(a.id);
+          if (resume)
+            this.leaving = this.leaving.filter((t) => t.agent.id !== a.id);
+          tn = {
+            agent: a,
+            p: persona(a.id),
+            x: resume?.x ?? 0,
+            targetX: 0,
+            base: resume?.base ?? 0,
+            x0: 0,
+            seatCol: 0,
+            deskIdx: 0,
+            row: 0,
+            lift: resume?.lift ?? 0,
+            sitting: resume?.sitting ?? false,
+            entering: resume?.entering ?? true,
+            enterPhase: resume?.enterPhase,
+            leaving: false,
+            // resume the dev's book state so a transient cull doesn't replay the
+            // whole shelf trip; a fresh spawn starts with the books it already owns
+            // already on the desk (no animation for skills used before it appeared)
+            skills: resume?.skills ?? [...a.skills ?? []],
+            booksShown: resume?.booksShown ?? (a.skills?.length ?? 0),
+            booksInHand: resume?.booksInHand ?? 0,
+            ph: hash(a.id) % 628 / 100
+          };
+          this.toons.set(a.id, tn);
+          if (!resume)
+            this.newToonIds.add(a.id);
+        }
+        const nextV = a.reviewVerdict;
+        if (a.reviewOf && (nextV === "approved" || nextV === "changes") && tn.lastVerdict !== nextV) {
+          tn.stampAt = this.frame;
+        }
+        tn.lastVerdict = nextV;
+        tn.agent = a;
+        for (const s of a.skills ?? [])
+          if (!tn.skills.includes(s))
+            tn.skills.push(s);
+      }
+      this.agents = agents;
+      this.layout();
+    }
+    /** Group a room's agents into per-worktree desk blocks. The main worktree
+     *  (default branch, or a "." / root checkout) comes first and is labelled
+     *  "main"; each other worktree gets a contiguous block of columns after a
+     *  one-column partition gap, signed with its branch. */
+    seatPlan(agents) {
+      const byTree = /* @__PURE__ */ new Map();
+      for (const a of agents) {
+        const key = a.worktree && a.worktree.trim() ? a.worktree : "";
+        if (!key)
+          continue;
+        if (!byTree.has(key))
+          byTree.set(key, []);
+        byTree.get(key).push(a);
+      }
+      const isMain = (key, ags) => DEFAULT_BRANCHES.has((ags[0].branch ?? "").toLowerCase());
+      const treeName = (key) => key.split(/[\\/]/).pop() || key;
+      const entries = [...byTree.entries()].sort((a, b) => {
+        const am = isMain(a[0], a[1]) ? 0 : 1;
+        const bm = isMain(b[0], b[1]) ? 0 : 1;
+        if (am !== bm)
+          return am - bm;
+        return treeName(a[0]) < treeName(b[0]) ? -1 : 1;
+      });
+      const seats = /* @__PURE__ */ new Map();
+      const groups = [];
+      let startCol = 0;
+      let mainTaken = false;
+      for (const [key, ags] of entries) {
+        ags.forEach((a, i) => {
+          let row = Math.floor(i / FRONT_CAP);
+          let col = i % FRONT_CAP;
+          if (row > ROWS_OF_DESKS - 1) {
+            row = ROWS_OF_DESKS - 1;
+            col = i - row * FRONT_CAP;
+          }
+          seats.set(a.id, { col: startCol + col, row });
+        });
+        const cols = Math.max(1, Math.min(ags.length, FRONT_CAP));
+        const main = !mainTaken && isMain(key, ags);
+        if (main)
+          mainTaken = true;
+        groups.push({
+          name: main ? "main" : treeName(key),
+          branch: ags[0].branch || "\u2014",
+          isMain: main,
+          startCol,
+          cols,
+          hue: main ? 150 : hash(key) % 360
+        });
+        startCol += cols + GROUP_GAP;
+      }
+      const totalCols = Math.max(0, startCol - GROUP_GAP);
+      const span = ROOM_W - WB_W - DOOR_W - DESK_W;
+      const pitch = totalCols > 1 ? Math.min(DESK_W, span / (totalCols - 1)) : DESK_W;
+      return { seats, groups, totalCols, pitch };
+    }
+    /** World x of a seat (col/row) within a room, using the room's compressed
+     *  column pitch so desks, chairs and signs all line up and stay inside. */
+    seatX(r, col, row) {
+      const pitch = r.plan?.pitch ?? DESK_W;
+      return r.x0 + WB_W + col * pitch + row * (pitch / 2);
+    }
+    /** An island's ordered rooms: ONLY the ones the operator added — the required
+     *  main checkout plus each assigned worktree. Live agents attach by checkout
+     *  path; agents in unassigned dirs aren't shown. Main leads. */
+    planBuildings(reserved, agentsByKey) {
+      const rootKey = reserved.path;
+      const treeName = (key) => key.split(/[\\/]/).pop() || key;
+      const branchByKey = /* @__PURE__ */ new Map();
+      branchByKey.set(rootKey, "");
+      for (const w of reserved.worktrees ?? []) {
+        if (!branchByKey.get(w.path))
+          branchByKey.set(w.path, w.branch || "");
+      }
+      const keys = [rootKey, ...[...branchByKey.keys()].filter((k) => k !== rootKey)];
+      return keys.map((key) => {
+        const agents = agentsByKey.get(key) ?? [];
+        const isMain = key === rootKey;
+        const branch = branchByKey.get(key) || agents[0]?.branch || "";
+        return {
+          key,
+          agents,
+          isMain,
+          path: rootKey,
+          branch: branch || "\u2014",
+          label: isMain ? "main" : branch || treeName(key)
+        };
+      });
+    }
+    /** Re-aim a toon at its desk using its building's CURRENT (tweening)
+     *  position, so seated devs ride a collapsing island instead of snapping. */
+    retargetToon(tn) {
+      const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
+      if (!room)
+        return;
+      tn.base = room.baseY;
+      tn.x0 = room.x0;
+      const deskX = this.seatX(room, tn.seatCol, tn.row);
+      if (tn.agent.state === "active")
+        tn.targetX = deskX + 13;
+      else
+        tn.targetX = deskX + 19;
+    }
+    /** The cable port: a jack on the wall just BELOW the TV that every desk's
+     *  cable runs into. The light-ball then hops up from here into the screen. */
+    cablePlug(r) {
+      const b = boardRect(r.x0, r.baseY);
+      return { x: b.x + b.w / 2, y: b.y + b.h + 5 };
+    }
+    /** The cable polyline for a seat: computer → floor → a curved sweep to the
+     *  central floor bus → up the middle into the port below the screen. All
+     *  desks share the central bus, so the cables bundle before going in. */
+    cableRoute(r, seat) {
+      const base = r.baseY;
+      const dx = this.seatX(r, seat.col, seat.row);
+      const db = base - seat.row * ROW_DY;
+      const cx = dx + 8;
+      const C = { x: cx, y: db - 12 };
+      const F = { x: cx, y: db + 0.5 };
+      const J = { x: r.x0 + ROOM_W / 2, y: base - 3 };
+      const P = this.cablePlug(r);
+      const cFJ = { x: (cx + J.x) / 2, y: Math.max(F.y, J.y) + 5 };
+      const cJP = { x: J.x, y: (J.y + P.y) / 2 };
+      return [C, F, ...sampleQuad(F, cFJ, J, 8), ...sampleQuad(J, cJP, P, 10)];
+    }
+    /** Fire a glowing light-ball from a working dev's computer along its network
+     *  cable, through the port, and up into the screen — the "git changed" signal.
+     *  Falls back to a room-centre → port route when no dev/seat is known. */
+    emitPacket(r, delay = 0, snap) {
+      const plug = this.cablePlug(r);
+      const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
+      const seat = occ ? r.plan?.seats.get(occ.id) : void 0;
+      const path = seat ? this.cableRoute(r, seat) : [{ x: r.x0 + ROOM_W / 2, y: r.baseY - 16 }, plug];
+      const s = path[0];
+      this.packets.push({
+        x: s.x,
+        y: s.y,
+        sx: s.x,
+        sy: s.y,
+        tx: plug.x,
+        ty: plug.y,
+        t: -delay,
+        path,
+        color: Math.random() < 0.6 ? "#3ee089" : "#56c7ff",
+        ph: Math.random() * Math.PI * 2,
+        // flicker/pulse phase
+        applyKey: snap ? r.name : void 0,
+        applySnap: snap
+      });
+    }
+    /** True while a just-requested sync's resulting board change should flash but
+     *  not beam (15s window covers the pull-then-push sequence). */
+    syncSuppressed(room) {
+      const t = this.syncSuppress.get(room);
+      if (t === void 0)
+        return false;
+      if (Date.now() - t < 15e3)
+        return true;
+      this.syncSuppress.delete(room);
+      return false;
+    }
+    /** A beam reached the screen: show the snapshot it carried, and flash only the
+     *  column(s) that differ from what was on the TV (so it's clear what moved). */
+    applyBoardSnapshot(key, snap) {
+      const r = key ? this.rooms.get(key) : void 0;
+      if (!r)
+        return;
+      const o = r.boardShown, cp = r.cellPulse;
+      if (o) {
+        const uChanged = o.modified !== snap.modified || o.unstagedAdd !== snap.unstagedAdd || o.unstagedDel !== snap.unstagedDel;
+        const sChanged = o.staged !== snap.staged || o.stagedAdd !== snap.stagedAdd || o.stagedDel !== snap.stagedDel;
+        const cChanged = o.ahead !== snap.ahead || o.committedAdd !== snap.committedAdd || o.committedDel !== snap.committedDel || o.commits.length !== snap.commits.length;
+        if (uChanged)
+          cp.unstaged = 1;
+        if (sChanged)
+          cp.staged = 1;
+        if (cChanged)
+          cp.commits = 1;
+        if (JSON.stringify(o.pr) !== JSON.stringify(snap.pr))
+          cp.pr = 1;
+        const pureMove = uChanged && sChanged && o.modified + o.staged === snap.modified + snap.staged && o.modified > snap.modified !== o.staged > snap.staged;
+        const num = (b) => ({
+          "u.count": `${b.modified} file${b.modified === 1 ? "" : "s"}`,
+          "u.add": `+${b.unstagedAdd}`,
+          "u.del": `-${b.unstagedDel}`,
+          "s.count": `${b.staged} file${b.staged === 1 ? "" : "s"}`,
+          "s.add": `+${b.stagedAdd}`,
+          "s.del": `-${b.stagedDel}`,
+          "c.count": `${b.ahead}`,
+          "c.add": `+${b.committedAdd}`,
+          "c.del": `-${b.committedDel}`
+        });
+        const oN = num(o), nN = num(snap);
+        for (const k of Object.keys(nN)) {
+          if (oN[k] === nN[k])
+            continue;
+          if (pureMove && (k[0] === "u" || k[0] === "s"))
+            continue;
+          r.numAnim[k] = { from: oN[k], to: nN[k], t: 0 };
+        }
+      }
+      r.boardShown = snap;
+      r.statPulse = 1;
+    }
+    /** Draw each occupied desk's network cable: computer → floor → a curved sweep
+     *  to the central floor bus → up into the port below the screen. Static art;
+     *  the light-balls (packets) ride this same route when git changes. */
+    drawCables(ctx, r) {
+      if (r.built < 0.85 || !r.plan)
+        return;
+      ctx.save();
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      for (const [, seat] of r.plan.seats) {
+        const route = this.cableRoute(r, seat);
+        ctx.beginPath();
+        ctx.moveTo(route[0].x, route[0].y);
+        for (let i = 1; i < route.length; i++)
+          ctx.lineTo(route[i].x, route[i].y);
+        ctx.strokeStyle = "rgba(12,16,20,0.4)";
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(80,102,122,0.4)";
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+        ctx.fillStyle = "#2a3138";
+        ctx.fillRect(route[0].x - 1, route[0].y - 1, 2, 2);
+      }
+      const plug = this.cablePlug(r);
+      ctx.fillStyle = "#10161c";
+      ctx.fillRect(plug.x - 4, plug.y - 1.5, 8, 3);
+      ctx.fillStyle = "#2a3138";
+      ctx.fillRect(plug.x - 3, plug.y - 0.6, 6, 1.2);
+      ctx.restore();
+    }
+    /** Build the campus: only rooms the operator added (reserved islands + their
+     *  assigned worktrees) render. Live agents attach to those rooms by their
+     *  checkout path; an agent whose room wasn't added simply isn't shown (its
+     *  session keeps running regardless). */
+    layout() {
+      const agentsByKey = /* @__PURE__ */ new Map();
+      for (const a of this.agents) {
+        const key = a.worktree && a.worktree.trim() ? a.worktree : null;
+        if (!key)
+          continue;
+        if (!agentsByKey.has(key))
+          agentsByKey.set(key, []);
+        agentsByKey.get(key).push(a);
+      }
+      const reservedByName = new Map(this.reserved.map((r) => [r.name, r]));
+      const order = [...this.reserved].sort((a, b) => a.col - b.col || a.floor - b.floor || (a.name < b.name ? -1 : 1)).map((r) => r.name);
+      const wanted = /* @__PURE__ */ new Map();
+      this.islands.clear();
+      let lane = 0;
+      for (const name of order) {
+        const reserved = reservedByName.get(name);
+        if (!reserved)
+          continue;
+        const buildings = this.planBuildings(reserved, agentsByKey);
+        const path = reserved.path;
+        buildings.forEach((b, i) => {
+          wanted.set(b.key, {
+            island: name,
+            label: b.label,
+            branch: b.branch,
+            isMain: b.isMain,
+            col: lane,
+            floor: i,
+            path: b.path ?? path,
+            agents: b.agents
+          });
+        });
+        this.islands.set(name, {
+          name,
+          path,
+          laneStart: lane,
+          cols: 1,
+          count: buildings.length,
+          hue: hash(name) % 360
+        });
+        lane += 1 + ISLAND_GAP;
+      }
+      for (const [key, room] of this.rooms) {
+        room.dying = !wanted.has(key);
+        if (room.dying)
+          room.agents = [];
+      }
+      let newIdx = 0;
+      for (const [key, info] of wanted) {
+        let room = this.rooms.get(key);
+        if (!room) {
+          room = {
+            name: key,
+            island: info.island,
+            label: info.label,
+            branch: info.branch,
+            isMain: info.isMain,
+            floor: info.floor,
+            col: info.col,
+            x0: cellX0(info.col),
+            baseY: floorBase(info.floor),
+            path: info.path,
+            hue: hash(info.island) % 360,
+            built: 0,
+            delay: newIdx++ * 0.45,
+            // buildings rise one after another
+            agents: [],
+            decor: hash(key + "decor"),
+            statSig: "",
+            statPulse: 0,
+            cellPulse: { unstaged: 0, staged: 0, commits: 0, pr: 0 },
+            numAnim: {}
+          };
+          this.rooms.set(key, room);
+        }
+        room.island = info.island;
+        room.label = info.label;
+        room.branch = info.branch;
+        room.isMain = info.isMain;
+        room.board = this.boardsMap[key];
+        room.floor = info.floor;
+        room.col = info.col;
+        room.path = info.path ?? room.path;
+        room.agents = info.agents;
+      }
+      this.ghosts = [];
+      for (const isl of this.islands.values()) {
+        const floor = isl.count;
+        this.ghosts.push({
+          col: isl.laneStart,
+          floor,
+          x0: cellX0(isl.laneStart),
+          base: floorBase(floor),
+          kind: "building",
+          island: isl.name
+        });
+      }
+      const reserveCol = this.islands.size === 0 ? 0 : lane;
+      this.ghosts.push({
+        col: reserveCol,
+        floor: 0,
+        x0: cellX0(reserveCol),
+        base: floorBase(0),
+        kind: "island"
+      });
+      this.colRange.clear();
+      let minX = Infinity, maxX = -Infinity, topY = Infinity, botY = -Infinity, minFloor = 0;
+      const extend = (floor, x0, base) => {
+        minX = Math.min(minX, x0);
+        maxX = Math.max(maxX, x0 + ROOM_W);
+        topY = Math.min(topY, base - ROOM_H);
+        botY = Math.max(botY, base + SLAB + PLINTH_APRON + PLINTH_H + 2);
+        minFloor = Math.min(minFloor, floor);
+      };
+      for (const r of this.rooms.values()) {
+        const rng = this.colRange.get(r.col) ?? { min: r.floor, max: r.floor };
+        rng.min = Math.min(rng.min, r.floor);
+        rng.max = Math.max(rng.max, r.floor);
+        this.colRange.set(r.col, rng);
+        extend(r.floor, cellX0(r.col), floorBase(r.floor));
+      }
+      for (const g of this.ghosts)
+        extend(g.floor, g.x0, g.base);
+      if (!isFinite(minX)) {
+        minX = -120;
+        maxX = 120;
+        topY = -120;
+        botY = 40;
+      }
+      this.campusMinX = minX;
+      const bb = this.billboardGeom();
+      minX = Math.min(minX, bb.x - 14);
+      topY = Math.min(topY, bb.top - 8);
+      this.bounds = { minX, maxX, topY, botY, minFloor };
+      const placed = /* @__PURE__ */ new Set();
+      for (const room of this.rooms.values()) {
+        room.plan = this.seatPlan(room.agents);
+        room.agents.forEach((a, di) => {
+          const tn = this.toons.get(a.id);
+          if (!tn)
+            return;
+          placed.add(a.id);
+          tn.bkey = room.name;
+          tn.deskIdx = di;
+          const seat = room.plan.seats.get(a.id) ?? { col: 0, row: 0 };
+          tn.row = seat.row;
+          tn.seatCol = seat.col;
+          const firstPlace = tn.entering && tn.x === 0;
+          this.retargetToon(tn);
+          if (firstPlace) {
+            if (room.floor > 0) {
+              tn.x = shaftX(room.x0);
+              tn.base = floorBase(0);
+              tn.targetX = tn.x;
+              tn.enterPhase = "elevator";
+              tn.riding = true;
+            } else {
+              tn.x = room.x0 + ROOM_W + 8;
+              tn.enterPhase = "walk";
+            }
+          }
+        });
+      }
+      for (const [id, tn] of this.toons) {
+        if (!placed.has(id)) {
+          this.parkToon(id, tn);
+          tn.bkey = void 0;
+          this.toons.delete(id);
+        }
+      }
+      if (this.focusAgentId) {
+        const tn = this.toons.get(this.focusAgentId);
+        if (tn) {
+          this.focus.x = tn.targetX;
+          this.focus.y = tn.base - ROOM_H / 2 + 6;
+        }
+      } else if (this.focusRoom_) {
+        const r = this.rooms.get(this.focusRoom_);
+        if (r) {
+          this.focus.x = r.x0 + ROOM_W / 2;
+          this.focus.y = r.baseY - ROOM_H / 2;
+        }
+      } else if (this.focusIsland_) {
+        if (!this.frameIsland(this.focusIsland_))
+          this.focusIsland_ = null;
+      } else if (this.focusBillboard_) {
+        const bb2 = this.billboardGeom();
+        this.focus.x = bb2.x + bb2.w / 2;
+        this.focus.y = bb2.top + bb2.bodyH / 2;
+      } else if (!this.hasFitted) {
+        this.clearFocus(true, false);
+        this.hasFitted = true;
+      }
+      this.invalidate();
+    }
+    /* ============ CAMERA ============ */
+    /** Center on a building (by its key) or, failing that, on an island (by repo
+     *  name → that island's first building). */
+    focusOn(name, resetZoom = true) {
+      let r = this.rooms.get(name);
+      if (!r)
+        r = [...this.rooms.values()].find((b) => b.island === name);
+      if (!r)
+        return;
+      this.focusAgentId = null;
+      this.focusIsland_ = null;
+      this.focusBillboard_ = false;
+      this.focusRoom_ = r.name;
+      this.focus.x = r.x0 + ROOM_W / 2;
+      this.focus.y = r.baseY - ROOM_H / 2;
+      this.focus.spanW = ROOM_W + 26;
+      this.focus.spanH = FLOOR_STEP + 34;
+      this.panX = 0;
+      this.panY = 0;
+      if (resetZoom)
+        this.zoomMul = 1;
+      this.invalidate();
+    }
+    /** Toggle the review billboard zoom: fly to it, or (if already there) return to
+     *  the view you were at before. Driven by the HUD PR button. */
+    toggleBillboard() {
+      if (this.focusBillboard_)
+        this.exitBillboard();
+      else
+        this.focusBillboard();
+    }
+    /** Fly the camera to the review billboard (and expand it so the PRs show),
+     *  snapshotting the current view so exiting can return to it. */
+    focusBillboard() {
+      if (!this.focusBillboard_) {
+        this.viewBeforeBillboard = {
+          focusAgentId: this.focusAgentId,
+          focusRoom_: this.focusRoom_,
+          focusIsland_: this.focusIsland_,
+          focus: { ...this.focus },
+          panX: this.panX,
+          panY: this.panY,
+          zoomMul: this.zoomMul
+        };
+      }
+      this.focusAgentId = null;
+      this.focusRoom_ = null;
+      this.focusIsland_ = null;
+      this.focusBillboard_ = true;
+      const bb = this.billboardGeom();
+      this.focus.x = bb.x + bb.w / 2;
+      this.focus.y = bb.top + bb.bodyH / 2;
+      this.focus.spanW = bb.w + 70;
+      this.focus.spanH = bb.bodyH + 56;
+      this.panX = 0;
+      this.panY = 0;
+      this.zoomMul = 1;
+      this.invalidate();
+    }
+    /** Leave the billboard, gliding back to the view captured on entry (falling
+     *  back to the campus overview if there was none). */
+    exitBillboard() {
+      const v = this.viewBeforeBillboard;
+      this.viewBeforeBillboard = null;
+      this.focusBillboard_ = false;
+      if (!v) {
+        this.clearFocus();
+        return;
+      }
+      this.focusAgentId = v.focusAgentId;
+      this.focusRoom_ = v.focusRoom_;
+      this.focusIsland_ = v.focusIsland_;
+      this.focus.x = v.focus.x;
+      this.focus.y = v.focus.y;
+      this.focus.spanW = v.focus.spanW;
+      this.focus.spanH = v.focus.spanH;
+      this.panX = v.panX;
+      this.panY = v.panY;
+      this.zoomMul = v.zoomMul;
+      this.invalidate();
+    }
+    /** Set the focus box to frame a whole directory (island): all its stacked
+     *  buildings plus the platform/signpost. Returns false if the island is gone. */
+    frameIsland(islandName) {
+      const rooms = [...this.rooms.values()].filter((b) => b.island === islandName && !b.dying);
+      if (!rooms.length)
+        return false;
+      let minX = Infinity, maxX = -Infinity, topY = Infinity, botY = -Infinity;
+      for (const b of rooms) {
+        const rx = cellX0(b.col), ry = floorBase(b.floor);
+        minX = Math.min(minX, rx);
+        maxX = Math.max(maxX, rx + ROOM_W);
+        topY = Math.min(topY, ry - ROOM_H);
+        botY = Math.max(botY, ry + SLAB);
+      }
+      botY += 34;
+      this.focus.x = (minX + maxX) / 2;
+      this.focus.y = (topY + botY) / 2;
+      this.focus.spanW = maxX - minX + 46;
+      this.focus.spanH = botY - topY + 40;
+      return true;
+    }
+    /** Zoom out from a room to an overview of just THAT directory (its tower),
+     *  rather than the whole campus. */
+    focusIslandView(islandName) {
+      this.focusAgentId = null;
+      this.focusRoom_ = null;
+      this.focusBillboard_ = false;
+      this.focusIsland_ = islandName;
+      if (!this.frameIsland(islandName)) {
+        this.focusIsland_ = null;
+        this.clearFocus();
+        return;
+      }
+      this.panX = 0;
+      this.panY = 0;
+      this.zoomMul = 1;
+      this.invalidate();
+    }
+    /** Tight zoom onto one agent (their corner of the room). On the initial click
+     *  (resetZoom) we recentre; periodic re-layouts call it with resetZoom=false to
+     *  keep tracking the dev without fighting the operator's pan/zoom. */
+    focusAgent(id, resetZoom = true) {
+      const tn = this.toons.get(id);
+      if (!tn)
+        return;
+      const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
+      this.focusAgentId = id;
+      this.focusIsland_ = null;
+      this.focusBillboard_ = false;
+      this.focusRoom_ = room?.name ?? null;
+      this.focus.x = tn.targetX;
+      this.focus.y = tn.base - ROOM_H / 2 + 6;
+      this.focus.spanW = 96;
+      this.focus.spanH = FLOOR_STEP + 18;
+      if (resetZoom) {
+        this.panX = 0;
+        this.panY = 0;
+        this.zoomMul = 1;
+      }
+      this.invalidate();
+    }
+    clearFocus(resetZoom = true, preservePan = false) {
+      this.focusRoom_ = null;
+      this.focusAgentId = null;
+      this.focusIsland_ = null;
+      this.focusBillboard_ = false;
+      this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
+      this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
+      this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
+      this.focus.spanH = this.bounds.botY - this.bounds.topY + 46;
+      if (!preservePan) {
+        this.panX = 0;
+        this.panY = 0;
+      }
+      if (resetZoom)
+        this.zoomMul = 1;
+      this.invalidate();
+    }
+    setSelected(id) {
+      this.selectedId = id;
+      if (id && this.newToonIds.has(id)) {
+        this.newToonIds.delete(id);
+        this.focusAgent(id);
+      }
+      this.invalidate();
+    }
+    setEco(on) {
+      this.eco = on;
+      this.invalidate();
+    }
+    resize() {
+      const dpr = Math.min(window.devicePixelRatio, 2);
+      const w = this.container.clientWidth || 1;
+      const h = this.container.clientHeight || 1;
+      this.canvas.width = Math.round(w * dpr);
+      this.canvas.height = Math.round(h * dpr);
+      this.canvas.style.width = w + "px";
+      this.canvas.style.height = h + "px";
+      this.invalidate();
+    }
+    targetZoom() {
+      const cw = Math.max(80, (this.container.clientWidth || 1) - this.insetL - this.insetR);
+      const ch = this.container.clientHeight || 1;
+      const fitW = cw * 0.9 / this.focus.spanW;
+      const fitH = ch * 0.86 / this.focus.spanH;
+      return clamp(Math.min(fitW, fitH) * this.zoomMul, 0.7, 14);
+    }
+    /* ============ LOOP ============ */
+    start() {
+      if (this.running)
+        return;
+      this.running = true;
+      this.lastNow = performance.now();
+      const loop = (now) => {
+        if (!this.running)
+          return;
+        const dt = Math.min(250, now - this.lastNow);
+        this.lastNow = now;
+        const tickMs = this.eco ? 166 : 100;
+        this.acc += dt;
+        let ticked = false;
+        while (this.acc >= tickMs) {
+          this.acc -= tickMs;
+          this.frame++;
+          this.tick(tickMs / 1e3);
+          ticked = true;
+        }
+        const tz = this.targetZoom();
+        const tx = this.focus.x + this.panX;
+        const ty = this.focus.y + this.panY;
+        const moving = Math.abs(this.cam.x - tx) > 0.05 || Math.abs(this.cam.y - ty) > 0.05 || Math.abs(this.cam.z - tz) > 0.01;
+        if (moving) {
+          const k = Math.min(1, dt / 1e3 * 5);
+          this.cam.x += (tx - this.cam.x) * k;
+          this.cam.y += (ty - this.cam.y) * k;
+          this.cam.z += (tz - this.cam.z) * k;
+        }
+        if (ticked || moving || this.dirty) {
+          this.dirty = false;
+          this.draw();
+        }
+        if (!moving && !this.dirty && this.sceneIdle()) {
+          this.running = false;
+          return;
+        }
+        this.raf = requestAnimationFrame(loop);
+      };
+      this.raf = requestAnimationFrame(loop);
+    }
+    stop() {
+      this.running = false;
+      cancelAnimationFrame(this.raf);
+    }
+    /** Wake the loop after a state change; no-op while hidden or already running. */
+    wake() {
+      if (!this.running && !document.hidden)
+        this.start();
+    }
+    /** Mark a redraw is needed and ensure the loop is running. */
+    invalidate() {
+      this.dirty = true;
+      this.wake();
+    }
+    /** True when nothing needs animating, so the loop can park until woken. */
+    sceneIdle() {
+      if (this.particles.length || this.leaving.length || this.packets.length)
+        return false;
+      if (this.marqueeOn)
+        return false;
+      for (const r of this.rooms.values()) {
+        if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending)
+          return false;
+        const cp = r.cellPulse;
+        if (cp.unstaged > 0.02 || cp.staged > 0.02 || cp.commits > 0.02 || cp.pr > 0.02)
+          return false;
+        for (const _k in r.numAnim)
+          return false;
+        if (r.boardShown && r.boardShown.prReady === false)
+          return false;
+        if (r.boardShown?.pr && r.boardShown.pr.checksRunning > 0)
+          return false;
+        if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5)
+          return false;
+      }
+      for (const tn of this.toons.values()) {
+        if (tn.entering || Math.abs(tn.targetX - tn.x) > 1)
+          return false;
+        const s = tn.agent.state;
+        if (s === "active" || s === "waiting")
+          return false;
+      }
+      return true;
+    }
+    /* ============ TICK ============ */
+    tick(dt) {
+      const demolished = [];
+      for (const r of this.rooms.values()) {
+        if (!r.dying) {
+          const tx = cellX0(r.col), ty = floorBase(r.floor);
+          const k = Math.min(1, dt * 6);
+          r.x0 += (tx - r.x0) * k;
+          r.baseY += (ty - r.baseY) * k;
+          if (Math.abs(tx - r.x0) < 0.4)
+            r.x0 = tx;
+          if (Math.abs(ty - r.baseY) < 0.4)
+            r.baseY = ty;
+        }
+        if (r.dying) {
+          const hasLeaver = this.leaving.some((t) => t.bkey === r.name);
+          if (!hasLeaver) {
+            r.built = Math.max(0, r.built - dt / 1);
+            if (!this.eco) {
+              this.particles.push({
+                x: r.x0 + Math.random() * ROOM_W * Math.max(0.1, r.built),
+                y: r.baseY - 2 - Math.random() * 10,
+                vx: (Math.random() - 0.5) * 10,
+                vy: -4 - Math.random() * 6,
+                life: 0.7,
+                color: "#9a8a72",
+                size: 1.2,
+                gravity: 14
+              });
+            }
+            if (r.built <= 0)
+              demolished.push(r.name);
+          }
+          continue;
+        }
+        if (r.delay > 0) {
+          r.delay -= dt;
+          continue;
+        }
+        if (r.built < 1) {
+          r.built = Math.min(1, r.built + dt / 1.4);
+          if (!this.eco) {
+            this.particles.push({
+              x: r.x0 + Math.random() * ROOM_W * r.built,
+              y: r.baseY - 2 - Math.random() * 10,
+              vx: (Math.random() - 0.5) * 10,
+              vy: -4 - Math.random() * 6,
+              life: 0.7,
+              color: "#9a8a72",
+              size: 1.2,
+              gravity: 14
+            });
+          }
+        }
+      }
+      if (demolished.length) {
+        for (const name of demolished)
+          this.rooms.delete(name);
+        this.layout();
+      }
+      for (const r of this.rooms.values()) {
+        if (r.statPulse > 0)
+          r.statPulse = Math.max(0, r.statPulse - dt * 1.4);
+        const cp = r.cellPulse;
+        if (cp.unstaged > 0)
+          cp.unstaged = Math.max(0, cp.unstaged - dt * 0.9);
+        if (cp.staged > 0)
+          cp.staged = Math.max(0, cp.staged - dt * 0.9);
+        if (cp.commits > 0)
+          cp.commits = Math.max(0, cp.commits - dt * 0.9);
+        if (cp.pr > 0)
+          cp.pr = Math.max(0, cp.pr - dt * 0.9);
+        for (const k in r.numAnim) {
+          const an = r.numAnim[k];
+          an.t += dt * 3;
+          if (an.t >= 1)
+            delete r.numAnim[k];
+        }
+        const b = r.board;
+        const o = r.boardShown;
+        const sig = boardSig(b);
+        if (r.statSig === "") {
+          r.statSig = sig;
+          r.boardShown = b;
+          continue;
+        }
+        if (sig === r.statSig)
+          continue;
+        r.statSig = sig;
+        const localChanged = !o || !b ? !!b : o.modified !== b.modified || o.staged !== b.staged || o.unstagedAdd !== b.unstagedAdd || o.unstagedDel !== b.unstagedDel || o.stagedAdd !== b.stagedAdd || o.stagedDel !== b.stagedDel || o.ahead !== b.ahead || o.committedAdd !== b.committedAdd || o.committedDel !== b.committedDel || o.commits.length !== b.commits.length || o.unpushed !== b.unpushed;
+        if (b && r.built > 0.6 && localChanged && !this.syncSuppressed(r.name)) {
+          this.emitPacket(r, 0, b);
+        } else if (b) {
+          this.applyBoardSnapshot(r.name, b);
+        } else {
+          r.boardShown = b;
+        }
+      }
+      for (let i = this.packets.length - 1; i >= 0; i--) {
+        const p = this.packets[i];
+        p.t += dt * 0.55;
+        const e = clamp(p.t, 0, 1);
+        if (p.path && p.path.length >= 2) {
+          const pos = pointOnPath(p.path, e * e * (3 - 2 * e));
+          p.x = pos.x;
+          p.y = pos.y;
+        } else {
+          const ease = e * e * (3 - 2 * e);
+          p.x = p.sx + (p.tx - p.sx) * ease;
+          p.y = p.sy + (p.ty - p.sy) * ease - Math.sin(ease * Math.PI) * 16;
+        }
+        if (p.t >= 1) {
+          if (p.applySnap)
+            this.applyBoardSnapshot(p.applyKey, p.applySnap);
+          this.packets.splice(i, 1);
+        }
+      }
+      for (const tn of this.toons.values()) {
+        if (tn.leaving || tn.entering)
+          continue;
+        this.retargetToon(tn);
+        const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
+        if (!room)
+          continue;
+        if (!tn.errand && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
+          tn.errand = { phase: "out", grab: 0 };
+        }
+        if (tn.errand && tn.errand.phase !== "back")
+          tn.targetX = room.x0 + SHELF_REACH;
+      }
+      for (const tn of this.toons.values()) {
+        if (!tn.entering || tn.enterPhase !== "elevator")
+          continue;
+        const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
+        if (!room) {
+          tn.enterPhase = "walk";
+          tn.riding = false;
+          continue;
+        }
+        tn.riding = true;
+        tn.x0 = room.x0;
+        tn.x = shaftX(room.x0);
+        tn.targetX = tn.x;
+        const dy = room.baseY - tn.base;
+        tn.base += Math.sign(dy) * Math.min(Math.abs(dy), CAR_SPEED * dt);
+        if (Math.abs(room.baseY - tn.base) < 1) {
+          tn.base = room.baseY;
+          tn.riding = false;
+          tn.enterPhase = "walk";
+          this.retargetToon(tn);
+        }
+      }
+      const all = [...this.toons.values(), ...this.leaving];
+      for (const tn of all) {
+        if (tn.entering && tn.enterPhase === "elevator")
+          continue;
+        const dx = tn.targetX - tn.x;
+        if (Math.abs(dx) > 1)
+          tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
+        else if (tn.entering)
+          tn.entering = false;
+        tn.sitting = tn.agent.state === "active" && !tn.entering && !tn.errand && Math.abs(dx) <= 1;
+        const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand;
+        const targetLift = atDesk ? tn.row * ROW_DY : 0;
+        tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
+      }
+      for (const tn of this.toons.values()) {
+        const er = tn.errand;
+        if (!er)
+          continue;
+        const arrived = Math.abs(tn.targetX - tn.x) <= 1;
+        if (er.phase === "out") {
+          if (arrived) {
+            er.phase = "grab";
+            er.grab = 0.55;
+          }
+        } else if (er.phase === "grab") {
+          er.grab -= dt;
+          if (er.grab <= 0)
+            er.phase = "back";
+        } else if (arrived) {
+          tn.booksInHand = tn.skills.length - tn.booksShown;
+          tn.errand = void 0;
+        }
+      }
+      for (const tn of this.toons.values()) {
+        if (tn.booksInHand <= 0 || tn.errand)
+          continue;
+        const st = tn.agent.state;
+        if (st !== "active" && st !== "waiting") {
+          tn.booksShown = tn.skills.length;
+          tn.booksInHand = 0;
+        }
+      }
+      for (let i = this.leaving.length - 1; i >= 0; i--) {
+        const tn = this.leaving[i];
+        if (!tn.leavePhase) {
+          tn.riding = false;
+          const floor = Math.round(-tn.base / FLOOR_STEP);
+          if (floor > 0) {
+            tn.targetX = shaftX(tn.x0);
+          } else {
+            let maxC = -Infinity;
+            for (const r of this.rooms.values()) {
+              if (r.floor === floor)
+                maxC = Math.max(maxC, r.col);
+            }
+            const edge = isFinite(maxC) ? cellX0(maxC) + ROOM_W : tn.x0 + ROOM_W;
+            tn.targetX = edge + 5;
+          }
+          tn.leavePhase = "walk";
+        }
+        const atX = Math.abs(tn.x - tn.targetX) <= 1.5;
+        if (tn.leavePhase === "walk" && atX) {
+          if (Math.abs(tn.base) > 1) {
+            tn.leavePhase = "elevator";
+            tn.riding = true;
+            tn.x = shaftX(tn.x0);
+            tn.targetX = tn.x;
+          } else {
+            tn.leavePhase = "away";
+            tn.targetX = tn.x + 28;
+          }
+        } else if (tn.leavePhase === "elevator") {
+          tn.x = shaftX(tn.x0);
+          tn.targetX = tn.x;
+          const step = Math.min(Math.abs(tn.base), CAR_SPEED * dt);
+          tn.base += Math.sign(-tn.base) * step;
+          if (Math.abs(tn.base) <= 0.5) {
+            tn.base = 0;
+            tn.riding = false;
+            tn.leavePhase = "away";
+            tn.targetX = tn.x + 28;
+          }
+        } else if (tn.leavePhase === "away" && atX) {
+          this.leaving.splice(i, 1);
+        }
+      }
+      if (!this.eco && this.frame % 14 === 0) {
+        for (const tn of this.toons.values()) {
+          if (tn.agent.state === "error") {
+            this.particles.push({
+              x: tn.x + 6,
+              y: tn.base - tn.lift - 13,
+              vx: 2 + Math.random() * 3,
+              vy: -6 - Math.random() * 4,
+              life: 1,
+              color: "#7a8287",
+              size: 1.2,
+              gravity: -4
+            });
+          }
+        }
+      }
+      for (let i = this.particles.length - 1; i >= 0; i--) {
+        const p = this.particles[i];
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.vy += p.gravity * dt;
+        p.life -= dt * 1.1;
+        if (p.life <= 0)
+          this.particles.splice(i, 1);
+      }
+    }
+    /* ============ PICKING ============ */
+    screenOf(wx, wy) {
+      const cw = this.container.clientWidth, ch = this.container.clientHeight;
+      const cx = this.insetL + (cw - this.insetL - this.insetR) / 2;
+      return {
+        x: cx + (wx - this.cam.x) * this.cam.z,
+        y: ch / 2 + (wy - this.cam.y) * this.cam.z
+      };
+    }
+    setInsets(left, right) {
+      if (this.insetL === left && this.insetR === right)
+        return;
+      this.insetL = left;
+      this.insetR = right;
+      this.invalidate();
+    }
+    inRect(mx, my, wx, wy, ww, wh) {
+      const a = this.screenOf(wx, wy);
+      const b = this.screenOf(wx + ww, wy + wh);
+      return mx > a.x && mx < b.x && my > a.y && my < b.y;
+    }
+    pick(e) {
+      const rect = this.canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+      const bb = this.billboardGeom();
+      {
+        if (this.inRect(mx, my, bb.refresh.x, bb.refresh.y, bb.refresh.w, bb.refresh.h))
+          return { billboardRefresh: true };
+        for (const { pr, y, open } of bb.rows) {
+          if (pr.url && this.inRect(mx, my, open.x, open.y, open.w, open.h))
+            return { openPrUrl: pr.url };
+          if (this.inRect(mx, my, bb.x, y, bb.w, bb.rowH))
+            return { reviewPr: pr };
+        }
+        if (this.inRect(mx, my, bb.x, bb.top, bb.w, bb.bodyH))
+          return { billboardZoom: true };
+      }
+      for (const r of this.rooms.values()) {
+        if (r.built < 0.95)
+          continue;
+        const base = r.baseY;
+        if (this.inRect(mx, my, r.x0 + ROOM_W - 10, base - ROOM_H + 2, 8, 8)) {
+          return r.isMain ? { removeBtn: r.island } : { removeWtBtn: r.name, island: r.island };
+        }
+        if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
+          return { addDev: { island: r.island, key: r.name } };
+        }
+        const btns = this.commitButtons(r);
+        if (btns.push && this.inRect(mx, my, btns.push.x, btns.push.y, btns.push.w, btns.push.h))
+          return { pushRoom: r.name };
+        if (btns.pull && this.inRect(mx, my, btns.pull.x, btns.pull.y, btns.pull.w, btns.pull.h))
+          return { pullRoom: r.name };
+        if (btns.fetch && this.inRect(mx, my, btns.fetch.x, btns.fetch.y, btns.fetch.w, btns.fetch.h))
+          return { fetchRoom: r.name };
+        const prb = this.prOpenButton(r);
+        if (prb && this.inRect(mx, my, prb.x, prb.y, prb.w, prb.h))
+          return { openPrUrl: prb.url };
+      }
+      for (const g of this.ghosts) {
+        if (this.inRect(mx, my, g.x0, g.base - ROOM_H, ROOM_W, ROOM_H)) {
+          return { ghost: { floor: g.floor, col: g.col, kind: g.kind, island: g.island } };
+        }
+      }
+      for (const tn of this.toons.values()) {
+        const s = this.screenOf(tn.x, tn.base - tn.lift);
+        const w = 14 * this.cam.z, h = 22 * this.cam.z;
+        if (mx > s.x - w / 2 && mx < s.x + w / 2 && my > s.y - h && my < s.y + 4 * this.cam.z) {
+          return { agent: tn.agent.id };
+        }
+      }
+      for (const r of this.rooms.values()) {
+        if (this.inRect(mx, my, r.x0, r.baseY - ROOM_H, ROOM_W, ROOM_H + SLAB)) {
+          return { room: r.name, island: r.island };
+        }
+      }
+      return {};
+    }
+    onClick(e) {
+      const hit = this.pick(e);
+      if (hit.billboardRefresh) {
+        this.onRefreshPrsCb();
+      } else if (hit.openPrUrl) {
+        this.onOpenPrCb(hit.openPrUrl);
+      } else if (hit.billboardZoom) {
+        this.focusBillboard();
+      } else if (hit.reviewPr) {
+        this.onAssignReviewCb(hit.reviewPr);
+      } else if (hit.fetchRoom) {
+        this.onFetchCb(hit.fetchRoom);
+      } else if (hit.pushRoom) {
+        this.syncSuppress.set(hit.pushRoom, Date.now());
+        this.onPushCb(hit.pushRoom);
+      } else if (hit.pullRoom) {
+        this.syncSuppress.set(hit.pullRoom, Date.now());
+        this.onPullCb(hit.pullRoom);
+      } else if (hit.removeWtBtn)
+        this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
+      else if (hit.removeBtn)
+        this.onRemoveRoomCb(hit.removeBtn);
+      else if (hit.addDev)
+        this.onAddDevCb(hit.addDev.island, hit.addDev.key);
+      else if (hit.ghost) {
+        if (hit.ghost.kind === "island")
+          this.onReserveCb(hit.ghost.floor, hit.ghost.col);
+        else if (hit.ghost.island)
+          this.onAddWorktreeCb(hit.ghost.island);
+      } else if (hit.agent) {
+        this.onSelectCb(hit.agent);
+        this.focusAgent(hit.agent);
+      } else if (hit.room) {
+        if (!this.focusAgentId && this.focusRoom_ === hit.room)
+          this.focusIslandView(hit.island ?? "");
+        else
+          this.focusOn(hit.room);
+      } else if (this.focusBillboard_) {
+        this.exitBillboard();
+      } else {
+        const key = this.focusRoom_ ?? (this.focusAgentId ? this.toons.get(this.focusAgentId)?.bkey : void 0);
+        const r = key ? this.rooms.get(key) : void 0;
+        if (r)
+          this.focusIslandView(r.island);
+        else
+          this.clearFocus();
+      }
+    }
+    /* ============ DRAW ============ */
+    draw() {
+      this.marqueeOn = false;
+      const ctx = this.ctx;
+      const dpr = Math.min(window.devicePixelRatio, 2);
+      const cw = this.container.clientWidth, ch = this.container.clientHeight;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      const grad = ctx.createLinearGradient(0, 0, 0, ch);
+      grad.addColorStop(0, "#0a0e14");
+      grad.addColorStop(1, "#141b23");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, cw, ch);
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      for (let i = 0; i < 24; i++) {
+        const hsh = hash("star" + i);
+        ctx.fillRect(hsh % cw, (hsh >> 8) % Math.max(1, Math.round(ch * 0.45)), 1.5, 1.5);
+      }
+      const z = this.cam.z;
+      const cx = this.insetL + (cw - this.insetL - this.insetR) / 2;
+      const ox = cx - this.cam.x * z;
+      const oy = ch / 2 - this.cam.y * z;
+      ctx.setTransform(dpr * z, 0, 0, dpr * z, Math.round(dpr * ox), Math.round(dpr * oy));
+      const surfaceY = floorBase(0) + SLAB;
+      const { minX, maxX, botY, minFloor } = this.bounds;
+      {
+        const gx = minX - 80, gw = maxX - minX + 160;
+        const apron = PLINTH_APRON;
+        const grassFront = surfaceY + apron;
+        const dirtBot = botY + 50;
+        const dg = ctx.createLinearGradient(0, grassFront, 0, dirtBot);
+        dg.addColorStop(0, "#3a2c1d");
+        dg.addColorStop(1, "#140d08");
+        ctx.fillStyle = dg;
+        ctx.fillRect(gx, grassFront, gw, dirtBot - grassFront);
+        ctx.fillStyle = "#4a3a26";
+        const span = Math.max(1, Math.round(gw));
+        const depth = Math.max(1, Math.round(dirtBot - grassFront - 4));
+        for (let i = 0; i < 110; i++) {
+          const hsh = hash("rock" + i);
+          ctx.fillRect(gx + hsh % span, grassFront + 3 + (hsh >> 7) % depth, 2, 1.4);
+        }
+        const gg = ctx.createLinearGradient(0, surfaceY, 0, grassFront);
+        gg.addColorStop(0, "#2f5328");
+        gg.addColorStop(1, "#4f7d3f");
+        ctx.fillStyle = gg;
+        ctx.fillRect(gx, surfaceY, gw, apron);
+        ctx.fillStyle = "#5e9149";
+        ctx.fillRect(gx, surfaceY, gw, 1.2);
+        ctx.fillStyle = "rgba(0,0,0,0.28)";
+        ctx.fillRect(gx, grassFront, gw, 1.2);
+      }
+      for (const [col, rng] of this.colRange) {
+        const x0 = cellX0(col);
+        const roofY = floorBase(rng.max) - ROOM_H;
+        ctx.fillStyle = "#2c353e";
+        ctx.fillRect(x0 - 1.5, roofY - 3, ROOM_W + 3, 3.4);
+      }
+      for (const isl of this.islands.values())
+        this.drawIslandPlatform(ctx, isl);
+      this.drawReviewBillboard(ctx);
+      for (const r of this.rooms.values())
+        this.drawRoomBack(ctx, r);
+      for (const r of this.rooms.values())
+        this.drawCables(ctx, r);
+      for (const g of this.ghosts)
+        this.drawGhost(ctx, g);
+      for (const [col, rng] of this.colRange) {
+        if (rng.max <= 0)
+          continue;
+        const sx = shaftX(cellX0(col));
+        const left = sx - SHAFT_W / 2;
+        const top = floorBase(rng.max) - ROOM_H;
+        const bot = SLAB;
+        ctx.fillStyle = "#161b21";
+        ctx.fillRect(left, top, SHAFT_W, bot - top);
+        ctx.fillStyle = "#2a3138";
+        ctx.fillRect(left, top, 1.6, bot - top);
+        ctx.fillRect(left + SHAFT_W - 1.6, top, 1.6, bot - top);
+        ctx.fillStyle = "#323b43";
+        for (let f = 0; f <= rng.max; f++)
+          ctx.fillRect(left, floorBase(f) - 0.7, SHAFT_W, 1.4);
+        ctx.fillStyle = "#2c353e";
+        ctx.fillRect(left - 1, top - 5, SHAFT_W + 2, 5);
+      }
+      for (const tn of [...this.toons.values(), ...this.leaving]) {
+        if (!tn.riding)
+          continue;
+        const cx2 = shaftX(tn.x0);
+        const b = tn.base;
+        const halfW = CAR_W / 2;
+        const col = Math.round((tn.x0 + ROOM_W / 2) / COL_STEP);
+        const rng = this.colRange.get(col);
+        const cableTop = rng ? floorBase(rng.max) - ROOM_H : b - CAR_H - 14;
+        ctx.fillStyle = "#1c2228";
+        ctx.fillRect(cx2 - 0.6, cableTop, 1.2, b - CAR_H - cableTop);
+        ctx.fillStyle = "#10161c";
+        ctx.fillRect(cx2 - halfW, b - CAR_H, CAR_W, CAR_H);
+        ctx.fillStyle = "#222a31";
+        ctx.fillRect(cx2 - halfW + 1.5, b - CAR_H + 1.5, CAR_W - 3, CAR_H - 3);
+        ctx.fillStyle = "#4a545d";
+        ctx.fillRect(cx2 - halfW, b - CAR_H, CAR_W, 2.4);
+        ctx.fillRect(cx2 - halfW, b - 2, CAR_W, 2.6);
+        ctx.fillStyle = "#3a434c";
+        ctx.fillRect(cx2 - halfW, b - CAR_H, 1.8, CAR_H);
+        ctx.fillRect(cx2 + halfW - 1.8, b - CAR_H, 1.8, CAR_H);
+        ctx.fillStyle = "#5a646c";
+        ctx.fillRect(cx2 + halfW - 0.6, b - CAR_H, 0.6, CAR_H);
+      }
+      const chair = (dx, db) => {
+        ctx.fillStyle = "#3a4046";
+        ctx.fillRect(dx + 10, db - 8, 7, 1.6);
+        ctx.fillRect(dx + 15.6, db - 14, 1.4, 7);
+        ctx.fillRect(dx + 13, db - 6.5, 1.4, 6.5);
+      };
+      const displayRow = (tn) => tn.lift > ROW_DY / 2 ? 1 : 0;
+      const seated = [...this.toons.values()];
+      for (let row = ROWS_OF_DESKS - 1; row >= 0; row--) {
+        for (const r of this.rooms.values()) {
+          if (r.built < 0.7 || !r.plan)
+            continue;
+          const base = r.baseY;
+          for (const [, seat] of r.plan.seats) {
+            if (seat.row !== row)
+              continue;
+            chair(this.seatX(r, seat.col, row), base - row * ROW_DY);
+          }
+        }
+        const rowToons = seated.filter((t) => displayRow(t) === row);
+        for (const tn of this.leaving)
+          if (displayRow(tn) === row)
+            rowToons.push(tn);
+        rowToons.sort((a, b) => a.x - b.x);
+        for (const tn of rowToons)
+          this.drawToon(ctx, tn);
+        for (const r of this.rooms.values())
+          this.drawDesks(ctx, r, row);
+      }
+      for (const p of this.particles) {
+        ctx.globalAlpha = clamp(p.life, 0, 1);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+      }
+      ctx.globalAlpha = 1;
+      for (const p of this.packets) {
+        if (p.t < 0)
+          continue;
+        const fade = p.t < 0.85 ? 1 : clamp((1 - p.t) / 0.15, 0, 1);
+        const pulse = 0.8 + 0.2 * Math.sin(this.frame * 0.55 + p.ph);
+        const flick = 0.82 + Math.random() * 0.18;
+        const a = fade * pulse * flick;
+        const rad = 1.3 + 0.45 * Math.sin(this.frame * 0.55 + p.ph);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = 0.22 * a;
+        ctx.fillRect(p.x - rad - 1.4, p.y - rad - 1.4, (rad + 1.4) * 2, (rad + 1.4) * 2);
+        ctx.globalAlpha = 0.5 * a;
+        ctx.fillRect(p.x - rad, p.y - rad, rad * 2, rad * 2);
+        ctx.globalAlpha = Math.min(1, a + 0.1);
+        ctx.fillStyle = "#e6fff4";
+        ctx.fillRect(p.x - 0.6, p.y - 0.6, 1.2, 1.2);
+      }
+      ctx.globalAlpha = 1;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.textAlign = "center";
+      const xBtn = (r, title) => {
+        const base = r.baseY;
+        const c1 = this.screenOf(r.x0 + ROOM_W - 10, base - ROOM_H + 2);
+        const c2 = this.screenOf(r.x0 + ROOM_W - 2, base - ROOM_H + 10);
+        ctx.fillStyle = "rgba(10,15,18,0.8)";
+        ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
+        ctx.strokeStyle = "rgba(255,96,85,0.7)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
+        ctx.fillStyle = "#ff6055";
+        ctx.font = `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`;
+        ctx.textAlign = "center";
+        ctx.fillText(title, (c1.x + c2.x) / 2, (c1.y + c2.y) / 2 + 3);
+      };
+      for (const r of this.rooms.values()) {
+        if (r.built < 0.95)
+          continue;
+        const base = r.baseY;
+        const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
+        const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
+        ctx.fillStyle = "rgba(10,15,18,0.8)";
+        ctx.fillRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
+        ctx.strokeStyle = "#3ee089";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
+        ctx.fillStyle = "#3ee089";
+        ctx.font = `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`;
+        ctx.textAlign = "center";
+        ctx.fillText("+ DEV", (b.x + b2.x) / 2, (b.y + b2.y) / 2 + 3);
+        xBtn(r, "\u2715");
+      }
+      for (const g of this.ghosts) {
+        const s = this.screenOf(g.x0 + ROOM_W / 2, g.base - ROOM_H / 2);
+        const building = g.kind === "building";
+        ctx.fillStyle = building ? "rgba(110,210,150,0.8)" : "rgba(170,180,186,0.75)";
+        ctx.font = `600 ${clamp(3 * this.cam.z, 8, 12)}px 'Martian Mono', monospace`;
+        ctx.textAlign = "center";
+        ctx.fillText(building ? "+ WORKTREE" : "+ RESERVE", s.x, s.y - 2);
+        ctx.font = `${clamp(2.4 * this.cam.z, 7, 10)}px 'IBM Plex Mono', monospace`;
+        ctx.fillStyle = "rgba(140,150,156,0.6)";
+        ctx.fillText(building ? "new branch room" : "pick a directory", s.x, s.y + 11);
+      }
+      for (const tn of this.toons.values()) {
+        const s = this.screenOf(tn.x, tn.base - tn.lift - 23);
+        const st = tn.agent.state;
+        ctx.font = "9px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillStyle = tn.agent.id === this.selectedId ? "#ffb13d" : "rgba(230,238,240,0.85)";
+        ctx.fillText(tn.agent.name, s.x, s.y - 8);
+        const glyph = st === "waiting" ? "?" : st === "complete" ? "\u2713" : st === "error" ? "\u2717" : "";
+        if (glyph) {
+          const bob = st === "waiting" ? Math.sin(this.frame * 0.6 + tn.ph) * 2 : 0;
+          const bx = s.x + 10, by = s.y - 24 + bob;
+          ctx.fillStyle = "rgba(10,15,18,0.85)";
+          ctx.fillRect(bx - 6, by - 8, 12, 12);
+          ctx.strokeStyle = STATE_COLOR[st];
+          ctx.lineWidth = 1;
+          ctx.strokeRect(bx - 6, by - 8, 12, 12);
+          ctx.fillStyle = STATE_COLOR[st];
+          ctx.font = "bold 9px 'IBM Plex Mono', monospace";
+          ctx.fillText(glyph, bx, by + 1.5);
+        }
+        if (tn.agent.reviewOf) {
+          const v = tn.agent.reviewVerdict;
+          const resolved = v === "approved" || v === "changes";
+          const label = v === "approved" ? "APPROVED" : v === "changes" ? "CHANGES" : `REVIEWING #${tn.agent.reviewOf.number}`;
+          const col = v === "approved" ? "#3ee089" : v === "changes" ? "#ff6b6b" : "#ffb13d";
+          let scale = 1;
+          if (resolved && tn.stampAt !== void 0) {
+            const dt = this.frame - tn.stampAt;
+            scale = dt < 3 ? 1.5 : dt < 6 ? 1.2 : 1;
+          }
+          ctx.save();
+          const by = s.y - 30;
+          ctx.translate(s.x, by);
+          ctx.scale(scale, scale);
+          ctx.font = "bold 7px 'Martian Mono', monospace";
+          ctx.textAlign = "center";
+          const w = ctx.measureText(label).width + 10;
+          ctx.fillStyle = "rgba(10,15,18,0.88)";
+          ctx.fillRect(-w / 2, -7, w, 11);
+          ctx.strokeStyle = col;
+          ctx.lineWidth = resolved ? 1.4 : 1;
+          ctx.strokeRect(-w / 2, -7, w, 11);
+          ctx.fillStyle = col;
+          ctx.fillText(label, 0, 1.5);
+          ctx.restore();
+        }
+        if (tn.agent.id === this.selectedId) {
+          ctx.fillStyle = "#ffb13d";
+          ctx.font = "bold 11px monospace";
+          ctx.fillText("\u25BE", s.x, s.y - 18 + Math.sin(this.frame * 0.5) * 2);
+        }
+      }
+      if (this.toonDrag?.active)
+        this.paintDropHint();
+    }
+    /** Overlay drawn while a toon is being dragged: highlight the drop target
+     *  room/ghost and show the agent name floating at the cursor. */
+    paintDropHint() {
+      const ctx = this.ctx;
+      const dpr = Math.min(window.devicePixelRatio, 2);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const t = this.dropTarget;
+      if (t?.room) {
+        const isl = this.islands.get(t.room);
+        if (isl) {
+          const x0 = cellX0(isl.laneStart);
+          const x1 = cellX0(isl.laneStart + isl.cols - 1) + ROOM_W;
+          let top = floorBase(0);
+          for (const b of this.rooms.values())
+            if (b.island === isl.name)
+              top = Math.min(top, b.baseY - ROOM_H);
+          this.strokeWorldRect(x0, top, x1 - x0, floorBase(0) + SLAB - top, "#7fd1ff");
+        }
+      } else if (t?.ghost) {
+        const g = this.ghosts.find((g2) => g2.floor === t.ghost.floor && g2.col === t.ghost.col);
+        if (g)
+          this.strokeWorldRect(g.x0, g.base - ROOM_H, ROOM_W, ROOM_H, "#9be38b");
+      }
+      const d = this.toonDrag;
+      const name = this.toons.get(d.id)?.agent.name ?? "agent";
+      const label = d.blocked ? `${name} \xB7 active, can't move` : name;
+      ctx.font = "11px 'IBM Plex Mono', monospace";
+      const w = ctx.measureText(label).width + 14;
+      ctx.fillStyle = "rgba(12,16,20,0.92)";
+      ctx.fillRect(d.mx + 12, d.my - 9, w, 18);
+      ctx.fillStyle = d.blocked ? "#ff9a93" : t ? "#cfe8ff" : "#9aa3ab";
+      ctx.fillText(label, d.mx + 19, d.my + 3.5);
+    }
+    /** Stroke a world-space rectangle in screen space (dashed highlight). */
+    strokeWorldRect(wx, wy, ww, wh, color) {
+      const ctx = this.ctx;
+      const a = this.screenOf(wx, wy);
+      const b = this.screenOf(wx + ww, wy + wh);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+      ctx.restore();
+    }
+    drawGhost(ctx, g) {
+      const building = g.kind === "building";
+      ctx.save();
+      ctx.strokeStyle = building ? "rgba(110,210,150,0.45)" : "rgba(140,150,156,0.4)";
+      ctx.lineWidth = 0.8;
+      ctx.setLineDash([3, 3]);
+      ctx.strokeRect(g.x0 + 1, g.base - ROOM_H + 1, ROOM_W - 2, ROOM_H - 2);
+      ctx.setLineDash([]);
+      ctx.strokeStyle = building ? "rgba(110,210,150,0.10)" : "rgba(86,140,180,0.08)";
+      for (let gx = g.x0 + 12; gx < g.x0 + ROOM_W - 4; gx += 12) {
+        ctx.beginPath();
+        ctx.moveTo(gx, g.base - ROOM_H + 3);
+        ctx.lineTo(gx, g.base - 3);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    /** The island's foundation: a plinth spanning its lane at ground level, with a
+     *  signpost carrying the repo/directory name. The buildings stand on this. */
+    drawIslandPlatform(ctx, isl) {
+      const tx0 = cellX0(isl.laneStart);
+      const tx1 = cellX0(isl.laneStart + isl.cols - 1) + ROOM_W;
+      const ground = floorBase(0) + SLAB;
+      const sat = isl.path ? 26 : 14;
+      const L = (l) => `hsl(${isl.hue} ${sat}% ${l}%)`;
+      const aTop = ground;
+      const aBot = ground + PLINTH_APRON;
+      const fBot = aBot + PLINTH_H;
+      const wx0 = tx0 - PLINTH_OV, wx1 = tx1 + PLINTH_OV;
+      ctx.fillStyle = L(9);
+      ctx.beginPath();
+      ctx.moveTo(tx0, aTop);
+      ctx.lineTo(wx0, aBot);
+      ctx.lineTo(wx0, fBot);
+      ctx.lineTo(tx0, fBot);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(tx1, aTop);
+      ctx.lineTo(wx1, aBot);
+      ctx.lineTo(wx1, fBot);
+      ctx.lineTo(tx1, fBot);
+      ctx.closePath();
+      ctx.fill();
+      const ag = ctx.createLinearGradient(0, aTop, 0, aBot);
+      ag.addColorStop(0, L(34));
+      ag.addColorStop(1, L(26));
+      ctx.fillStyle = ag;
+      ctx.beginPath();
+      ctx.moveTo(tx0, aTop);
+      ctx.lineTo(tx1, aTop);
+      ctx.lineTo(wx1, aBot);
+      ctx.lineTo(wx0, aBot);
+      ctx.closePath();
+      ctx.fill();
+      const fg = ctx.createLinearGradient(0, aBot, 0, fBot);
+      fg.addColorStop(0, L(19));
+      fg.addColorStop(1, L(11));
+      ctx.fillStyle = fg;
+      ctx.fillRect(wx0, aBot, wx1 - wx0, PLINTH_H);
+      ctx.fillStyle = L(8);
+      ctx.fillRect(wx0, fBot - 2, wx1 - wx0, 2);
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = `hsl(${isl.hue} 50% 80%)`;
+      const cx = (wx0 + wx1) / 2;
+      const cy = aBot + PLINTH_H / 2 + 1;
+      const label = isl.name.toUpperCase();
+      let size = PLINTH_H - 10;
+      ctx.font = `bold ${size}px 'Martian Mono', monospace`;
+      const maxW = wx1 - wx0 - 10;
+      while (ctx.measureText(label).width > maxW && size > 6) {
+        size -= 0.5;
+        ctx.font = `bold ${size}px 'Martian Mono', monospace`;
+      }
+      ctx.fillText(label, cx, cy);
+      ctx.restore();
+    }
+    /** Truncate `s` with a trailing ellipsis so it fits within `maxW` world units
+     *  at the currently-set font. */
+    fitText(ctx, s, maxW) {
+      if (ctx.measureText(s).width <= maxW)
+        return s;
+      let lo = 0, hi = s.length;
+      while (lo < hi) {
+        const mid = lo + hi + 1 >> 1;
+        if (ctx.measureText(s.slice(0, mid) + "\u2026").width <= maxW)
+          lo = mid;
+        else
+          hi = mid - 1;
+      }
+      return s.slice(0, lo).trimEnd() + "\u2026";
+    }
+    /** The standalone signboard listing review-requested PRs. Each row is a tap
+     *  target (see pick → reviewPr) that opens the dispatch modal for that PR. */
+    drawReviewBillboard(ctx) {
+      const bb = this.billboardGeom();
+      const { x, top, w, bodyH, headerH, rows, surfaceY, extra, refresh } = bb;
+      const legTop = top + bodyH;
+      ctx.fillStyle = "#3a2c1d";
+      ctx.fillRect(x + 12, legTop, 5, surfaceY - legTop);
+      ctx.fillRect(x + w - 17, legTop, 5, surfaceY - legTop);
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(x + 6, surfaceY - 1, w - 12, 2);
+      ctx.fillStyle = "#16202b";
+      ctx.fillRect(x, top, w, bodyH);
+      ctx.fillStyle = "rgba(255,255,255,0.05)";
+      ctx.fillRect(x, top, w, 1);
+      ctx.strokeStyle = "#2b3a47";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 0.5, top + 0.5, w - 1, bodyH - 1);
+      ctx.fillStyle = "#1d2a36";
+      ctx.fillRect(x, top, w, headerH);
+      ctx.fillStyle = "#ffb13d";
+      ctx.font = "700 8px 'Martian Mono', monospace";
+      ctx.textAlign = "left";
+      ctx.fillText("\u2315 PRs TO REVIEW", x + 6, top + 11);
+      ctx.fillStyle = "rgba(255,177,61,0.6)";
+      ctx.textAlign = "right";
+      ctx.fillText(String(this.reviewPrs.length), x + w - 19, top + 11);
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fillRect(refresh.x, refresh.y, refresh.w, refresh.h);
+      ctx.fillStyle = "rgba(230,238,240,0.85)";
+      ctx.font = "8px 'IBM Plex Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("\u21BB", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
+      ctx.textAlign = "left";
+      for (const { pr, y, open } of rows) {
+        ctx.fillStyle = "rgba(255,255,255,0.06)";
+        ctx.fillRect(x + 4, y, w - 8, 0.6);
+        ctx.fillStyle = "#7fb8df";
+        ctx.font = "600 7px 'IBM Plex Mono', monospace";
+        ctx.fillText(`#${pr.number}`, x + 6, y + 9);
+        ctx.fillStyle = "rgba(180,190,196,0.55)";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.45), x + w - 6, y + 9);
+        ctx.textAlign = "left";
+        ctx.fillStyle = "rgba(230,238,240,0.9)";
+        ctx.font = "7px 'IBM Plex Mono', monospace";
+        ctx.fillText(this.fitText(ctx, pr.title || "", w - 30), x + 6, y + 17);
+        ctx.fillStyle = "rgba(255,255,255,0.07)";
+        ctx.fillRect(open.x, open.y, open.w, open.h);
+        ctx.fillStyle = "rgba(230,238,240,0.85)";
+        ctx.font = "7px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("\u2197", open.x + open.w / 2, open.y + open.h - 2.5);
+        ctx.textAlign = "left";
+      }
+      if (!rows.length) {
+        ctx.fillStyle = "rgba(180,190,196,0.5)";
+        ctx.font = "6.5px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("nothing awaiting you", x + w / 2, top + headerH + BB_ROW / 2 + 2);
+        ctx.textAlign = "left";
+      }
+      if (extra > 0) {
+        ctx.fillStyle = "rgba(180,190,196,0.6)";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillText(`+${extra} more`, x + 6, top + bodyH - 3);
+      }
+    }
+    drawRoomBack(ctx, r) {
+      const base = r.baseY;
+      const eFloor = clamp(r.built / 0.35, 0, 1);
+      const eWall = clamp((r.built - 0.2) / 0.45, 0, 1);
+      const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
+      const x = r.x0, w = ROOM_W, H = ROOM_H;
+      const underground = r.floor < 0;
+      const lit = r.agents.length > 0;
+      ctx.fillStyle = "#3d2f1f";
+      ctx.fillRect(x, base - 1.5, w * eFloor, SLAB - 1);
+      ctx.fillStyle = "#4a3a26";
+      ctx.fillRect(x, base - 1.5, w * eFloor, 1.2);
+      if (eWall <= 0)
+        return;
+      const grow = eWall;
+      const bw = backWall(x, base);
+      const topY = base - H * grow;
+      const byT = base - (base - bw.yTop) * grow;
+      const byB = base - DEPTH_Y * grow;
+      const shade = (l) => `hsl(${r.hue} ${underground ? 10 : 15}% ${l}%)`;
+      ctx.fillStyle = underground ? "#241c12" : "#2b2218";
+      ctx.beginPath();
+      ctx.moveTo(x, base);
+      ctx.lineTo(x + w, base);
+      ctx.lineTo(bw.x1, byB);
+      ctx.lineTo(bw.x0, byB);
+      ctx.closePath();
+      ctx.fill();
+      if (grow > 0.5) {
+        const fl = ctx.createLinearGradient(0, base, 0, byB);
+        if (lit && !underground) {
+          fl.addColorStop(0, "rgba(255,208,130,0.20)");
+          fl.addColorStop(0.5, "rgba(255,198,120,0.07)");
+          fl.addColorStop(1, "rgba(255,198,120,0)");
+        } else {
+          fl.addColorStop(0, "rgba(150,172,196,0.07)");
+          fl.addColorStop(1, "rgba(150,172,196,0)");
+        }
+        ctx.fillStyle = fl;
+        ctx.beginPath();
+        ctx.moveTo(x, base);
+        ctx.lineTo(x + w, base);
+        ctx.lineTo(bw.x1, byB);
+        ctx.lineTo(bw.x0, byB);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.fillStyle = shade(underground ? 9 : 11);
+      ctx.beginPath();
+      ctx.moveTo(x, topY);
+      ctx.lineTo(x + w, topY);
+      ctx.lineTo(bw.x1, byT);
+      ctx.lineTo(bw.x0, byT);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = shade(underground ? 12 : 15);
+      ctx.beginPath();
+      ctx.moveTo(x, topY);
+      ctx.lineTo(bw.x0, byT);
+      ctx.lineTo(bw.x0, byB);
+      ctx.lineTo(x, base);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x + w, topY);
+      ctx.lineTo(bw.x1, byT);
+      ctx.lineTo(bw.x1, byB);
+      ctx.lineTo(x + w, base);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = shade(underground ? 17 : 22);
+      ctx.fillRect(bw.x0, byT, bw.x1 - bw.x0, byB - byT);
+      ctx.fillStyle = shade(underground ? 12 : 16);
+      ctx.fillRect(bw.x0, byB - 2, bw.x1 - bw.x0, 2);
+      ctx.fillStyle = "#1a2128";
+      ctx.fillRect(x, topY, 1.5, base - topY + 3);
+      ctx.fillRect(x + w - 1.5, topY, 1.5, base - topY + 3);
+      if (grow >= 1)
+        ctx.fillRect(x, base - H - 1.5, w, 1.5);
+      if (eFurn <= 0)
+        return;
+      ctx.globalAlpha = eFurn;
+      this.drawBoard(ctx, r, base);
+      const onWall = (t, f) => {
+        const xL = x + (bw.x0 - x) * t;
+        const yT = topY + (byT - topY) * t;
+        const yB = base + (byB - base) * t;
+        return { x: xL, y: yT + (yB - yT) * f };
+      };
+      const winT0 = 0.3, winT1 = 0.64, winFTop = 0.28, winFBot = 0.66;
+      const wp = [onWall(winT0, winFTop), onWall(winT1, winFTop), onWall(winT1, winFBot), onWall(winT0, winFBot)];
+      const quad = (pts, fill) => {
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++)
+          ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+      };
+      const mid = (a, c) => ({ x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 });
+      ctx.strokeStyle = "#0c1116";
+      ctx.lineWidth = 3;
+      ctx.lineJoin = "miter";
+      ctx.beginPath();
+      ctx.moveTo(wp[0].x, wp[0].y);
+      for (let i = 1; i < 4; i++)
+        ctx.lineTo(wp[i].x, wp[i].y);
+      ctx.closePath();
+      ctx.stroke();
+      const ys = Math.min(...wp.map((p) => p.y)), yb = Math.max(...wp.map((p) => p.y));
+      if (underground) {
+        quad(wp, "#241a12");
+      } else {
+        const sky = ctx.createLinearGradient(0, ys, 0, yb);
+        sky.addColorStop(0, "#2c4a6e");
+        sky.addColorStop(1, "#b86a3a");
+        quad(wp, sky);
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        const c = mid(wp[0], wp[2]);
+        ctx.fillRect(c.x - 2, c.y - 2.5, 4, 1.3);
+      }
+      ctx.strokeStyle = "#0c1116";
+      ctx.lineWidth = 0.8;
+      const mt = mid(wp[0], wp[1]), mb = mid(wp[3], wp[2]);
+      ctx.beginPath();
+      ctx.moveTo(mt.x, mt.y);
+      ctx.lineTo(mb.x, mb.y);
+      ctx.stroke();
+      const ml = mid(wp[0], wp[3]), mr = mid(wp[1], wp[2]);
+      ctx.beginPath();
+      ctx.moveTo(ml.x, ml.y);
+      ctx.lineTo(mr.x, mr.y);
+      ctx.stroke();
+      this.drawBookshelf(ctx, r, onWall);
+      const px = x + w - DOOR_W - 6;
+      ctx.fillStyle = "#7a4a2a";
+      ctx.fillRect(px, base - 4.5, 4, 3);
+      ctx.fillStyle = "#3f8a4a";
+      ctx.fillRect(px + 0.5, base - 9, 1.4, 4.5);
+      ctx.fillRect(px + 2.2, base - 8, 1.4, 3.5);
+      ctx.fillRect(px - 0.8, base - 7.5, 1.4, 3);
+      const extra = r.decor % 3;
+      if (extra === 0) {
+        const wx = x + WB_W - 8;
+        ctx.fillStyle = "#cfd6da";
+        ctx.fillRect(wx, base - 12, 5, 10.5);
+        ctx.fillStyle = "#56c7ff";
+        ctx.fillRect(wx + 0.8, base - 15.5, 3.4, 4);
+      } else if (extra === 1) {
+        const sx = x + w - DOOR_W - 14;
+        ctx.fillStyle = "#171c21";
+        ctx.fillRect(sx, base - 16, 6, 14.5);
+        for (let i = 0; i < 4; i++) {
+          const on = (this.frame + i * 3 + r.decor % 7) % 8 < 4;
+          ctx.fillStyle = on ? i === 2 ? "#3ee089" : "#ffb13d" : "#2a3138";
+          ctx.fillRect(sx + 4.2, base - 14.5 + i * 3.2, 1, 1);
+        }
+      } else {
+        ctx.fillStyle = `hsl(${(r.hue + 120) % 360} 40% 45%)`;
+        ctx.fillRect(x + WB_W + 2, base - H + 10, 7, 9);
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        ctx.fillRect(x + WB_W + 3.2, base - H + 12, 4.6, 1);
+      }
+      const LAMPS = 3;
+      for (let li = 0; li < LAMPS; li++) {
+        const lx = x + w * (li + 1) / (LAMPS + 1);
+        ctx.fillStyle = "#20262c";
+        ctx.fillRect(lx - 0.6, base - H, 1.2, 4);
+        ctx.fillStyle = "#3a4046";
+        ctx.fillRect(lx - 3.5, base - H + 4, 7, 2);
+        ctx.fillStyle = lit ? "#ffd27a" : "#4a4636";
+        ctx.fillRect(lx - 1.4, base - H + 5.4, 2.8, 1.6);
+        if (lit) {
+          const g = ctx.createRadialGradient(lx, base - H + 6.2, 0, lx, base - H + 6.2, 5);
+          g.addColorStop(0, "rgba(255,210,130,0.22)");
+          g.addColorStop(1, "rgba(255,210,130,0)");
+          ctx.fillStyle = g;
+          ctx.fillRect(lx - 5, base - H + 1, 10, 10);
+        }
+      }
+      const sideAt = (t) => ({ x: x + w + (bw.x1 - (x + w)) * t, y: base + (bw.yBot - base) * t });
+      const dn = sideAt(0.18), df = sideAt(0.5);
+      ctx.fillStyle = "#4a3520";
+      ctx.beginPath();
+      ctx.moveTo(dn.x, dn.y);
+      ctx.lineTo(dn.x, dn.y - 31);
+      ctx.lineTo(df.x, df.y - 26);
+      ctx.lineTo(df.x, df.y);
+      ctx.closePath();
+      ctx.fill();
+      const pn = sideAt(0.22), pf = sideAt(0.46);
+      ctx.fillStyle = "#6e522f";
+      ctx.beginPath();
+      ctx.moveTo(pn.x, pn.y - 1.5);
+      ctx.lineTo(pn.x, pn.y - 29);
+      ctx.lineTo(pf.x, pf.y - 24.5);
+      ctx.lineTo(pf.x, pf.y - 1.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#d9b34a";
+      ctx.fillRect(pf.x + 0.4, pf.y - 14, 1.4, 1.6);
+      if (!lit && r.path) {
+        ctx.fillStyle = "rgba(8,11,14,0.45)";
+        ctx.fillRect(x + 1.5, base - H, w - 3, H);
+      }
+      ctx.globalAlpha = 1;
+    }
+    /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
+     *  plus live git stats (files changed, lines +/-). It glows when the worktree's
+     *  files change (see the packets fired from the desks in tick). */
+    /** Buttons in the bottom band of the COMMITS cell, shared by the renderer and
+     *  the hit-test so they always agree. `push` (↑) appears when there are local
+     *  commits to push, `pull` (↓) when the branch is behind upstream, and `fetch`
+     *  (↻) is always available to refresh behind/ahead from the remote. Geometry
+     *  must mirror drawBoard's cell layout. `synced` flags the all-clear state. */
+    commitButtons(r) {
+      const bd = r.boardShown ?? r.board;
+      if (!bd || bd.missing)
+        return {};
+      const b = boardRect(r.x0, r.baseY);
+      if (b.w < 20 || b.h < 14)
+        return {};
+      const pad = 4;
+      const innerL = b.x + pad, innerR = b.x + b.w - pad;
+      const prW = Math.min(96, (innerR - innerL) * 0.42);
+      const gitR = innerR - prW - 4;
+      const cw = (gitR - innerL) / 3;
+      const cx = innerL + 2 * cw;
+      const cwIn = cw - 4;
+      const y = b.y + b.h - 8.5, h = 7.5, slot = 8.5;
+      let lx = cx - 0.5;
+      const push = bd.unpushed > 0 ? { x: lx, y, w: slot, h } : void 0;
+      if (push)
+        lx += slot;
+      const pull = bd.behind > 0 ? { x: lx, y, w: slot, h } : void 0;
+      const fetch = { x: cx + cwIn - 6.5, y, w: 7, h };
+      return { push, pull, fetch, synced: !push && !pull };
+    }
+    /** Rect of the open-in-GitHub (↗) button in a room's board PR cell, plus the
+     *  PR url to open. Mirrors drawBoard's PR-cell layout. Null when there's no PR. */
+    prOpenButton(r) {
+      const bd = r.boardShown ?? r.board;
+      if (!bd || bd.missing || !bd.pr?.url)
+        return null;
+      const b = boardRect(r.x0, r.baseY);
+      if (b.w < 20 || b.h < 14)
+        return null;
+      const innerR = b.x + b.w - 4;
+      const bodyTop = b.y + 12;
+      return { x: innerR - 6, y: bodyTop, w: 6, h: 6, url: bd.pr.url };
+    }
+    /** Draw a number, rolling the old value up and out while the new value rises in
+     *  when it just changed (a flip-board feel). Uses the caller's font + fillStyle.
+     *  `fontH` is the cap height, used to size the clip box and the roll distance. */
+    drawRoll(ctx, x, y, key, text, fontH, r) {
+      const an = r.numAnim[key];
+      if (!an || an.to !== text) {
+        ctx.fillText(text, x, y);
+        return;
+      }
+      const e = an.t * an.t * (3 - 2 * an.t);
+      const h = fontH * 1.2;
+      const w = Math.max(ctx.measureText(an.from).width, ctx.measureText(text).width) + 2;
+      const a0 = ctx.globalAlpha;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x - 1, y - fontH, w + 2, fontH + 2.5);
+      ctx.clip();
+      ctx.globalAlpha = a0 * (1 - e);
+      ctx.fillText(an.from, x, y - e * h);
+      ctx.globalAlpha = a0 * e;
+      ctx.fillText(text, x, y + (1 - e) * h);
+      ctx.restore();
+      ctx.globalAlpha = a0;
+    }
+    /** A small spinning arc, e.g. while the first GitHub PR lookup is in flight. */
+    drawSpinner(ctx, cx, cy, rad, color) {
+      const a0 = this.frame * 0.35 % (Math.PI * 2);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 0.9;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad, a0, a0 + Math.PI * 1.4);
+      ctx.stroke();
+      ctx.restore();
+    }
+    drawBoard(ctx, r, base) {
+      const b = boardRect(r.x0, base);
+      if (b.w < 20 || b.h < 14)
+        return;
+      const glow = r.statPulse;
+      ctx.fillStyle = "#05080b";
+      ctx.fillRect(b.x - 2.5, b.y - 2.5, b.w + 5, b.h + 5);
+      ctx.fillStyle = "#0b0f14";
+      ctx.fillRect(b.x - 1.5, b.y - 1.5, b.w + 3, b.h + 3);
+      const scr = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+      scr.addColorStop(0, "#101b27");
+      scr.addColorStop(1, "#0a1118");
+      ctx.fillStyle = scr;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.fillStyle = "rgba(120,200,255,0.035)";
+      for (let yy = b.y + 2; yy < b.y + b.h - 1; yy += 3)
+        ctx.fillRect(b.x, yy, b.w, 1);
+      const pad = 4;
+      ctx.save();
+      ctx.textBaseline = "alphabetic";
+      ctx.textAlign = "left";
+      const branch = r.branch && r.branch !== "\u2014" ? r.branch : r.isMain ? "main" : "\u2014";
+      const baseName = (r.boardShown ?? r.board)?.base || "";
+      const suffix = baseName && baseName !== branch ? `\u2192 ${baseName}` : "";
+      ctx.font = "4px 'IBM Plex Mono', monospace";
+      const suffixW = suffix ? ctx.measureText(suffix).width + 3 : 0;
+      ctx.font = "bold 5px 'Martian Mono', monospace";
+      ctx.fillStyle = r.isMain ? "hsl(150 60% 80%)" : `hsl(${r.hue} 65% 82%)`;
+      let bt = `\u2325 ${branch}`;
+      while (ctx.measureText(bt).width > b.w - 12 - suffixW && bt.length > 6)
+        bt = bt.slice(0, -2);
+      if (bt !== `\u2325 ${branch}`)
+        bt += "\u2026";
+      ctx.fillText(bt, b.x + pad, b.y + 7);
+      if (suffix) {
+        const branchW = ctx.measureText(bt).width;
+        ctx.font = "bold 4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(205,220,232,0.95)";
+        ctx.fillText(suffix, b.x + pad + branchW + 3, b.y + 7);
+      }
+      ctx.fillStyle = glow > 0.02 ? `rgba(62,224,137,${0.35 + glow * 0.65})` : "rgba(90,100,108,0.5)";
+      ctx.fillRect(b.x + b.w - pad - 3, b.y + 3, 3, 3);
+      ctx.fillStyle = "rgba(120,150,170,0.18)";
+      ctx.fillRect(b.x + pad, b.y + 9.5, b.w - pad * 2, 0.8);
+      ctx.restore();
+      const bd = r.boardShown ?? r.board;
+      const placeholder = (text, color) => {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.font = "4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = color;
+        ctx.fillText(text, b.x + b.w / 2, b.y + b.h / 2 + 4);
+        ctx.restore();
+      };
+      if (!bd) {
+        placeholder("no git", "rgba(225,233,238,0.6)");
+        return;
+      }
+      if (bd.missing) {
+        placeholder("dir missing", "rgba(255,154,147,0.85)");
+        return;
+      }
+      const bodyTop = b.y + 12;
+      const bodyBot = b.y + b.h - 2;
+      const innerL = b.x + pad;
+      const innerR = b.x + b.w - pad;
+      const prW = Math.min(96, (innerR - innerL) * 0.42);
+      const gitR = innerR - prW - 4;
+      const cw = (gitR - innerL) / 3;
+      const fit = (s, maxW) => {
+        if (ctx.measureText(s).width <= maxW)
+          return s;
+        let t = s;
+        while (t.length > 1 && ctx.measureText(t + "\u2026").width > maxW)
+          t = t.slice(0, -1);
+        return t + "\u2026";
+      };
+      const churnBar = (x, yy, w, add, del) => {
+        ctx.fillStyle = "rgba(120,150,170,0.16)";
+        ctx.fillRect(x, yy, w, 2);
+        const total = add + del;
+        if (total <= 0)
+          return;
+        const aw = Math.max(1, Math.min(w - 1, Math.round(w * add / total)));
+        ctx.fillStyle = "#3ee089";
+        ctx.fillRect(x, yy, aw, 2);
+        ctx.fillStyle = "#ff6055";
+        ctx.fillRect(x + aw, yy, w - aw, 2);
+      };
+      const cellGlow = (x, w, pulse) => {
+        if (pulse <= 0.02)
+          return;
+        const a = Math.min(1, pulse);
+        ctx.fillStyle = `rgba(62,224,137,${0.14 * a})`;
+        ctx.fillRect(x, bodyTop - 2, w, bodyBot - bodyTop + 4);
+        ctx.strokeStyle = `rgba(62,224,137,${0.9 * a})`;
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(x + 0.4, bodyTop - 1.6, w - 0.8, bodyBot - bodyTop + 3.2);
+      };
+      const cp = r.cellPulse;
+      ctx.save();
+      ctx.textBaseline = "alphabetic";
+      const cells = [
+        { label: "UNSTAGED", count: `${bd.modified} file${bd.modified === 1 ? "" : "s"}`, add: bd.unstagedAdd, del: bd.unstagedDel, tint: "#ffb13d" },
+        { label: "STAGED", count: `${bd.staged} file${bd.staged === 1 ? "" : "s"}`, add: bd.stagedAdd, del: bd.stagedDel, tint: "#3ee089" },
+        { label: "COMMITS", count: `${bd.ahead}`, add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" }
+      ];
+      const cellKeys = ["unstaged", "staged", "commits"];
+      cells.forEach((c, i) => {
+        const cx = innerL + i * cw;
+        const cwIn = cw - 4;
+        cellGlow(cx - 1.5, cw - 1, cp[cellKeys[i]]);
+        if (i > 0) {
+          ctx.fillStyle = "rgba(120,150,170,0.12)";
+          ctx.fillRect(cx - 2, bodyTop, 0.7, bodyBot - bodyTop);
+        }
+        const pfx = ["u", "s", "c"][i];
+        ctx.textAlign = "left";
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(170,182,190,0.7)";
+        ctx.fillText(c.label, cx, bodyTop + 3);
+        ctx.font = "bold 5.5px 'Martian Mono', monospace";
+        ctx.fillStyle = c.tint;
+        this.drawRoll(ctx, cx, bodyTop + 10, `${pfx}.count`, fit(c.count, cwIn), 5.5, r);
+        ctx.font = "bold 3.6px 'Martian Mono', monospace";
+        const plus = `+${c.add}`;
+        ctx.fillStyle = "#3ee089";
+        this.drawRoll(ctx, cx, bodyTop + 16, `${pfx}.add`, plus, 3.6, r);
+        ctx.fillStyle = "#ff6055";
+        this.drawRoll(ctx, cx + ctx.measureText(plus).width + 3, bodyTop + 16, `${pfx}.del`, `-${c.del}`, 3.6, r);
+        churnBar(cx, bodyTop + 18.5, cwIn, c.add, c.del);
+        if (i === 2) {
+          const btns = this.commitButtons(r);
+          const sy = bodyBot - 1.5;
+          ctx.textAlign = "left";
+          if (btns.push) {
+            ctx.fillStyle = "#ffb13d";
+            ctx.font = "bold 4px 'Martian Mono', monospace";
+            ctx.fillText(`\u2191${bd.unpushed}`, btns.push.x + 0.5, sy);
+          }
+          if (btns.pull) {
+            ctx.fillStyle = "#56c7ff";
+            ctx.font = "bold 4px 'Martian Mono', monospace";
+            ctx.fillText(`\u2193${bd.behind}`, btns.pull.x + 0.5, sy);
+          }
+          if (btns.synced) {
+            ctx.fillStyle = "rgba(120,200,255,0.5)";
+            ctx.font = "3px 'IBM Plex Mono', monospace";
+            ctx.fillText("synced", cx, sy);
+          }
+          if (btns.fetch) {
+            ctx.fillStyle = "rgba(120,200,255,0.8)";
+            ctx.font = "5px 'Martian Mono', monospace";
+            ctx.fillText("\u21BB", btns.fetch.x + 1, sy + 0.4);
+          }
+        }
+      });
+      const px = gitR + 4;
+      cellGlow(gitR + 2, innerR - gitR - 2, cp.pr);
+      ctx.fillStyle = "rgba(120,150,170,0.14)";
+      ctx.fillRect(gitR + 1, bodyTop, 0.7, bodyBot - bodyTop);
+      let py = bodyTop + 3;
+      ctx.textAlign = "left";
+      ctx.font = "3px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "rgba(170,182,190,0.7)";
+      ctx.fillText("PR", px, py);
+      const loadingPr = !bd.pr && !bd.prReady;
+      const pr = bd.pr;
+      if (pr) {
+        if (pr.draft) {
+          ctx.font = "bold 2.8px 'Martian Mono', monospace";
+          ctx.fillStyle = "rgba(180,190,198,0.85)";
+          ctx.fillText("DRAFT", px + 7, py);
+        }
+        ctx.font = "bold 6px 'Martian Mono', monospace";
+        ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
+        ctx.textAlign = "right";
+        ctx.fillText(`#${pr.number}`, innerR - 8, py + 0.4);
+        ctx.textAlign = "left";
+        const ob = { x: innerR - 6, y: bodyTop, w: 6, h: 6 };
+        ctx.fillStyle = "rgba(255,255,255,0.08)";
+        ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
+        ctx.fillStyle = "rgba(220,228,234,0.9)";
+        ctx.font = "5px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("\u2197", ob.x + ob.w / 2, ob.y + ob.h - 1.3);
+        ctx.textAlign = "left";
+      } else if (loadingPr) {
+        this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
+      }
+      py += 6;
+      if (!pr) {
+        ctx.font = "3.4px 'IBM Plex Mono', monospace";
+        if (loadingPr) {
+          ctx.fillStyle = "rgba(185,140,255,0.7)";
+          ctx.fillText("checking\u2026", px, py);
+        } else {
+          ctx.fillStyle = "rgba(170,182,190,0.55)";
+          ctx.fillText("no open PR", px, py);
+        }
+      } else {
+        ctx.font = "bold 3.4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(228,236,240,0.95)";
+        const words = pr.title.split(/\s+/).filter(Boolean);
+        let l1 = "", wi = 0;
+        for (; wi < words.length; wi++) {
+          const next = l1 ? `${l1} ${words[wi]}` : words[wi];
+          if (ctx.measureText(next).width > prW && l1)
+            break;
+          l1 = next;
+        }
+        const rest = words.slice(wi).join(" ");
+        ctx.fillText(l1, px, py);
+        py += 4.4;
+        if (rest) {
+          const rw = ctx.measureText(rest).width;
+          if (rw <= prW) {
+            ctx.fillText(rest, px, py);
+          } else {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(px, py - 4, prW, 5.5);
+            ctx.clip();
+            const gap = 14, period = rw + gap;
+            const zoomedIn = this.cam.z > 3;
+            if (zoomedIn) {
+              this.marqueeOn = true;
+              if (r.marqueeStart === void 0)
+                r.marqueeStart = this.frame;
+            } else
+              r.marqueeStart = void 0;
+            const scroll = zoomedIn ? (this.frame - (r.marqueeStart ?? this.frame)) * 0.75 % period : 0;
+            ctx.fillText(rest, px - scroll, py);
+            ctx.fillText(rest, px - scroll + period, py);
+            ctx.restore();
+          }
+        }
+        py += 4.5;
+        ctx.fillStyle = "rgba(120,150,170,0.16)";
+        ctx.fillRect(px, py - 2.5, prW, 0.6);
+        py += 3.5;
+        if (pr.checksTotal > 0) {
+          ctx.font = "bold 4px 'Martian Mono', monospace";
+          let sx = px;
+          if (pr.checksPass > 0) {
+            ctx.fillStyle = "#3ee089";
+            const t = `${pr.checksPass}\u2713`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          }
+          if (pr.checksFailed > 0) {
+            ctx.fillStyle = "#ff6055";
+            const t = `${pr.checksFailed}\u2717`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          }
+          if (pr.checksRunning > 0) {
+            const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+            ctx.globalAlpha = pa;
+            ctx.fillStyle = "#ffb13d";
+            ctx.beginPath();
+            ctx.arc(sx + 1.4, py - 1.3, 1.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = "#ffb13d";
+            ctx.fillText(`${pr.checksRunning}`, sx + 3.6, py);
+          }
+        } else {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = "rgba(150,160,168,0.55)";
+          ctx.fillText("no checks", px, py);
+        }
+        py += 5;
+        if (pr.draft && pr.approvals === 0 && pr.changesRequested === 0) {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = "#ffb13d";
+          ctx.fillText("reviewers pending", px, py);
+        } else {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          let sx = px;
+          const seg = (label, n, on) => {
+            ctx.fillStyle = n > 0 ? on : "rgba(150,162,170,0.5)";
+            const t = `${n} ${label}`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          };
+          seg("appr", pr.approvals, "#3ee089");
+          seg("chg", pr.changesRequested, "#ff6055");
+          seg("req", pr.reviewersPending, "#56c7ff");
+          seg("cmt", pr.comments, "rgba(210,218,224,0.85)");
+        }
+      }
+      ctx.restore();
+    }
+    /** The skills library: a long, low bookshelf that runs the full left wall,
+     *  drawn slanted in the wall's one-point perspective just below the window.
+     *  A dev walks to it when it uses a skill and carries a book back to its desk
+     *  (see the errand state machine in tick + drawDesks' book stack). `onWall`
+     *  maps (t: 0 near opening → 1 far wall, f: 0 ceiling → 1 floor) to world xy. */
+    drawBookshelf(ctx, r, onWall) {
+      const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
+      if (eFurn <= 0)
+        return;
+      ctx.save();
+      ctx.globalAlpha = eFurn;
+      const quad = (a, b, c, d, fill) => {
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.lineTo(c.x, c.y);
+        ctx.lineTo(d.x, d.y);
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+      };
+      const t0 = 0.05, t1 = 0.95, fTop = 0.68, fBot = 0.99;
+      const front = (t, f) => {
+        const p = onWall(t, f);
+        const d = 6 * (1 - t * 0.5);
+        return { x: p.x + d, y: p.y + d * 0.5 };
+      };
+      quad(onWall(t0, fTop), front(t0, fTop), front(t0, fBot), onWall(t0, fBot), "#1f1408");
+      quad(onWall(t0, fTop), onWall(t1, fTop), front(t1, fTop), front(t0, fTop), "#6a4d2c");
+      quad(front(t0, fTop), front(t1, fTop), front(t1, fTop + 0.02), front(t0, fTop + 0.02), "#3a2917");
+      quad(front(t0, fTop + 0.02), front(t1, fTop + 0.02), front(t1, fBot), front(t0, fBot), "#2c1f10");
+      const N = 24, hOff = hash(r.name) % BOOK_HUES.length;
+      const board = (f) => quad(front(t0, f), front(t1, f), front(t1, f + 0.015), front(t0, f + 0.015), "#3a2917");
+      const shelfRow = (rowTop, rowBot, salt) => {
+        for (let i = 0; i < N; i++) {
+          const ta = t0 + (t1 - t0) * (i / N);
+          const tb = t0 + (t1 - t0) * ((i + 0.8) / N);
+          const fT = rowTop + hash(r.name + salt + i) % 4 * 6e-3;
+          const hue = BOOK_HUES[(i + hOff + salt) % BOOK_HUES.length];
+          quad(front(ta, fT), front(tb, fT), front(tb, rowBot), front(ta, rowBot), `hsl(${hue} 42% 42%)`);
+          const tHi = ta + (tb - ta) * 0.26;
+          quad(front(ta, fT), front(tHi, fT), front(tHi, rowBot), front(ta, rowBot), `hsl(${hue} 42% 54%)`);
+        }
+      };
+      shelfRow(0.715, 0.8, 1);
+      board(0.805);
+      shelfRow(0.835, 0.92, 7);
+      quad(front(t0, 0.93), front(t1, 0.93), front(t1, fBot), front(t0, fBot), "#1a1108");
+      ctx.restore();
+    }
+    drawDesks(ctx, r, row) {
+      const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
+      if (eFurn <= 0 || !r.plan)
+        return;
+      const base = r.baseY;
+      const db = base - row * ROW_DY;
+      ctx.globalAlpha = eFurn;
+      for (const [id, seat] of r.plan.seats) {
+        if (seat.row !== row)
+          continue;
+        const dx = this.seatX(r, seat.col, row);
+        const tn = this.toons.get(id);
+        const occupied = !!tn?.sitting;
+        const st = occupied ? tn.agent.state : void 0;
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.fillRect(dx - 0.5, db - 0.6, 23, 1.8);
+        ctx.fillStyle = "#7e5e35";
+        ctx.fillRect(dx, db - 11, 22, 2);
+        ctx.fillStyle = "#9c7a4c";
+        ctx.fillRect(dx, db - 11, 22, 0.7);
+        ctx.fillStyle = "#382a16";
+        ctx.fillRect(dx, db - 9.2, 22, 0.7);
+        ctx.fillStyle = "#54401f";
+        ctx.fillRect(dx + 3, db - 9, 1.5, 9);
+        ctx.fillRect(dx + 19.5, db - 9, 1.5, 9);
+        ctx.fillStyle = "#171c21";
+        ctx.fillRect(dx + 7.2, db - 11.2, 1.6, 1.2);
+        ctx.fillRect(dx + 5.4, db - 10.2, 5.4, 1);
+        ctx.fillStyle = "#1b2129";
+        ctx.beginPath();
+        ctx.moveTo(dx + 5, db - 18);
+        ctx.lineTo(dx + 11, db - 16.5);
+        ctx.lineTo(dx + 11, db - 11);
+        ctx.lineTo(dx + 5, db - 12.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#11161c";
+        ctx.beginPath();
+        ctx.moveTo(dx + 5.9, db - 17.2);
+        ctx.lineTo(dx + 10.1, db - 15.9);
+        ctx.lineTo(dx + 10.1, db - 11.6);
+        ctx.lineTo(dx + 5.9, db - 13.1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = occupied ? st === "error" ? "#d9534f" : "#3ee089" : "#2a3138";
+        ctx.fillRect(dx + 8.8, db - 12.6, 0.9, 0.9);
+        ctx.fillStyle = "#2a3138";
+        ctx.fillRect(dx + 8.5, db - 11.2, 5.5, 1);
+        ctx.fillStyle = "#d9534f";
+        ctx.fillRect(dx + 0.5, db - 13, 2, 2);
+        if (occupied && this.frame % 8 < 4) {
+          ctx.fillStyle = "rgba(255,255,255,0.25)";
+          ctx.fillRect(dx + 1, db - 15, 0.8, 1.4);
+        }
+        if (occupied) {
+          const c = st === "error" ? "217,83,79" : "159,216,255";
+          const peak = st === "error" ? 0.3 : st === "active" && this.frame % 8 < 4 ? 0.4 : 0.24;
+          const gx = dx + 13, gy = db - 16;
+          const grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, 7);
+          grd.addColorStop(0, `rgba(${c},${peak})`);
+          grd.addColorStop(0.6, `rgba(${c},${peak * 0.45})`);
+          grd.addColorStop(1, `rgba(${c},0)`);
+          ctx.fillStyle = grd;
+          ctx.fillRect(dx + 10, db - 24, 8, 20);
+        }
+        const books = tn?.booksShown ?? 0;
+        for (let k = 0; k < books; k++) {
+          const hue = BOOK_HUES[k % BOOK_HUES.length];
+          const jx = k % 2 * 0.7;
+          const by = db - 11 - k * 1.4;
+          ctx.fillStyle = `hsl(${hue} 45% 44%)`;
+          ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 1.4);
+          ctx.fillStyle = `hsl(${hue} 45% 55%)`;
+          ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 0.4);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+    drawToon(ctx, tn) {
+      const p = tn.p;
+      const st = tn.agent.state;
+      const walking = Math.abs(tn.targetX - tn.x) > 1;
+      const f = this.frame + Math.floor(tn.ph * 10);
+      const x = Math.round(tn.x * 2) / 2;
+      const sitting = tn.sitting;
+      const y0 = tn.base - tn.lift + (sitting ? -3.5 : 0);
+      const hop = st === "waiting" && !walking ? -Math.abs(Math.sin(f * 0.35 + tn.ph)) * 1 : 0;
+      const slump = st === "error" && !walking ? 1.4 : 0;
+      const base = y0 + hop;
+      const facingLeft = sitting;
+      ctx.fillStyle = p.pants;
+      if (sitting) {
+        ctx.fillRect(x - 3, base - 4, 6, 2);
+        ctx.fillRect(x - 3.6, base - 3, 1.6, 3.4);
+        ctx.fillRect(x + 2, base - 3, 1.6, 3.4);
+      } else if (walking) {
+        const sw = f % 2 === 0;
+        ctx.fillRect(x - (sw ? 3 : 1.6), base - 6, 2, 6);
+        ctx.fillRect(x + (sw ? 1 : -0.4), base - 6, 2, 6);
+      } else {
+        ctx.fillRect(x - 2.6, base - 6, 2, 6);
+        ctx.fillRect(x + 0.6, base - 6, 2, 6);
+      }
+      ctx.fillStyle = "#23262a";
+      if (!sitting) {
+        ctx.fillRect(x - 3, base - 0.8, 2.6, 0.9);
+        ctx.fillRect(x + 0.4, base - 0.8, 2.6, 0.9);
+      }
+      const ty = base - 12 + slump * 0.4;
+      ctx.fillStyle = p.shirt;
+      ctx.fillRect(x - 3.2, ty, 6.4, 6.4);
+      ctx.fillStyle = p.shirtDark;
+      ctx.fillRect(x - 3.2, ty + 5.2, 6.4, 1.2);
+      ctx.fillStyle = p.shirt;
+      const handC = p.skin;
+      if (sitting && tn.agent.reviewOf) {
+        const sweep = Math.sin(f * 0.12 + tn.ph) * 1.3;
+        const mx = x - 6 + sweep, my = ty + 0.6;
+        ctx.fillStyle = p.shirt;
+        ctx.fillRect(x - 5, ty + 2.2, 3, 1.4);
+        ctx.fillStyle = "#e9e3d2";
+        ctx.fillRect(x - 9.5, ty + 4, 7, 4.2);
+        ctx.fillStyle = "rgba(70,70,70,0.4)";
+        ctx.fillRect(x - 8.7, ty + 5, 5, 0.5);
+        ctx.fillRect(x - 8.7, ty + 6.2, 4, 0.5);
+        ctx.strokeStyle = "#7a5a2a";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(mx + 1.3, my + 1.3);
+        ctx.lineTo(mx + 2.9, my + 2.9);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(159,216,255,0.4)";
+        ctx.beginPath();
+        ctx.arc(mx, my, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#2a2f35";
+        ctx.beginPath();
+        ctx.arc(mx, my, 2.1, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = handC;
+        ctx.fillRect(mx + 2.4, my + 2.4, 1.5, 1.6);
+        ctx.fillStyle = p.shirt;
+        ctx.fillRect(x + 2.6, ty + 2, 1.4, 2.6);
+      } else if (sitting && tn.booksInHand > 0) {
+        ctx.fillStyle = p.shirt;
+        ctx.fillRect(x - 2.4, ty + 1.4, 1.8, 1.8);
+        ctx.fillRect(x + 2.2, ty + 1.4, 1.8, 1.8);
+      } else if (sitting) {
+        const tap = f % 2 === 0 ? 0 : 0.8;
+        ctx.fillRect(x - 6, ty + 2.2, 3.4, 1.4);
+        ctx.fillStyle = handC;
+        ctx.fillRect(x - 7, ty + 2 + tap, 1.4, 1.4);
+        ctx.fillRect(x - 7, ty + 3.6 - tap, 1.4, 1.4);
+      } else if (st === "waiting" && !walking) {
+        const wave = Math.sin(f * 0.9 + tn.ph) * 1.1;
+        ctx.fillRect(x + 2.8 + wave * 0.4, ty - 4, 1.5, 5);
+        ctx.fillStyle = handC;
+        ctx.fillRect(x + 2.7 + wave, ty - 5.6, 1.8, 1.8);
+        ctx.fillStyle = p.shirt;
+        ctx.fillRect(x - 4.4, ty - 0.6, 1.6, 2.8);
+        ctx.fillStyle = handC;
+        ctx.fillRect(x - 3.2, ty - 2, 1.5, 1.5);
+      } else if (walking) {
+        const sw = f % 2 === 0 ? 1 : -1;
+        ctx.fillRect(x - 4.2, ty + 1.5 + sw * 0.8, 1.4, 4);
+        ctx.fillRect(x + 2.8, ty + 1.5 - sw * 0.8, 1.4, 4);
+      } else if (st === "idle" || st === "complete") {
+        ctx.fillRect(x - 4.2, ty + 1.5, 1.4, 4);
+        ctx.fillRect(x + 2.6, ty + 1.2, 1.4, 2.4);
+        ctx.fillStyle = "#171c21";
+        ctx.fillRect(x + 1.8, ty + 2.8, 2.6, 3.6);
+        const glow = f % 6 < 3 ? "#9fd8ff" : "#7fb8df";
+        ctx.fillStyle = glow;
+        ctx.fillRect(x + 2.2, ty + 3.2, 1.8, 2.8);
+        ctx.fillStyle = handC;
+        ctx.fillRect(x + 3.6, ty + 3.4 + (f % 4 < 2 ? 0 : 0.8), 1.2, 1.2);
+        ctx.fillStyle = "rgba(159,216,255,0.10)";
+        ctx.fillRect(x - 1.5, ty - 4.5, 4.5, 5);
+      } else {
+        ctx.fillRect(x - 4.2, ty + 1.5, 1.4, 4);
+        ctx.fillRect(x + 2.8, ty + 1.5, 1.4, 4);
+      }
+      const hy = ty - 6 + slump;
+      ctx.fillStyle = p.skin;
+      ctx.fillRect(x - 2.8, hy, 5.6, 5.6);
+      ctx.fillStyle = p.hair;
+      ctx.fillRect(x - 3, hy - 1, 6, 2.2);
+      ctx.fillRect(x - 3, hy - 0.5, 1.2, 3.4);
+      ctx.fillRect(x + 1.8, hy - 0.5, 1.2, 2.4);
+      if (p.acc === 2) {
+        ctx.fillStyle = p.accColor;
+        ctx.fillRect(x - 3.2, hy - 1.6, 6.4, 1.8);
+        ctx.fillRect(facingLeft ? x - 4.6 : x + 1.6, hy - 0.4, 3, 1);
+      } else if (p.acc === 3) {
+        ctx.fillStyle = p.accColor;
+        ctx.fillRect(x - 3.6, hy + 1.6, 1.2, 2.4);
+        ctx.fillRect(x + 2.4, hy + 1.6, 1.2, 2.4);
+        ctx.fillRect(x - 3.4, hy - 1.6, 6.8, 1);
+      }
+      const blink = (f + Math.floor(tn.ph * 7)) % 40 === 0;
+      if (!blink) {
+        ctx.fillStyle = "#14181b";
+        const phoneGaze = (st === "idle" || st === "complete") && !walking && f % 50 > 6 ? 0.9 : 0;
+        const ey = hy + 2.4 + slump * 0.5 + phoneGaze;
+        if (facingLeft || walking && tn.targetX < tn.x) {
+          ctx.fillRect(x - 2.2, ey, 1.1, 1.1);
+          ctx.fillRect(x - 0.2, ey, 1.1, 1.1);
+        } else {
+          ctx.fillRect(x - 0.8, ey, 1.1, 1.1);
+          ctx.fillRect(x + 1.2, ey, 1.1, 1.1);
+        }
+      }
+      if (p.acc === 1) {
+        ctx.strokeStyle = "#23262a";
+        ctx.lineWidth = 0.5;
+        const ey = hy + 2.6;
+        ctx.strokeRect(x - 1.4, ey - 0.8, 1.9, 1.9);
+        ctx.strokeRect(x + 0.9, ey - 0.8, 1.9, 1.9);
+      }
+      if (sitting && tn.booksInHand > 0 && !tn.agent.reviewOf) {
+        const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
+        const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
+        ctx.fillStyle = "#e9e3d2";
+        ctx.fillRect(bx, by, bw, bh);
+        const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
+        ctx.fillStyle = `hsl(${hue} 42% 40%)`;
+        ctx.fillRect(bx - 0.7, by - 0.4, 0.9, bh + 0.8);
+        ctx.fillRect(bx + bw - 0.2, by - 0.4, 0.9, bh + 0.8);
+        ctx.fillStyle = "#b6ae98";
+        ctx.fillRect(bx + bw / 2 - 0.25, by, 0.5, bh);
+        ctx.fillStyle = "rgba(70,70,70,0.45)";
+        ctx.fillRect(bx + 0.8, by + 1.1, 1.8, 0.4);
+        ctx.fillRect(bx + 0.8, by + 2.1, 1.5, 0.4);
+        ctx.fillRect(bx + bw / 2 + 0.7, by + 1.1, 1.7, 0.4);
+        ctx.fillRect(bx + bw / 2 + 0.7, by + 2.1, 1.4, 0.4);
+        ctx.fillStyle = handC;
+        ctx.fillRect(bx - 0.6, by + bh - 0.4, 1.4, 1.4);
+        ctx.fillRect(bx + bw - 0.8, by + bh - 0.4, 1.4, 1.4);
+      }
+      if (tn.errand && tn.errand.phase !== "out") {
+        const carry = Math.max(0, tn.skills.length - tn.booksShown);
+        const dir = tn.targetX >= tn.x ? 1 : -1;
+        const bx = x - 2 + (dir > 0 ? 1.4 : -0.4);
+        for (let k = 0; k < carry; k++) {
+          const hue = BOOK_HUES[(tn.booksShown + k) % BOOK_HUES.length];
+          const by = ty + 3 - k * 1.4;
+          ctx.fillStyle = `hsl(${hue} 45% 46%)`;
+          ctx.fillRect(bx, by - 1.4, 4, 1.4);
+          ctx.fillStyle = `hsl(${hue} 45% 56%)`;
+          ctx.fillRect(bx, by - 1.4, 4, 0.4);
+        }
+      }
+    }
+  };
+  window.DevTowerCrew = {
+    _instance: null,
+    mount(container, canvas) {
+      this._instance = new PixelCrew(container, canvas);
+      return this._instance;
+    },
+    setAgents(a) {
+      this._instance?.setAgents(a);
+    },
+    setRooms(r) {
+      this._instance?.setRooms(r);
+    },
+    setPrBranches(b) {
+      this._instance?.setPrBranches(b);
+    },
+    setReviewPrs(prs) {
+      this._instance?.setReviewPrs(prs);
+    },
+    setBoards(boards) {
+      this._instance?.setBoards(boards);
+    },
+    setSelected(id) {
+      this._instance?.setSelected(id);
+    },
+    onSelect(cb) {
+      this._instance?.onSelect(cb);
+    },
+    onReserve(cb) {
+      this._instance?.onReserve(cb);
+    },
+    onAddDev(cb) {
+      this._instance?.onAddDev(cb);
+    },
+    onAddWorktree(cb) {
+      this._instance?.onAddWorktree(cb);
+    },
+    onRemoveRoom(cb) {
+      this._instance?.onRemoveRoom(cb);
+    },
+    onRemoveWorktree(cb) {
+      this._instance?.onRemoveWorktree(cb);
+    },
+    onPush(cb) {
+      this._instance?.onPush(cb);
+    },
+    onPull(cb) {
+      this._instance?.onPull(cb);
+    },
+    onFetch(cb) {
+      this._instance?.onFetch(cb);
+    },
+    onCd(cb) {
+      this._instance?.onCd(cb);
+    },
+    onAssignReview(cb) {
+      this._instance?.onAssignReview(cb);
+    },
+    onRefreshPrs(cb) {
+      this._instance?.onRefreshPrs(cb);
+    },
+    onOpenPr(cb) {
+      this._instance?.onOpenPr(cb);
+    },
+    focusReviewBoard() {
+      this._instance?.toggleBillboard();
+    },
+    start() {
+      this._instance?.start();
+    },
+    stop() {
+      this._instance?.stop();
+    },
+    resize() {
+      this._instance?.resize();
+    },
+    focusIsland(repo) {
+      this._instance?.focusOn(repo);
+    },
+    clearFocus() {
+      this._instance?.clearFocus();
+    },
+    setEco(on) {
+      this._instance?.setEco(on);
+    },
+    setInsets(left, right) {
+      this._instance?.setInsets(left, right);
+    }
+  };
+})();
+//# sourceMappingURL=crew.js.map
