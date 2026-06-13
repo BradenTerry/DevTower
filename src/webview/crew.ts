@@ -518,7 +518,7 @@ class PixelCrew {
       if (!this.drag.active) {
         const hit = this.pick(e);
         this.container.style.cursor =
-          hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom
+          hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom || hit.openPrUrl
             ? "pointer"
             : "default";
         return;
