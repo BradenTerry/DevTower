@@ -49,6 +49,7 @@
   var DEPTH_X = 24;
   var DEPTH_Y = 22;
   var ROWS_OF_DESKS = 2;
+  var FRONT_CAP = 6;
   var ROW_DY = DEPTH_Y;
   var ROOM_W = 260;
   var backWall = (x0, base) => ({
@@ -69,16 +70,77 @@
   };
   var boardRect = (x0, base) => {
     const bw = backWall(x0, base);
-    const w = bw.x1 - bw.x0 - 94;
-    return { x: (bw.x0 + bw.x1) / 2 - w / 2, y: bw.yTop + 13, w, h: 26 };
+    const left = bw.x0 + 3;
+    const right = bw.x1 - 3;
+    const top = bw.yTop + 3;
+    const bottom = bw.yBot - 5;
+    return { x: left, y: top, w: Math.max(20, right - left), h: Math.max(14, bottom - top) };
   };
   var COL_STEP = ROOM_W;
   var cellX0 = (col) => col * COL_STEP - ROOM_W / 2;
   var WALK_SPEED = 30;
+  var ISLAND_GAP = 1;
+  var PLINTH_H = 22;
+  var PLINTH_APRON = 8;
+  var PLINTH_OV = 9;
   var GROUP_GAP = 1;
   var DEFAULT_BRANCHES = /* @__PURE__ */ new Set(["main", "master", "head", "develop", "trunk"]);
   var floorBase = (floor) => -floor * FLOOR_STEP;
   var clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  function sampleQuad(p0, c, p1, n) {
+    const pts = [];
+    for (let i = 1; i <= n; i++) {
+      const t = i / n, mt = 1 - t;
+      pts.push({
+        x: mt * mt * p0.x + 2 * mt * t * c.x + t * t * p1.x,
+        y: mt * mt * p0.y + 2 * mt * t * c.y + t * t * p1.y
+      });
+    }
+    return pts;
+  }
+  function pointOnPath(path, t) {
+    if (path.length === 1)
+      return path[0];
+    const segs = [];
+    let total = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+      const len = Math.hypot(path[i + 1].x - path[i].x, path[i + 1].y - path[i].y);
+      segs.push(len);
+      total += len;
+    }
+    if (total === 0)
+      return path[0];
+    let d = clamp(t, 0, 1) * total;
+    for (let i = 0; i < segs.length; i++) {
+      if (d <= segs[i] || i === segs.length - 1) {
+        const f = segs[i] === 0 ? 0 : d / segs[i];
+        return { x: path[i].x + (path[i + 1].x - path[i].x) * f, y: path[i].y + (path[i + 1].y - path[i].y) * f };
+      }
+      d -= segs[i];
+    }
+    return path[path.length - 1];
+  }
+  function boardSig(b) {
+    if (!b)
+      return "none";
+    const pr = b.pr ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.title}` : "no";
+    return [
+      b.modified,
+      b.staged,
+      b.ahead,
+      b.unstagedAdd,
+      b.unstagedDel,
+      b.stagedAdd,
+      b.stagedDel,
+      b.committedAdd,
+      b.committedDel,
+      b.commits.length,
+      b.base,
+      b.prReady ? 1 : 0,
+      b.missing ? 1 : 0,
+      pr
+    ].join("|");
+  }
   var PixelCrew = class {
     constructor(container, canvas) {
       this.container = container;
@@ -87,16 +149,27 @@
       __publicField(this, "toons", /* @__PURE__ */ new Map());
       __publicField(this, "leaving", []);
       __publicField(this, "rooms", /* @__PURE__ */ new Map());
-      // key = room name
+      // key = building key (worktree path)
+      __publicField(this, "islands", /* @__PURE__ */ new Map());
+      // key = island name (repo)
       __publicField(this, "reserved", []);
       __publicField(this, "agents", []);
       __publicField(this, "particles", []);
+      __publicField(this, "packets", []);
+      // desk → board "file changed" trails
+      __publicField(this, "boardsMap", {});
+      __publicField(this, "hasFitted", false);
+      // first layout fits the campus; later ones preserve the view
+      // ghost slots come in two kinds: "building" extends an island with the next
+      // worktree (click → add agent there), "island" reserves a brand-new directory.
       __publicField(this, "ghosts", []);
       __publicField(this, "colRange", /* @__PURE__ */ new Map());
       __publicField(this, "bounds", { minX: -120, maxX: 120, topY: -120, botY: 40, minFloor: 0 });
       __publicField(this, "focusRoom_", null);
       __publicField(this, "focusAgentId", null);
       // when set, the camera tracks this dev (not the room)
+      __publicField(this, "focusIsland_", null);
+      // when set, frame this whole directory (its tower)
       __publicField(this, "prBranches", /* @__PURE__ */ new Set());
       // branches (lowercased) with an open PR
       __publicField(this, "focus", { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 });
@@ -113,6 +186,8 @@
       __publicField(this, "lastNow", 0);
       __publicField(this, "acc", 0);
       __publicField(this, "frame", 0);
+      __publicField(this, "marqueeOn", false);
+      // a PR title marquee is scrolling → keep the loop awake
       __publicField(this, "dirty", true);
       __publicField(this, "eco", false);
       // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
@@ -124,10 +199,19 @@
       });
       __publicField(this, "onReserveCb", () => {
       });
-      __publicField(this, "onAddAgentCb", () => {
+      __publicField(this, "onAddDevCb", () => {
+      });
+      __publicField(this, "onAddWorktreeCb", () => {
       });
       __publicField(this, "onRemoveRoomCb", () => {
       });
+      __publicField(this, "onRemoveWorktreeCb", () => {
+      });
+      __publicField(this, "onSyncCb", () => {
+      });
+      /** room key → time a sync was requested, so the board change it causes flashes
+       *  without firing a beam (the agent didn't do that work). */
+      __publicField(this, "syncSuppress", /* @__PURE__ */ new Map());
       __publicField(this, "onCdCb", () => {
       });
       __publicField(this, "resizeT");
@@ -156,7 +240,8 @@
         const hit = this.pick(e);
         if (hit.agent) {
           const { mx, my } = canvasXY(e);
-          this.toonDrag = { id: hit.agent, active: false, mx, my };
+          const blocked = this.toons.get(hit.agent)?.agent.state === "active";
+          this.toonDrag = { id: hit.agent, active: false, mx, my, blocked };
           return;
         }
         this.drag.active = true;
@@ -173,8 +258,21 @@
           this.toonDrag.mx = mx;
           this.toonDrag.my = my;
           if (this.toonDrag.active) {
+            if (this.toonDrag.blocked) {
+              this.dropTarget = null;
+              this.container.style.cursor = "not-allowed";
+              this.invalidate();
+              return;
+            }
             const hit = this.pick(e);
-            this.dropTarget = hit.room ? { room: hit.room } : hit.ghost ? { ghost: hit.ghost } : null;
+            if (hit.island && !hit.ghost)
+              this.dropTarget = { room: hit.island };
+            else if (hit.ghost?.kind === "building" && hit.ghost.island)
+              this.dropTarget = { room: hit.ghost.island };
+            else if (hit.ghost?.kind === "island")
+              this.dropTarget = { ghost: { floor: hit.ghost.floor, col: hit.ghost.col } };
+            else
+              this.dropTarget = null;
             this.container.style.cursor = this.dropTarget ? "copy" : "grabbing";
             this.invalidate();
           }
@@ -182,7 +280,7 @@
         }
         if (!this.drag.active) {
           const hit = this.pick(e);
-          this.container.style.cursor = hit.agent || hit.room || hit.ghost || hit.addBtn || hit.removeBtn ? "pointer" : "default";
+          this.container.style.cursor = hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.syncRoom ? "pointer" : "default";
           return;
         }
         const dx = e.clientX - this.drag.lastX;
@@ -246,11 +344,20 @@
     onReserve(cb) {
       this.onReserveCb = cb;
     }
-    onAddAgent(cb) {
-      this.onAddAgentCb = cb;
+    onAddDev(cb) {
+      this.onAddDevCb = cb;
+    }
+    onAddWorktree(cb) {
+      this.onAddWorktreeCb = cb;
     }
     onRemoveRoom(cb) {
       this.onRemoveRoomCb = cb;
+    }
+    onRemoveWorktree(cb) {
+      this.onRemoveWorktreeCb = cb;
+    }
+    onSync(cb) {
+      this.onSyncCb = cb;
     }
     onCd(cb) {
       this.onCdCb = cb;
@@ -258,6 +365,12 @@
     /* ============ DATA ============ */
     setRooms(reserved) {
       this.reserved = reserved || [];
+      this.layout();
+    }
+    /** Live board data per worktree path (modified/staged/commits/PR), shown on
+     *  each room's back-wall screen. */
+    setBoards(boards) {
+      this.boardsMap = boards || {};
       this.layout();
     }
     /** Branches that currently have an open PR; shown on each worktree's board. */
@@ -284,6 +397,8 @@
             targetX: 0,
             base: 0,
             x0: 0,
+            seatCol: 0,
+            wbSlot: 0,
             deskIdx: 0,
             row: 0,
             lift: 0,
@@ -327,10 +442,16 @@
       let startCol = 0;
       let mainTaken = false;
       for (const [key, ags] of entries) {
-        const cols = Math.max(1, Math.ceil(ags.length / ROWS_OF_DESKS));
         ags.forEach((a, i) => {
-          seats.set(a.id, { col: startCol + Math.floor(i / ROWS_OF_DESKS), row: i % ROWS_OF_DESKS });
+          let row = Math.floor(i / FRONT_CAP);
+          let col = i % FRONT_CAP;
+          if (row > ROWS_OF_DESKS - 1) {
+            row = ROWS_OF_DESKS - 1;
+            col = i - row * FRONT_CAP;
+          }
+          seats.set(a.id, { col: startCol + col, row });
         });
+        const cols = Math.max(1, Math.min(ags.length, FRONT_CAP));
         const main = !mainTaken && isMain(key, ags);
         if (main)
           mainTaken = true;
@@ -355,89 +476,310 @@
       const pitch = r.plan?.pitch ?? DESK_W;
       return r.x0 + WB_W + col * pitch + row * (pitch / 2);
     }
-    /** Merge reserved rooms + live repos into grid cells; assign toon targets. */
+    /** An island's ordered rooms: ONLY the ones the operator added — the required
+     *  main checkout plus each assigned worktree. Live agents attach by checkout
+     *  path; agents in unassigned dirs aren't shown. Main leads. */
+    planBuildings(reserved, agentsByKey) {
+      const rootKey = reserved.path;
+      const treeName = (key) => key.split(/[\\/]/).pop() || key;
+      const branchByKey = /* @__PURE__ */ new Map();
+      branchByKey.set(rootKey, "");
+      for (const w of reserved.worktrees ?? []) {
+        if (!branchByKey.get(w.path))
+          branchByKey.set(w.path, w.branch || "");
+      }
+      const keys = [rootKey, ...[...branchByKey.keys()].filter((k) => k !== rootKey)];
+      return keys.map((key) => {
+        const agents = agentsByKey.get(key) ?? [];
+        const isMain = key === rootKey;
+        const branch = branchByKey.get(key) || agents[0]?.branch || "";
+        return {
+          key,
+          agents,
+          isMain,
+          path: rootKey,
+          branch: branch || "\u2014",
+          label: isMain ? "main" : branch || treeName(key)
+        };
+      });
+    }
+    /** Re-aim a toon at its desk/huddle spot using its building's CURRENT (tweening)
+     *  position, so seated devs ride a collapsing island instead of snapping. */
+    retargetToon(tn) {
+      const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
+      if (!room)
+        return;
+      tn.base = room.baseY;
+      tn.x0 = room.x0;
+      const deskX = this.seatX(room, tn.seatCol, tn.row);
+      if (tn.huddle)
+        tn.targetX = room.x0 + 26 + tn.wbSlot * 9;
+      else if (tn.agent.state === "active")
+        tn.targetX = deskX + 13;
+      else
+        tn.targetX = deskX + 19;
+    }
+    /** The cable port: a jack on the wall just BELOW the TV that every desk's
+     *  cable runs into. The light-ball then hops up from here into the screen. */
+    cablePlug(r) {
+      const b = boardRect(r.x0, r.baseY);
+      return { x: b.x + b.w / 2, y: b.y + b.h + 5 };
+    }
+    /** The cable polyline for a seat: computer → floor → a curved sweep to the
+     *  central floor bus → up the middle into the port below the screen. All
+     *  desks share the central bus, so the cables bundle before going in. */
+    cableRoute(r, seat) {
+      const base = r.baseY;
+      const dx = this.seatX(r, seat.col, seat.row);
+      const db = base - seat.row * ROW_DY;
+      const cx = dx + 8;
+      const C = { x: cx, y: db - 12 };
+      const F = { x: cx, y: db + 0.5 };
+      const J = { x: r.x0 + ROOM_W / 2, y: base - 3 };
+      const P = this.cablePlug(r);
+      const cFJ = { x: (cx + J.x) / 2, y: Math.max(F.y, J.y) + 5 };
+      const cJP = { x: J.x, y: (J.y + P.y) / 2 };
+      return [C, F, ...sampleQuad(F, cFJ, J, 8), ...sampleQuad(J, cJP, P, 10)];
+    }
+    /** Fire a glowing light-ball from a working dev's computer along its network
+     *  cable, through the port, and up into the screen — the "git changed" signal.
+     *  Falls back to a room-centre → port route when no dev/seat is known. */
+    emitPacket(r, delay = 0, snap) {
+      const plug = this.cablePlug(r);
+      const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
+      const seat = occ ? r.plan?.seats.get(occ.id) : void 0;
+      const path = seat ? this.cableRoute(r, seat) : [{ x: r.x0 + ROOM_W / 2, y: r.baseY - 16 }, plug];
+      const s = path[0];
+      this.packets.push({
+        x: s.x,
+        y: s.y,
+        sx: s.x,
+        sy: s.y,
+        tx: plug.x,
+        ty: plug.y,
+        t: -delay,
+        path,
+        color: Math.random() < 0.6 ? "#3ee089" : "#56c7ff",
+        ph: Math.random() * Math.PI * 2,
+        // flicker/pulse phase
+        applyKey: snap ? r.name : void 0,
+        applySnap: snap
+      });
+    }
+    /** True while a just-requested sync's resulting board change should flash but
+     *  not beam (15s window covers the pull-then-push sequence). */
+    syncSuppressed(room) {
+      const t = this.syncSuppress.get(room);
+      if (t === void 0)
+        return false;
+      if (Date.now() - t < 15e3)
+        return true;
+      this.syncSuppress.delete(room);
+      return false;
+    }
+    /** A beam reached the screen: show the snapshot it carried, and flash only the
+     *  column(s) that differ from what was on the TV (so it's clear what moved). */
+    applyBoardSnapshot(key, snap) {
+      const r = key ? this.rooms.get(key) : void 0;
+      if (!r)
+        return;
+      const o = r.boardShown, cp = r.cellPulse;
+      if (o) {
+        const uChanged = o.modified !== snap.modified || o.unstagedAdd !== snap.unstagedAdd || o.unstagedDel !== snap.unstagedDel;
+        const sChanged = o.staged !== snap.staged || o.stagedAdd !== snap.stagedAdd || o.stagedDel !== snap.stagedDel;
+        const cChanged = o.ahead !== snap.ahead || o.committedAdd !== snap.committedAdd || o.committedDel !== snap.committedDel || o.commits.length !== snap.commits.length;
+        if (uChanged)
+          cp.unstaged = 1;
+        if (sChanged)
+          cp.staged = 1;
+        if (cChanged)
+          cp.commits = 1;
+        if (JSON.stringify(o.pr) !== JSON.stringify(snap.pr))
+          cp.pr = 1;
+        const pureMove = uChanged && sChanged && o.modified + o.staged === snap.modified + snap.staged && o.modified > snap.modified !== o.staged > snap.staged;
+        const num = (b) => ({
+          "u.count": `${b.modified} file${b.modified === 1 ? "" : "s"}`,
+          "u.add": `+${b.unstagedAdd}`,
+          "u.del": `-${b.unstagedDel}`,
+          "s.count": `${b.staged} file${b.staged === 1 ? "" : "s"}`,
+          "s.add": `+${b.stagedAdd}`,
+          "s.del": `-${b.stagedDel}`,
+          "c.count": `${b.ahead}`,
+          "c.add": `+${b.committedAdd}`,
+          "c.del": `-${b.committedDel}`
+        });
+        const oN = num(o), nN = num(snap);
+        for (const k of Object.keys(nN)) {
+          if (oN[k] === nN[k])
+            continue;
+          if (pureMove && (k[0] === "u" || k[0] === "s"))
+            continue;
+          r.numAnim[k] = { from: oN[k], to: nN[k], t: 0 };
+        }
+      }
+      r.boardShown = snap;
+      r.statPulse = 1;
+    }
+    /** Draw each occupied desk's network cable: computer → floor → a curved sweep
+     *  to the central floor bus → up into the port below the screen. Static art;
+     *  the light-balls (packets) ride this same route when git changes. */
+    drawCables(ctx, r) {
+      if (r.built < 0.85 || !r.plan)
+        return;
+      ctx.save();
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      for (const [, seat] of r.plan.seats) {
+        const route = this.cableRoute(r, seat);
+        ctx.beginPath();
+        ctx.moveTo(route[0].x, route[0].y);
+        for (let i = 1; i < route.length; i++)
+          ctx.lineTo(route[i].x, route[i].y);
+        ctx.strokeStyle = "rgba(12,16,20,0.4)";
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(80,102,122,0.4)";
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+        ctx.fillStyle = "#2a3138";
+        ctx.fillRect(route[0].x - 1, route[0].y - 1, 2, 2);
+      }
+      const plug = this.cablePlug(r);
+      ctx.fillStyle = "#10161c";
+      ctx.fillRect(plug.x - 4, plug.y - 1.5, 8, 3);
+      ctx.fillStyle = "#2a3138";
+      ctx.fillRect(plug.x - 3, plug.y - 0.6, 6, 1.2);
+      ctx.restore();
+    }
+    /** Build the campus: only rooms the operator added (reserved islands + their
+     *  assigned worktrees) render. Live agents attach to those rooms by their
+     *  checkout path; an agent whose room wasn't added simply isn't shown (its
+     *  session keeps running regardless). */
     layout() {
-      const byRepo = /* @__PURE__ */ new Map();
+      const agentsByKey = /* @__PURE__ */ new Map();
       for (const a of this.agents) {
-        if (!byRepo.has(a.repo))
-          byRepo.set(a.repo, []);
-        byRepo.get(a.repo).push(a);
-      }
-      const wanted = /* @__PURE__ */ new Map();
-      const occupied = /* @__PURE__ */ new Set();
-      for (const r of this.reserved) {
-        const col = r.col ?? 0;
-        wanted.set(r.name, { floor: r.floor, col, path: r.path });
-        occupied.add(col + "," + r.floor);
-      }
-      for (const [name, room] of this.rooms) {
-        if (!wanted.has(name) && !byRepo.has(name))
-          occupied.add(room.col + "," + room.floor);
-      }
-      let next = 0;
-      for (const repo of byRepo.keys()) {
-        if (wanted.has(repo))
+        const key = a.worktree && a.worktree.trim() ? a.worktree : null;
+        if (!key)
           continue;
-        while (occupied.has("0," + next))
-          next++;
-        wanted.set(repo, { floor: next, col: 0 });
-        occupied.add("0," + next);
-        next++;
+        if (!agentsByKey.has(key))
+          agentsByKey.set(key, []);
+        agentsByKey.get(key).push(a);
       }
-      for (const [name, room] of this.rooms) {
-        room.dying = !wanted.has(name);
+      const reservedByName = new Map(this.reserved.map((r) => [r.name, r]));
+      const order = [...this.reserved].sort((a, b) => a.col - b.col || a.floor - b.floor || (a.name < b.name ? -1 : 1)).map((r) => r.name);
+      const wanted = /* @__PURE__ */ new Map();
+      this.islands.clear();
+      let lane = 0;
+      for (const name of order) {
+        const reserved = reservedByName.get(name);
+        if (!reserved)
+          continue;
+        const buildings = this.planBuildings(reserved, agentsByKey);
+        const path = reserved.path;
+        buildings.forEach((b, i) => {
+          wanted.set(b.key, {
+            island: name,
+            label: b.label,
+            branch: b.branch,
+            isMain: b.isMain,
+            col: lane,
+            floor: i,
+            path: b.path ?? path,
+            agents: b.agents
+          });
+        });
+        this.islands.set(name, {
+          name,
+          path,
+          laneStart: lane,
+          cols: 1,
+          count: buildings.length,
+          hue: hash(name) % 360
+        });
+        lane += 1 + ISLAND_GAP;
+      }
+      for (const [key, room] of this.rooms) {
+        room.dying = !wanted.has(key);
         if (room.dying)
           room.agents = [];
       }
       let newIdx = 0;
-      for (const [name, info] of wanted) {
-        let room = this.rooms.get(name);
+      for (const [key, info] of wanted) {
+        let room = this.rooms.get(key);
         if (!room) {
           room = {
-            name,
+            name: key,
+            island: info.island,
+            label: info.label,
+            branch: info.branch,
+            isMain: info.isMain,
             floor: info.floor,
             col: info.col,
             x0: cellX0(info.col),
+            baseY: floorBase(info.floor),
             path: info.path,
-            hue: hash(name) % 360,
+            hue: hash(info.island) % 360,
             built: 0,
             delay: newIdx++ * 0.45,
-            // floors build one after another, not all at once
+            // buildings rise one after another
             agents: [],
             scribbles: [],
-            decor: hash(name + "decor")
+            decor: hash(key + "decor"),
+            statSig: "",
+            statPulse: 0,
+            cellPulse: { unstaged: 0, staged: 0, commits: 0, pr: 0 },
+            numAnim: {}
           };
-          this.rooms.set(name, room);
+          this.rooms.set(key, room);
         }
+        room.island = info.island;
+        room.label = info.label;
+        room.branch = info.branch;
+        room.isMain = info.isMain;
+        room.board = this.boardsMap[key];
         room.floor = info.floor;
         room.col = info.col;
-        room.x0 = cellX0(info.col);
         room.path = info.path ?? room.path;
-        room.agents = byRepo.get(name) ?? [];
+        room.agents = info.agents;
+        room.hasUpper = false;
       }
-      this.ghosts = [];
-      const ghostKeys = /* @__PURE__ */ new Set();
-      if (occupied.size === 0) {
-        this.ghosts.push({ col: 0, floor: 0, x0: cellX0(0), base: floorBase(0) });
-      } else {
-        for (const key of occupied) {
-          const [c, f] = key.split(",").map(Number);
-          for (const [nc, nf] of [[c + 1, f], [c - 1, f], [c, f + 1], [c, f - 1]]) {
-            const k = nc + "," + nf;
-            if (occupied.has(k) || ghostKeys.has(k))
-              continue;
-            ghostKeys.add(k);
-            this.ghosts.push({ col: nc, floor: nf, x0: cellX0(nc), base: floorBase(nf) });
+      for (const r of this.rooms.values()) {
+        if (r.dying)
+          continue;
+        for (const u of this.rooms.values()) {
+          if (!u.dying && u.island === r.island && u.col === r.col && u.floor === r.floor + 1) {
+            r.hasUpper = true;
+            break;
           }
         }
       }
+      this.ghosts = [];
+      for (const isl of this.islands.values()) {
+        const floor = isl.count;
+        this.ghosts.push({
+          col: isl.laneStart,
+          floor,
+          x0: cellX0(isl.laneStart),
+          base: floorBase(floor),
+          kind: "building",
+          island: isl.name
+        });
+      }
+      const reserveCol = this.islands.size === 0 ? 0 : lane;
+      this.ghosts.push({
+        col: reserveCol,
+        floor: 0,
+        x0: cellX0(reserveCol),
+        base: floorBase(0),
+        kind: "island"
+      });
       this.colRange.clear();
       let minX = Infinity, maxX = -Infinity, topY = Infinity, botY = -Infinity, minFloor = 0;
       const extend = (floor, x0, base) => {
         minX = Math.min(minX, x0);
         maxX = Math.max(maxX, x0 + ROOM_W);
         topY = Math.min(topY, base - ROOM_H);
-        botY = Math.max(botY, base + SLAB);
+        botY = Math.max(botY, base + SLAB + PLINTH_APRON + PLINTH_H + 2);
         minFloor = Math.min(minFloor, floor);
       };
       for (const r of this.rooms.values()) {
@@ -445,7 +787,7 @@
         rng.min = Math.min(rng.min, r.floor);
         rng.max = Math.max(rng.max, r.floor);
         this.colRange.set(r.col, rng);
-        extend(r.floor, r.x0, floorBase(r.floor));
+        extend(r.floor, cellX0(r.col), floorBase(r.floor));
       }
       for (const g of this.ghosts)
         extend(g.floor, g.x0, g.base);
@@ -456,8 +798,8 @@
         botY = 40;
       }
       this.bounds = { minX, maxX, topY, botY, minFloor };
+      const placed = /* @__PURE__ */ new Set();
       for (const room of this.rooms.values()) {
-        const base = floorBase(room.floor);
         const activeCount = room.agents.filter((a) => a.state === "active").length;
         const huddle = activeCount >= 2;
         let wbSlot = 0;
@@ -466,52 +808,117 @@
           const tn = this.toons.get(a.id);
           if (!tn)
             return;
-          tn.base = base;
-          tn.x0 = room.x0;
+          placed.add(a.id);
+          tn.bkey = room.name;
           tn.deskIdx = di;
           const seat = room.plan.seats.get(a.id) ?? { col: 0, row: 0 };
           tn.row = seat.row;
-          const deskX = this.seatX(room, seat.col, seat.row);
-          if (a.state === "active" && huddle) {
-            tn.huddle = true;
-            tn.targetX = room.x0 + 26 + wbSlot * 9;
-            wbSlot++;
-          } else if (a.state === "active") {
-            tn.huddle = false;
-            tn.targetX = deskX + 13;
-          } else {
-            tn.huddle = false;
-            tn.targetX = deskX + 19;
+          tn.seatCol = seat.col;
+          tn.huddle = a.state === "active" && huddle;
+          if (tn.huddle)
+            tn.wbSlot = wbSlot++;
+          const firstPlace = tn.entering && tn.x === 0;
+          this.retargetToon(tn);
+          if (firstPlace) {
+            if (room.floor > 0) {
+              tn.x = room.x0 + ROOM_W - 40;
+              tn.base = floorBase(room.floor - 1);
+              tn.targetX = tn.x;
+              tn.enterPhase = "stairs";
+              tn.stairTopX = room.x0 + ROOM_W - 24;
+            } else {
+              tn.x = room.x0 + ROOM_W + 8;
+              tn.enterPhase = "walk";
+            }
           }
-          if (tn.entering && tn.x === 0)
-            tn.x = room.x0 + ROOM_W + 8;
         });
         if (!huddle)
           room.scribbles = [];
       }
-      if (this.focusAgentId && this.toons.has(this.focusAgentId))
-        this.focusAgent(this.focusAgentId, false);
-      else if (this.focusRoom_ && this.rooms.has(this.focusRoom_))
-        this.focusOn(this.focusRoom_, false);
-      else
-        this.clearFocus(false, true);
+      for (const [id, tn] of this.toons) {
+        if (!placed.has(id)) {
+          tn.bkey = void 0;
+          this.toons.delete(id);
+        }
+      }
+      if (this.focusAgentId) {
+        const tn = this.toons.get(this.focusAgentId);
+        if (tn) {
+          this.focus.x = tn.targetX;
+          this.focus.y = tn.base - ROOM_H / 2 + 6;
+        }
+      } else if (this.focusRoom_) {
+        const r = this.rooms.get(this.focusRoom_);
+        if (r) {
+          this.focus.x = r.x0 + ROOM_W / 2;
+          this.focus.y = r.baseY - ROOM_H / 2;
+        }
+      } else if (this.focusIsland_) {
+        if (!this.frameIsland(this.focusIsland_))
+          this.focusIsland_ = null;
+      } else if (!this.hasFitted) {
+        this.clearFocus(true, false);
+        this.hasFitted = true;
+      }
       this.invalidate();
     }
     /* ============ CAMERA ============ */
+    /** Center on a building (by its key) or, failing that, on an island (by repo
+     *  name → that island's first building). */
     focusOn(name, resetZoom = true) {
-      const r = this.rooms.get(name);
+      let r = this.rooms.get(name);
+      if (!r)
+        r = [...this.rooms.values()].find((b) => b.island === name);
       if (!r)
         return;
       this.focusAgentId = null;
-      this.focusRoom_ = name;
+      this.focusIsland_ = null;
+      this.focusRoom_ = r.name;
       this.focus.x = r.x0 + ROOM_W / 2;
-      this.focus.y = floorBase(r.floor) - ROOM_H / 2;
+      this.focus.y = r.baseY - ROOM_H / 2;
       this.focus.spanW = ROOM_W + 26;
       this.focus.spanH = FLOOR_STEP + 34;
       this.panX = 0;
       this.panY = 0;
       if (resetZoom)
         this.zoomMul = 1;
+      this.invalidate();
+    }
+    /** Set the focus box to frame a whole directory (island): all its stacked
+     *  buildings plus the platform/signpost. Returns false if the island is gone. */
+    frameIsland(islandName) {
+      const rooms = [...this.rooms.values()].filter((b) => b.island === islandName && !b.dying);
+      if (!rooms.length)
+        return false;
+      let minX = Infinity, maxX = -Infinity, topY = Infinity, botY = -Infinity;
+      for (const b of rooms) {
+        const rx = cellX0(b.col), ry = floorBase(b.floor);
+        minX = Math.min(minX, rx);
+        maxX = Math.max(maxX, rx + ROOM_W);
+        topY = Math.min(topY, ry - ROOM_H);
+        botY = Math.max(botY, ry + SLAB);
+      }
+      botY += 34;
+      this.focus.x = (minX + maxX) / 2;
+      this.focus.y = (topY + botY) / 2;
+      this.focus.spanW = maxX - minX + 46;
+      this.focus.spanH = botY - topY + 40;
+      return true;
+    }
+    /** Zoom out from a room to an overview of just THAT directory (its tower),
+     *  rather than the whole campus. */
+    focusIslandView(islandName) {
+      this.focusAgentId = null;
+      this.focusRoom_ = null;
+      this.focusIsland_ = islandName;
+      if (!this.frameIsland(islandName)) {
+        this.focusIsland_ = null;
+        this.clearFocus();
+        return;
+      }
+      this.panX = 0;
+      this.panY = 0;
+      this.zoomMul = 1;
       this.invalidate();
     }
     /** Tight zoom onto one agent (their corner of the room). On the initial click
@@ -521,8 +928,9 @@
       const tn = this.toons.get(id);
       if (!tn)
         return;
-      const room = this.rooms.get(tn.agent.repo);
+      const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
       this.focusAgentId = id;
+      this.focusIsland_ = null;
       this.focusRoom_ = room?.name ?? null;
       this.focus.x = tn.targetX;
       this.focus.y = tn.base - ROOM_H / 2 + 6;
@@ -538,6 +946,7 @@
     clearFocus(resetZoom = true, preservePan = false) {
       this.focusRoom_ = null;
       this.focusAgentId = null;
+      this.focusIsland_ = null;
       this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
       this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
       this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
@@ -637,10 +1046,23 @@
     }
     /** True when nothing needs animating, so the loop can park until woken. */
     sceneIdle() {
-      if (this.particles.length || this.leaving.length)
+      if (this.particles.length || this.leaving.length || this.packets.length)
+        return false;
+      if (this.marqueeOn)
         return false;
       for (const r of this.rooms.values()) {
-        if (r.dying || r.delay > 0 || r.built < 1)
+        if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending)
+          return false;
+        const cp = r.cellPulse;
+        if (cp.unstaged > 0.02 || cp.staged > 0.02 || cp.commits > 0.02 || cp.pr > 0.02)
+          return false;
+        for (const _k in r.numAnim)
+          return false;
+        if (r.boardShown && r.boardShown.prReady === false)
+          return false;
+        if (r.boardShown?.pr && r.boardShown.pr.checksRunning > 0)
+          return false;
+        if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5)
           return false;
       }
       for (const tn of this.toons.values()) {
@@ -656,15 +1078,24 @@
     tick(dt) {
       const demolished = [];
       for (const r of this.rooms.values()) {
+        if (!r.dying) {
+          const tx = cellX0(r.col), ty = floorBase(r.floor);
+          const k = Math.min(1, dt * 6);
+          r.x0 += (tx - r.x0) * k;
+          r.baseY += (ty - r.baseY) * k;
+          if (Math.abs(tx - r.x0) < 0.4)
+            r.x0 = tx;
+          if (Math.abs(ty - r.baseY) < 0.4)
+            r.baseY = ty;
+        }
         if (r.dying) {
-          const hasLeaver = this.leaving.some((t) => t.agent.repo === r.name);
+          const hasLeaver = this.leaving.some((t) => t.bkey === r.name);
           if (!hasLeaver) {
             r.built = Math.max(0, r.built - dt / 1);
             if (!this.eco) {
-              const base = floorBase(r.floor);
               this.particles.push({
                 x: r.x0 + Math.random() * ROOM_W * Math.max(0.1, r.built),
-                y: base - 2 - Math.random() * 10,
+                y: r.baseY - 2 - Math.random() * 10,
                 vx: (Math.random() - 0.5) * 10,
                 vy: -4 - Math.random() * 6,
                 life: 0.7,
@@ -685,10 +1116,9 @@
         if (r.built < 1) {
           r.built = Math.min(1, r.built + dt / 1.4);
           if (!this.eco) {
-            const base = floorBase(r.floor);
             this.particles.push({
               x: r.x0 + Math.random() * ROOM_W * r.built,
-              y: base - 2 - Math.random() * 10,
+              y: r.baseY - 2 - Math.random() * 10,
               vx: (Math.random() - 0.5) * 10,
               vy: -4 - Math.random() * 6,
               life: 0.7,
@@ -704,8 +1134,91 @@
           this.rooms.delete(name);
         this.layout();
       }
+      for (const r of this.rooms.values()) {
+        if (r.statPulse > 0)
+          r.statPulse = Math.max(0, r.statPulse - dt * 1.4);
+        const cp = r.cellPulse;
+        if (cp.unstaged > 0)
+          cp.unstaged = Math.max(0, cp.unstaged - dt * 0.9);
+        if (cp.staged > 0)
+          cp.staged = Math.max(0, cp.staged - dt * 0.9);
+        if (cp.commits > 0)
+          cp.commits = Math.max(0, cp.commits - dt * 0.9);
+        if (cp.pr > 0)
+          cp.pr = Math.max(0, cp.pr - dt * 0.9);
+        for (const k in r.numAnim) {
+          const an = r.numAnim[k];
+          an.t += dt * 3;
+          if (an.t >= 1)
+            delete r.numAnim[k];
+        }
+        const b = r.board;
+        const o = r.boardShown;
+        const sig = boardSig(b);
+        if (r.statSig === "") {
+          r.statSig = sig;
+          r.boardShown = b;
+          continue;
+        }
+        if (sig === r.statSig)
+          continue;
+        r.statSig = sig;
+        const localChanged = !o || !b ? !!b : o.modified !== b.modified || o.staged !== b.staged || o.unstagedAdd !== b.unstagedAdd || o.unstagedDel !== b.unstagedDel || o.stagedAdd !== b.stagedAdd || o.stagedDel !== b.stagedDel || o.ahead !== b.ahead || o.committedAdd !== b.committedAdd || o.committedDel !== b.committedDel || o.commits.length !== b.commits.length || o.unpushed !== b.unpushed;
+        if (b && r.built > 0.6 && localChanged && !this.syncSuppressed(r.name)) {
+          this.emitPacket(r, 0, b);
+        } else if (b) {
+          this.applyBoardSnapshot(r.name, b);
+        } else {
+          r.boardShown = b;
+        }
+      }
+      for (let i = this.packets.length - 1; i >= 0; i--) {
+        const p = this.packets[i];
+        p.t += dt * 0.55;
+        const e = clamp(p.t, 0, 1);
+        if (p.path && p.path.length >= 2) {
+          const pos = pointOnPath(p.path, e * e * (3 - 2 * e));
+          p.x = pos.x;
+          p.y = pos.y;
+        } else {
+          const ease = e * e * (3 - 2 * e);
+          p.x = p.sx + (p.tx - p.sx) * ease;
+          p.y = p.sy + (p.ty - p.sy) * ease - Math.sin(ease * Math.PI) * 16;
+        }
+        if (p.t >= 1) {
+          if (p.applySnap)
+            this.applyBoardSnapshot(p.applyKey, p.applySnap);
+          this.packets.splice(i, 1);
+        }
+      }
+      for (const tn of this.toons.values()) {
+        if (!tn.leaving && !tn.entering)
+          this.retargetToon(tn);
+      }
+      for (const tn of this.toons.values()) {
+        if (!tn.entering || tn.enterPhase !== "stairs")
+          continue;
+        const room = tn.bkey ? this.rooms.get(tn.bkey) : void 0;
+        if (!room) {
+          tn.enterPhase = "walk";
+          continue;
+        }
+        tn.climbing = true;
+        const k = Math.min(1, dt * 4);
+        const tx = tn.stairTopX ?? tn.x;
+        tn.x += (tx - tn.x) * k;
+        tn.base += (room.baseY - tn.base) * k;
+        if (Math.abs(room.baseY - tn.base) < 2) {
+          tn.base = room.baseY;
+          tn.climbing = false;
+          tn.enterPhase = "walk";
+          this.retargetToon(tn);
+        }
+      }
       const all = [...this.toons.values(), ...this.leaving];
       for (const tn of all) {
+        if (tn.entering && tn.enterPhase === "stairs")
+          continue;
         const dx = tn.targetX - tn.x;
         if (Math.abs(dx) > 1)
           tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
@@ -759,8 +1272,7 @@
           return tn?.huddle;
         });
         if (huddlers.length >= 2 && r.scribbles.length < 16 && this.frame % 6 === 0) {
-          const base = floorBase(r.floor);
-          const wb = rollerPanel(r.x0 + WB_W / 2, base);
+          const wb = rollerPanel(r.x0 + WB_W / 2, r.baseY);
           r.scribbles.push({
             x1: wb.x + 3 + Math.random() * (wb.w - 6),
             y1: wb.y + 3 + Math.random() * (wb.h - 6),
@@ -823,17 +1335,20 @@
       for (const r of this.rooms.values()) {
         if (r.built < 0.95)
           continue;
-        const base = floorBase(r.floor);
-        if (r.path && this.inRect(mx, my, r.x0 + ROOM_W - 10, base - ROOM_H + 2, 8, 8)) {
-          return { removeBtn: r.name };
+        const base = r.baseY;
+        if (this.inRect(mx, my, r.x0 + ROOM_W - 10, base - ROOM_H + 2, 8, 8)) {
+          return r.isMain ? { removeBtn: r.island } : { removeWtBtn: r.name, island: r.island };
         }
         if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
-          return { addBtn: r.name };
+          return { addDev: { island: r.island, key: r.name } };
         }
+        const sr = this.commitSyncRect(r);
+        if (sr && this.inRect(mx, my, sr.x, sr.y, sr.w, sr.h))
+          return { syncRoom: r.name };
       }
       for (const g of this.ghosts) {
         if (this.inRect(mx, my, g.x0, g.base - ROOM_H, ROOM_W, ROOM_H)) {
-          return { ghost: { floor: g.floor, col: g.col } };
+          return { ghost: { floor: g.floor, col: g.col, kind: g.kind, island: g.island } };
         }
       }
       for (const tn of this.toons.values()) {
@@ -844,34 +1359,48 @@
         }
       }
       for (const r of this.rooms.values()) {
-        const base = floorBase(r.floor);
-        if (this.inRect(mx, my, r.x0, base - ROOM_H, ROOM_W, ROOM_H + SLAB)) {
-          return { room: r.name };
+        if (this.inRect(mx, my, r.x0, r.baseY - ROOM_H, ROOM_W, ROOM_H + SLAB)) {
+          return { room: r.name, island: r.island };
         }
       }
       return {};
     }
     onClick(e) {
       const hit = this.pick(e);
-      if (hit.removeBtn)
+      if (hit.syncRoom) {
+        this.syncSuppress.set(hit.syncRoom, Date.now());
+        this.onSyncCb(hit.syncRoom);
+      } else if (hit.removeWtBtn)
+        this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
+      else if (hit.removeBtn)
         this.onRemoveRoomCb(hit.removeBtn);
-      else if (hit.addBtn)
-        this.onAddAgentCb(hit.addBtn);
-      else if (hit.ghost)
-        this.onReserveCb(hit.ghost.floor, hit.ghost.col);
-      else if (hit.agent) {
+      else if (hit.addDev)
+        this.onAddDevCb(hit.addDev.island, hit.addDev.key);
+      else if (hit.ghost) {
+        if (hit.ghost.kind === "island")
+          this.onReserveCb(hit.ghost.floor, hit.ghost.col);
+        else if (hit.ghost.island)
+          this.onAddWorktreeCb(hit.ghost.island);
+      } else if (hit.agent) {
         this.onSelectCb(hit.agent);
         this.focusAgent(hit.agent);
       } else if (hit.room) {
         if (!this.focusAgentId && this.focusRoom_ === hit.room)
-          this.clearFocus();
+          this.focusIslandView(hit.island ?? "");
         else
           this.focusOn(hit.room);
-      } else
-        this.clearFocus();
+      } else {
+        const key = this.focusRoom_ ?? (this.focusAgentId ? this.toons.get(this.focusAgentId)?.bkey : void 0);
+        const r = key ? this.rooms.get(key) : void 0;
+        if (r)
+          this.focusIslandView(r.island);
+        else
+          this.clearFocus();
+      }
     }
     /* ============ DRAW ============ */
     draw() {
+      this.marqueeOn = false;
       const ctx = this.ctx;
       const dpr = Math.min(window.devicePixelRatio, 2);
       const cw = this.container.clientWidth, ch = this.container.clientHeight;
@@ -894,41 +1423,45 @@
       ctx.setTransform(dpr * z, 0, 0, dpr * z, Math.round(dpr * ox), Math.round(dpr * oy));
       const surfaceY = floorBase(0) + SLAB;
       const { minX, maxX, botY, minFloor } = this.bounds;
-      if (minFloor <= 0 || botY > surfaceY) {
-        ctx.fillStyle = "#241a12";
-        ctx.fillRect(minX - 60, surfaceY, maxX - minX + 120, botY - surfaceY + 26);
-        ctx.fillStyle = "#3a2c1d";
-        for (let i = 0; i < 90; i++) {
+      {
+        const gx = minX - 80, gw = maxX - minX + 160;
+        const apron = PLINTH_APRON;
+        const grassFront = surfaceY + apron;
+        const dirtBot = botY + 50;
+        const dg = ctx.createLinearGradient(0, grassFront, 0, dirtBot);
+        dg.addColorStop(0, "#3a2c1d");
+        dg.addColorStop(1, "#140d08");
+        ctx.fillStyle = dg;
+        ctx.fillRect(gx, grassFront, gw, dirtBot - grassFront);
+        ctx.fillStyle = "#4a3a26";
+        const span = Math.max(1, Math.round(gw));
+        const depth = Math.max(1, Math.round(dirtBot - grassFront - 4));
+        for (let i = 0; i < 110; i++) {
           const hsh = hash("rock" + i);
-          const rx = minX - 56 + hsh % Math.max(1, Math.round(maxX - minX + 112));
-          const ry = surfaceY + 4 + (hsh >> 7) % Math.max(1, Math.round(botY - surfaceY + 16));
-          ctx.fillRect(rx, ry, 2, 1.4);
+          ctx.fillRect(gx + hsh % span, grassFront + 3 + (hsh >> 7) % depth, 2, 1.4);
         }
-      }
-      ctx.fillStyle = "#3f6a35";
-      ctx.fillRect(minX - 60, surfaceY - 1.6, maxX - minX + 120, 1.6);
-      let tallestCol = 0, tallestMax = -Infinity;
-      for (const [col, rng] of this.colRange) {
-        if (rng.max > tallestMax) {
-          tallestMax = rng.max;
-          tallestCol = col;
-        }
+        const gg = ctx.createLinearGradient(0, surfaceY, 0, grassFront);
+        gg.addColorStop(0, "#2f5328");
+        gg.addColorStop(1, "#4f7d3f");
+        ctx.fillStyle = gg;
+        ctx.fillRect(gx, surfaceY, gw, apron);
+        ctx.fillStyle = "#5e9149";
+        ctx.fillRect(gx, surfaceY, gw, 1.2);
+        ctx.fillStyle = "rgba(0,0,0,0.28)";
+        ctx.fillRect(gx, grassFront, gw, 1.2);
       }
       for (const [col, rng] of this.colRange) {
         const x0 = cellX0(col);
         const roofY = floorBase(rng.max) - ROOM_H;
         ctx.fillStyle = "#2c353e";
         ctx.fillRect(x0 - 1.5, roofY - 3, ROOM_W + 3, 3.4);
-        if (col === tallestCol) {
-          ctx.fillStyle = "#3a4550";
-          ctx.fillRect(x0 + 8, roofY - 9, 2, 6);
-          ctx.fillStyle = "#ff6055";
-          if (this.frame % 10 < 5)
-            ctx.fillRect(x0 + 7.4, roofY - 10.6, 3.2, 1.6);
-        }
       }
+      for (const isl of this.islands.values())
+        this.drawIslandPlatform(ctx, isl);
       for (const r of this.rooms.values())
         this.drawRoomBack(ctx, r);
+      for (const r of this.rooms.values())
+        this.drawCables(ctx, r);
       for (const g of this.ghosts)
         this.drawGhost(ctx, g);
       for (const tn of this.leaving) {
@@ -955,7 +1488,7 @@
         for (const r of this.rooms.values()) {
           if (r.built < 0.7 || !r.plan)
             continue;
-          const base = floorBase(r.floor);
+          const base = r.baseY;
           for (const [, seat] of r.plan.seats) {
             if (seat.row !== row)
               continue;
@@ -978,49 +1511,67 @@
         ctx.fillRect(p.x, p.y, p.size, p.size);
       }
       ctx.globalAlpha = 1;
+      for (const p of this.packets) {
+        if (p.t < 0)
+          continue;
+        const fade = p.t < 0.85 ? 1 : clamp((1 - p.t) / 0.15, 0, 1);
+        const pulse = 0.8 + 0.2 * Math.sin(this.frame * 0.55 + p.ph);
+        const flick = 0.82 + Math.random() * 0.18;
+        const a = fade * pulse * flick;
+        const rad = 1.3 + 0.45 * Math.sin(this.frame * 0.55 + p.ph);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = 0.22 * a;
+        ctx.fillRect(p.x - rad - 1.4, p.y - rad - 1.4, (rad + 1.4) * 2, (rad + 1.4) * 2);
+        ctx.globalAlpha = 0.5 * a;
+        ctx.fillRect(p.x - rad, p.y - rad, rad * 2, rad * 2);
+        ctx.globalAlpha = Math.min(1, a + 0.1);
+        ctx.fillStyle = "#e6fff4";
+        ctx.fillRect(p.x - 0.6, p.y - 0.6, 1.2, 1.2);
+      }
+      ctx.globalAlpha = 1;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.textAlign = "center";
+      const xBtn = (r, title) => {
+        const base = r.baseY;
+        const c1 = this.screenOf(r.x0 + ROOM_W - 10, base - ROOM_H + 2);
+        const c2 = this.screenOf(r.x0 + ROOM_W - 2, base - ROOM_H + 10);
+        ctx.fillStyle = "rgba(10,15,18,0.8)";
+        ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
+        ctx.strokeStyle = "rgba(255,96,85,0.7)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
+        ctx.fillStyle = "#ff6055";
+        ctx.font = `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`;
+        ctx.textAlign = "center";
+        ctx.fillText(title, (c1.x + c2.x) / 2, (c1.y + c2.y) / 2 + 3);
+      };
       for (const r of this.rooms.values()) {
-        if (r.built < 0.85)
+        if (r.built < 0.95)
           continue;
-        const base = floorBase(r.floor);
-        if (r.built >= 0.95) {
-          const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
-          const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
-          ctx.fillStyle = "rgba(10,15,18,0.8)";
-          ctx.fillRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-          ctx.strokeStyle = "#3ee089";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-          ctx.fillStyle = "#3ee089";
-          ctx.font = `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`;
-          ctx.textAlign = "center";
-          ctx.fillText("+ DEV", (b.x + b2.x) / 2, (b.y + b2.y) / 2 + 3);
-        }
-        if (r.path && r.built >= 0.95) {
-          const c1 = this.screenOf(r.x0 + ROOM_W - 10, base - ROOM_H + 2);
-          const c2 = this.screenOf(r.x0 + ROOM_W - 2, base - ROOM_H + 10);
-          ctx.fillStyle = "rgba(10,15,18,0.8)";
-          ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-          ctx.strokeStyle = "rgba(255,96,85,0.7)";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-          ctx.fillStyle = "#ff6055";
-          ctx.font = `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`;
-          ctx.textAlign = "center";
-          ctx.fillText("\u2715", (c1.x + c2.x) / 2, (c1.y + c2.y) / 2 + 3);
-        }
+        const base = r.baseY;
+        const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
+        const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
+        ctx.fillStyle = "rgba(10,15,18,0.8)";
+        ctx.fillRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
+        ctx.strokeStyle = "#3ee089";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
+        ctx.fillStyle = "#3ee089";
+        ctx.font = `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`;
+        ctx.textAlign = "center";
+        ctx.fillText("+ DEV", (b.x + b2.x) / 2, (b.y + b2.y) / 2 + 3);
+        xBtn(r, "\u2715");
       }
       for (const g of this.ghosts) {
         const s = this.screenOf(g.x0 + ROOM_W / 2, g.base - ROOM_H / 2);
-        ctx.fillStyle = "rgba(170,180,186,0.75)";
+        const building = g.kind === "building";
+        ctx.fillStyle = building ? "rgba(110,210,150,0.8)" : "rgba(170,180,186,0.75)";
         ctx.font = `600 ${clamp(3 * this.cam.z, 8, 12)}px 'Martian Mono', monospace`;
         ctx.textAlign = "center";
-        ctx.fillText("+ RESERVE", s.x, s.y - 2);
+        ctx.fillText(building ? "+ WORKTREE" : "+ RESERVE", s.x, s.y - 2);
         ctx.font = `${clamp(2.4 * this.cam.z, 7, 10)}px 'IBM Plex Mono', monospace`;
         ctx.fillStyle = "rgba(140,150,156,0.6)";
-        const lvl = g.floor >= 0 ? `F${g.floor}` : `B${-g.floor}`;
-        ctx.fillText(`${lvl} \xB7 pick a directory`, s.x, s.y + 11);
+        ctx.fillText(building ? "new branch room" : "pick a directory", s.x, s.y + 11);
       }
       for (const tn of this.toons.values()) {
         const s = this.screenOf(tn.x, tn.base - tn.lift - 23);
@@ -1059,21 +1610,29 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       const t = this.dropTarget;
       if (t?.room) {
-        const r = this.rooms.get(t.room);
-        if (r)
-          this.strokeWorldRect(r.x0, floorBase(r.floor) - ROOM_H, ROOM_W, ROOM_H + SLAB, "#7fd1ff");
+        const isl = this.islands.get(t.room);
+        if (isl) {
+          const x0 = cellX0(isl.laneStart);
+          const x1 = cellX0(isl.laneStart + isl.cols - 1) + ROOM_W;
+          let top = floorBase(0);
+          for (const b of this.rooms.values())
+            if (b.island === isl.name)
+              top = Math.min(top, b.baseY - ROOM_H);
+          this.strokeWorldRect(x0, top, x1 - x0, floorBase(0) + SLAB - top, "#7fd1ff");
+        }
       } else if (t?.ghost) {
         const g = this.ghosts.find((g2) => g2.floor === t.ghost.floor && g2.col === t.ghost.col);
         if (g)
           this.strokeWorldRect(g.x0, g.base - ROOM_H, ROOM_W, ROOM_H, "#9be38b");
       }
       const d = this.toonDrag;
-      const label = this.toons.get(d.id)?.agent.name ?? "agent";
+      const name = this.toons.get(d.id)?.agent.name ?? "agent";
+      const label = d.blocked ? `${name} \xB7 active, can't move` : name;
       ctx.font = "11px 'IBM Plex Mono', monospace";
       const w = ctx.measureText(label).width + 14;
       ctx.fillStyle = "rgba(12,16,20,0.92)";
       ctx.fillRect(d.mx + 12, d.my - 9, w, 18);
-      ctx.fillStyle = t ? "#cfe8ff" : "#9aa3ab";
+      ctx.fillStyle = d.blocked ? "#ff9a93" : t ? "#cfe8ff" : "#9aa3ab";
       ctx.fillText(label, d.mx + 19, d.my + 3.5);
     }
     /** Stroke a world-space rectangle in screen space (dashed highlight). */
@@ -1089,13 +1648,14 @@
       ctx.restore();
     }
     drawGhost(ctx, g) {
+      const building = g.kind === "building";
       ctx.save();
-      ctx.strokeStyle = "rgba(140,150,156,0.4)";
+      ctx.strokeStyle = building ? "rgba(110,210,150,0.45)" : "rgba(140,150,156,0.4)";
       ctx.lineWidth = 0.8;
       ctx.setLineDash([3, 3]);
       ctx.strokeRect(g.x0 + 1, g.base - ROOM_H + 1, ROOM_W - 2, ROOM_H - 2);
       ctx.setLineDash([]);
-      ctx.strokeStyle = "rgba(86,140,180,0.08)";
+      ctx.strokeStyle = building ? "rgba(110,210,150,0.10)" : "rgba(86,140,180,0.08)";
       for (let gx = g.x0 + 12; gx < g.x0 + ROOM_W - 4; gx += 12) {
         ctx.beginPath();
         ctx.moveTo(gx, g.base - ROOM_H + 3);
@@ -1104,13 +1664,76 @@
       }
       ctx.restore();
     }
+    /** The island's foundation: a plinth spanning its lane at ground level, with a
+     *  signpost carrying the repo/directory name. The buildings stand on this. */
+    drawIslandPlatform(ctx, isl) {
+      const tx0 = cellX0(isl.laneStart);
+      const tx1 = cellX0(isl.laneStart + isl.cols - 1) + ROOM_W;
+      const ground = floorBase(0) + SLAB;
+      const sat = isl.path ? 26 : 14;
+      const L = (l) => `hsl(${isl.hue} ${sat}% ${l}%)`;
+      const aTop = ground;
+      const aBot = ground + PLINTH_APRON;
+      const fBot = aBot + PLINTH_H;
+      const wx0 = tx0 - PLINTH_OV, wx1 = tx1 + PLINTH_OV;
+      ctx.fillStyle = L(9);
+      ctx.beginPath();
+      ctx.moveTo(tx0, aTop);
+      ctx.lineTo(wx0, aBot);
+      ctx.lineTo(wx0, fBot);
+      ctx.lineTo(tx0, fBot);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(tx1, aTop);
+      ctx.lineTo(wx1, aBot);
+      ctx.lineTo(wx1, fBot);
+      ctx.lineTo(tx1, fBot);
+      ctx.closePath();
+      ctx.fill();
+      const ag = ctx.createLinearGradient(0, aTop, 0, aBot);
+      ag.addColorStop(0, L(34));
+      ag.addColorStop(1, L(26));
+      ctx.fillStyle = ag;
+      ctx.beginPath();
+      ctx.moveTo(tx0, aTop);
+      ctx.lineTo(tx1, aTop);
+      ctx.lineTo(wx1, aBot);
+      ctx.lineTo(wx0, aBot);
+      ctx.closePath();
+      ctx.fill();
+      const fg = ctx.createLinearGradient(0, aBot, 0, fBot);
+      fg.addColorStop(0, L(19));
+      fg.addColorStop(1, L(11));
+      ctx.fillStyle = fg;
+      ctx.fillRect(wx0, aBot, wx1 - wx0, PLINTH_H);
+      ctx.fillStyle = L(8);
+      ctx.fillRect(wx0, fBot - 2, wx1 - wx0, 2);
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = `hsl(${isl.hue} 50% 80%)`;
+      const cx = (wx0 + wx1) / 2;
+      const cy = aBot + PLINTH_H / 2 + 1;
+      const label = isl.name.toUpperCase();
+      let size = PLINTH_H - 10;
+      ctx.font = `bold ${size}px 'Martian Mono', monospace`;
+      const maxW = wx1 - wx0 - 10;
+      while (ctx.measureText(label).width > maxW && size > 6) {
+        size -= 0.5;
+        ctx.font = `bold ${size}px 'Martian Mono', monospace`;
+      }
+      ctx.fillText(label, cx, cy);
+      ctx.restore();
+    }
     drawRoomBack(ctx, r) {
-      const base = floorBase(r.floor);
+      const base = r.baseY;
       const eFloor = clamp(r.built / 0.35, 0, 1);
       const eWall = clamp((r.built - 0.2) / 0.45, 0, 1);
       const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
       const x = r.x0, w = ROOM_W, H = ROOM_H;
       const underground = r.floor < 0;
+      const lit = r.agents.length > 0;
       ctx.fillStyle = "#3d2f1f";
       ctx.fillRect(x, base - 1.5, w * eFloor, SLAB - 1);
       ctx.fillStyle = "#4a3a26";
@@ -1131,6 +1754,25 @@
       ctx.lineTo(bw.x0, byB);
       ctx.closePath();
       ctx.fill();
+      if (grow > 0.5) {
+        const fl = ctx.createLinearGradient(0, base, 0, byB);
+        if (lit && !underground) {
+          fl.addColorStop(0, "rgba(255,208,130,0.20)");
+          fl.addColorStop(0.5, "rgba(255,198,120,0.07)");
+          fl.addColorStop(1, "rgba(255,198,120,0)");
+        } else {
+          fl.addColorStop(0, "rgba(150,172,196,0.07)");
+          fl.addColorStop(1, "rgba(150,172,196,0)");
+        }
+        ctx.fillStyle = fl;
+        ctx.beginPath();
+        ctx.moveTo(x, base);
+        ctx.lineTo(x + w, base);
+        ctx.lineTo(bw.x1, byB);
+        ctx.lineTo(bw.x0, byB);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.fillStyle = shade(underground ? 9 : 11);
       ctx.beginPath();
       ctx.moveTo(x, topY);
@@ -1166,40 +1808,57 @@
       if (eFurn <= 0)
         return;
       ctx.globalAlpha = eFurn;
-      ctx.save();
-      ctx.textAlign = "center";
-      ctx.textBaseline = "alphabetic";
-      ctx.font = "bold 5px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = `hsl(${r.hue} 52% 66%)`;
-      const lvl = r.floor >= 0 ? `F${r.floor}` : `B${-r.floor}`;
-      ctx.fillText(`${lvl} \xB7 ${r.name.toUpperCase()}`, (bw.x0 + bw.x1) / 2, bw.yTop + 9);
-      ctx.restore();
       this.drawBoard(ctx, r, base);
-      const win = { x: bw.x1 - 44, y: bw.yTop + 6, w: 38, h: 28 };
-      ctx.fillStyle = "#10151c";
-      ctx.fillRect(win.x - 2, win.y - 2, win.w + 4, win.h + 4);
+      const onWall = (t, f) => {
+        const xL = x + (bw.x0 - x) * t;
+        const yT = topY + (byT - topY) * t;
+        const yB = base + (byB - base) * t;
+        return { x: xL, y: yT + (yB - yT) * f };
+      };
+      const wp = [onWall(0.3, 0.26), onWall(0.64, 0.3), onWall(0.64, 0.66), onWall(0.3, 0.7)];
+      const quad = (pts, fill) => {
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++)
+          ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+      };
+      const mid = (a, c) => ({ x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 });
+      ctx.strokeStyle = "#0c1116";
+      ctx.lineWidth = 3;
+      ctx.lineJoin = "miter";
+      ctx.beginPath();
+      ctx.moveTo(wp[0].x, wp[0].y);
+      for (let i = 1; i < 4; i++)
+        ctx.lineTo(wp[i].x, wp[i].y);
+      ctx.closePath();
+      ctx.stroke();
+      const ys = Math.min(...wp.map((p) => p.y)), yb = Math.max(...wp.map((p) => p.y));
       if (underground) {
-        ctx.fillStyle = "#241a12";
-        ctx.fillRect(win.x, win.y, win.w, win.h);
-        ctx.fillStyle = "#3a2c1d";
-        ctx.fillRect(win.x + 6, win.y + 8, 8, 4);
-        ctx.fillRect(win.x + 22, win.y + 16, 10, 4);
-        ctx.fillStyle = "#c98ab0";
-        if (this.frame % 16 < 8)
-          ctx.fillRect(win.x + 16, win.y + 20, 4, 2);
+        quad(wp, "#241a12");
       } else {
-        const sky = ctx.createLinearGradient(0, win.y, 0, win.y + win.h);
+        const sky = ctx.createLinearGradient(0, ys, 0, yb);
         sky.addColorStop(0, "#2c4a6e");
         sky.addColorStop(1, "#b86a3a");
-        ctx.fillStyle = sky;
-        ctx.fillRect(win.x, win.y, win.w, win.h);
-        ctx.fillStyle = "rgba(255,255,255,0.7)";
-        ctx.fillRect(win.x + 6, win.y + 6, 6, 2);
-        ctx.fillRect(win.x + 22, win.y + 12, 8, 2);
+        quad(wp, sky);
+        ctx.fillStyle = "rgba(255,255,255,0.6)";
+        const c = mid(wp[0], wp[2]);
+        ctx.fillRect(c.x - 2, c.y - 2.5, 4, 1.3);
       }
-      ctx.fillStyle = "#10151c";
-      ctx.fillRect(win.x + win.w / 2 - 0.5, win.y, 1, win.h);
-      ctx.fillRect(win.x, win.y + win.h / 2 - 0.5, win.w, 1);
+      ctx.strokeStyle = "#0c1116";
+      ctx.lineWidth = 0.8;
+      const mt = mid(wp[0], wp[1]), mb = mid(wp[3], wp[2]);
+      ctx.beginPath();
+      ctx.moveTo(mt.x, mt.y);
+      ctx.lineTo(mb.x, mb.y);
+      ctx.stroke();
+      const ml = mid(wp[0], wp[3]), mr = mid(wp[1], wp[2]);
+      ctx.beginPath();
+      ctx.moveTo(ml.x, ml.y);
+      ctx.lineTo(mr.x, mr.y);
+      ctx.stroke();
       const px = x + w - DOOR_W - 6;
       ctx.fillStyle = "#7a4a2a";
       ctx.fillRect(px, base - 4.5, 4, 3);
@@ -1229,7 +1888,6 @@
         ctx.fillStyle = "rgba(255,255,255,0.6)";
         ctx.fillRect(x + WB_W + 3.2, base - H + 12, 4.6, 1);
       }
-      const lit = r.agents.length > 0;
       const LAMPS = 3;
       for (let li = 0; li < LAMPS; li++) {
         const lx = x + w * (li + 1) / (LAMPS + 1);
@@ -1239,14 +1897,13 @@
         ctx.fillRect(lx - 3.5, base - H + 4, 7, 2);
         ctx.fillStyle = lit ? "#ffd27a" : "#4a4636";
         ctx.fillRect(lx - 1.4, base - H + 5.4, 2.8, 1.6);
-        ctx.fillStyle = lit ? "rgba(255,200,110,0.07)" : "rgba(255,200,110,0.02)";
-        ctx.beginPath();
-        ctx.moveTo(lx - 3, base - H + 6);
-        ctx.lineTo(lx + 3, base - H + 6);
-        ctx.lineTo(lx + 11, base);
-        ctx.lineTo(lx - 11, base);
-        ctx.closePath();
-        ctx.fill();
+        if (lit) {
+          const g = ctx.createRadialGradient(lx, base - H + 6.2, 0, lx, base - H + 6.2, 5);
+          g.addColorStop(0, "rgba(255,210,130,0.22)");
+          g.addColorStop(1, "rgba(255,210,130,0)");
+          ctx.fillStyle = g;
+          ctx.fillRect(lx - 5, base - H + 1, 10, 10);
+        }
       }
       const sideAt = (t) => ({ x: x + w + (bw.x1 - (x + w)) * t, y: base + (bw.yBot - base) * t });
       const dn = sideAt(0.18), df = sideAt(0.5);
@@ -1269,56 +1926,377 @@
       ctx.fill();
       ctx.fillStyle = "#d9b34a";
       ctx.fillRect(pf.x + 0.4, pf.y - 14, 1.4, 1.6);
+      if (r.hasUpper) {
+        const steps = 8;
+        const botX = x + w - 42, topX = x + w - 22;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const sx = botX + (topX - botX) * t;
+          const sy = base - (H - 4) * t;
+          ctx.fillStyle = i % 2 ? "#454c53" : "#3c434a";
+          ctx.fillRect(sx - 5, sy - 2.2, 10, 2.4);
+          ctx.fillStyle = "#20262c";
+          ctx.fillRect(sx - 5, sy + 0.2, 10, 1.8);
+        }
+        ctx.fillStyle = "#2a3138";
+        ctx.fillRect(botX - 6, base - H + 2, 1.6, H - 2);
+      }
       if (!lit && r.path) {
         ctx.fillStyle = "rgba(8,11,14,0.45)";
         ctx.fillRect(x + 1.5, base - H, w - 3, H);
       }
       ctx.globalAlpha = 1;
     }
-    /** Placeholder task board on the far wall: a "TASKS" strip over three columns
-     *  (planned / active / review) with stub cards. Not wired to data yet — once
-     *  a room's directory has git configured, these columns will hold real tasks
-     *  / PRs that agents slide across as their state changes. */
+    /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
+     *  plus live git stats (files changed, lines +/-). It glows when the worktree's
+     *  files change (see the packets fired from the desks in tick). */
+    /** World rect of the COMMITS-cell sync button when the branch is out of date
+     *  (has unpushed or behind commits); null otherwise. Shared by the renderer and
+     *  the hit-test so they always agree. Must mirror drawBoard's cell geometry. */
+    commitSyncRect(r) {
+      const bd = r.boardShown ?? r.board;
+      if (!bd || bd.missing || bd.unpushed <= 0 && bd.behind <= 0)
+        return null;
+      const b = boardRect(r.x0, r.baseY);
+      if (b.w < 20 || b.h < 14)
+        return null;
+      const pad = 4;
+      const innerL = b.x + pad, innerR = b.x + b.w - pad;
+      const prW = Math.min(96, (innerR - innerL) * 0.42);
+      const gitR = innerR - prW - 4;
+      const cw = (gitR - innerL) / 3;
+      const cx = innerL + 2 * cw;
+      return { x: cx - 1, y: b.y + b.h - 8, w: cw, h: 8 };
+    }
+    /** Draw a number, rolling the old value up and out while the new value rises in
+     *  when it just changed (a flip-board feel). Uses the caller's font + fillStyle.
+     *  `fontH` is the cap height, used to size the clip box and the roll distance. */
+    drawRoll(ctx, x, y, key, text, fontH, r) {
+      const an = r.numAnim[key];
+      if (!an || an.to !== text) {
+        ctx.fillText(text, x, y);
+        return;
+      }
+      const e = an.t * an.t * (3 - 2 * an.t);
+      const h = fontH * 1.2;
+      const w = Math.max(ctx.measureText(an.from).width, ctx.measureText(text).width) + 2;
+      const a0 = ctx.globalAlpha;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x - 1, y - fontH, w + 2, fontH + 2.5);
+      ctx.clip();
+      ctx.globalAlpha = a0 * (1 - e);
+      ctx.fillText(an.from, x, y - e * h);
+      ctx.globalAlpha = a0 * e;
+      ctx.fillText(text, x, y + (1 - e) * h);
+      ctx.restore();
+      ctx.globalAlpha = a0;
+    }
+    /** A small spinning arc, e.g. while the first GitHub PR lookup is in flight. */
+    drawSpinner(ctx, cx, cy, rad, color) {
+      const a0 = this.frame * 0.35 % (Math.PI * 2);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 0.9;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad, a0, a0 + Math.PI * 1.4);
+      ctx.stroke();
+      ctx.restore();
+    }
     drawBoard(ctx, r, base) {
       const b = boardRect(r.x0, base);
-      if (b.w < 24 || b.h < 14)
+      if (b.w < 20 || b.h < 14)
         return;
-      ctx.fillStyle = "#10151c";
-      ctx.fillRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
-      ctx.fillStyle = "#161d24";
+      const glow = r.statPulse;
+      ctx.fillStyle = "#05080b";
+      ctx.fillRect(b.x - 2.5, b.y - 2.5, b.w + 5, b.h + 5);
+      ctx.fillStyle = "#0b0f14";
+      ctx.fillRect(b.x - 1.5, b.y - 1.5, b.w + 3, b.h + 3);
+      const scr = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+      scr.addColorStop(0, "#101b27");
+      scr.addColorStop(1, "#0a1118");
+      ctx.fillStyle = scr;
       ctx.fillRect(b.x, b.y, b.w, b.h);
-      ctx.fillStyle = "#222d35";
-      ctx.fillRect(b.x, b.y, b.w, 5);
-      ctx.fillStyle = "rgba(230,238,240,0.7)";
-      ctx.fillRect(b.x + 2, b.y + 2, 14, 1);
-      const tints = ["#5b6675", "#3a78c2", "#c89a3a"];
-      const pad = 3;
-      const top = b.y + 7;
-      const colH = b.h - 10;
-      const cw = (b.w - pad * 4) / 3;
-      for (let c = 0; c < 3; c++) {
-        const cx = b.x + pad + c * (cw + pad);
-        ctx.fillStyle = tints[c];
-        ctx.fillRect(cx, top, cw, 3);
-        ctx.fillStyle = "rgba(255,255,255,0.04)";
-        ctx.fillRect(cx, top + 4, cw, colH - 4);
-        const n = 1 + hash(r.name + "card" + c) % 3;
-        for (let i = 0; i < n; i++) {
-          const cardY = top + 6 + i * 5;
-          if (cardY + 4 > top + colH)
+      ctx.fillStyle = "rgba(120,200,255,0.035)";
+      for (let yy = b.y + 2; yy < b.y + b.h - 1; yy += 3)
+        ctx.fillRect(b.x, yy, b.w, 1);
+      const pad = 4;
+      ctx.save();
+      ctx.textBaseline = "alphabetic";
+      ctx.textAlign = "left";
+      const branch = r.branch && r.branch !== "\u2014" ? r.branch : r.isMain ? "main" : "\u2014";
+      const baseName = (r.boardShown ?? r.board)?.base || "";
+      const suffix = baseName && baseName !== branch ? `\u2192 ${baseName}` : "";
+      ctx.font = "4px 'IBM Plex Mono', monospace";
+      const suffixW = suffix ? ctx.measureText(suffix).width + 3 : 0;
+      ctx.font = "bold 5px 'Martian Mono', monospace";
+      ctx.fillStyle = r.isMain ? "hsl(150 60% 80%)" : `hsl(${r.hue} 65% 82%)`;
+      let bt = `\u2325 ${branch}`;
+      while (ctx.measureText(bt).width > b.w - 12 - suffixW && bt.length > 6)
+        bt = bt.slice(0, -2);
+      if (bt !== `\u2325 ${branch}`)
+        bt += "\u2026";
+      ctx.fillText(bt, b.x + pad, b.y + 7);
+      if (suffix) {
+        const branchW = ctx.measureText(bt).width;
+        ctx.font = "bold 4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(205,220,232,0.95)";
+        ctx.fillText(suffix, b.x + pad + branchW + 3, b.y + 7);
+      }
+      ctx.fillStyle = glow > 0.02 ? `rgba(62,224,137,${0.35 + glow * 0.65})` : "rgba(90,100,108,0.5)";
+      ctx.fillRect(b.x + b.w - pad - 3, b.y + 3, 3, 3);
+      ctx.fillStyle = "rgba(120,150,170,0.18)";
+      ctx.fillRect(b.x + pad, b.y + 9.5, b.w - pad * 2, 0.8);
+      ctx.restore();
+      const bd = r.boardShown ?? r.board;
+      const placeholder = (text, color) => {
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        ctx.font = "4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = color;
+        ctx.fillText(text, b.x + b.w / 2, b.y + b.h / 2 + 4);
+        ctx.restore();
+      };
+      if (!bd) {
+        placeholder("no git", "rgba(225,233,238,0.6)");
+        return;
+      }
+      if (bd.missing) {
+        placeholder("dir missing", "rgba(255,154,147,0.85)");
+        return;
+      }
+      const bodyTop = b.y + 12;
+      const bodyBot = b.y + b.h - 2;
+      const innerL = b.x + pad;
+      const innerR = b.x + b.w - pad;
+      const prW = Math.min(96, (innerR - innerL) * 0.42);
+      const gitR = innerR - prW - 4;
+      const cw = (gitR - innerL) / 3;
+      const fit = (s, maxW) => {
+        if (ctx.measureText(s).width <= maxW)
+          return s;
+        let t = s;
+        while (t.length > 1 && ctx.measureText(t + "\u2026").width > maxW)
+          t = t.slice(0, -1);
+        return t + "\u2026";
+      };
+      const churnBar = (x, yy, w, add, del) => {
+        ctx.fillStyle = "rgba(120,150,170,0.16)";
+        ctx.fillRect(x, yy, w, 2);
+        const total = add + del;
+        if (total <= 0)
+          return;
+        const aw = Math.max(1, Math.min(w - 1, Math.round(w * add / total)));
+        ctx.fillStyle = "#3ee089";
+        ctx.fillRect(x, yy, aw, 2);
+        ctx.fillStyle = "#ff6055";
+        ctx.fillRect(x + aw, yy, w - aw, 2);
+      };
+      const cellGlow = (x, w, pulse) => {
+        if (pulse <= 0.02)
+          return;
+        const a = Math.min(1, pulse);
+        ctx.fillStyle = `rgba(62,224,137,${0.14 * a})`;
+        ctx.fillRect(x, bodyTop - 2, w, bodyBot - bodyTop + 4);
+        ctx.strokeStyle = `rgba(62,224,137,${0.9 * a})`;
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(x + 0.4, bodyTop - 1.6, w - 0.8, bodyBot - bodyTop + 3.2);
+      };
+      const cp = r.cellPulse;
+      ctx.save();
+      ctx.textBaseline = "alphabetic";
+      const cells = [
+        { label: "UNSTAGED", count: `${bd.modified} file${bd.modified === 1 ? "" : "s"}`, add: bd.unstagedAdd, del: bd.unstagedDel, tint: "#ffb13d" },
+        { label: "STAGED", count: `${bd.staged} file${bd.staged === 1 ? "" : "s"}`, add: bd.stagedAdd, del: bd.stagedDel, tint: "#3ee089" },
+        { label: "COMMITS", count: `${bd.ahead}`, add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" }
+      ];
+      const sync = this.commitSyncRect(r);
+      const cellKeys = ["unstaged", "staged", "commits"];
+      cells.forEach((c, i) => {
+        const cx = innerL + i * cw;
+        const cwIn = cw - 4;
+        cellGlow(cx - 1.5, cw - 1, cp[cellKeys[i]]);
+        if (i > 0) {
+          ctx.fillStyle = "rgba(120,150,170,0.12)";
+          ctx.fillRect(cx - 2, bodyTop, 0.7, bodyBot - bodyTop);
+        }
+        const pfx = ["u", "s", "c"][i];
+        ctx.textAlign = "left";
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(170,182,190,0.7)";
+        ctx.fillText(c.label, cx, bodyTop + 3);
+        ctx.font = "bold 5.5px 'Martian Mono', monospace";
+        ctx.fillStyle = c.tint;
+        this.drawRoll(ctx, cx, bodyTop + 10, `${pfx}.count`, fit(c.count, cwIn), 5.5, r);
+        ctx.font = "bold 3.6px 'Martian Mono', monospace";
+        const plus = `+${c.add}`;
+        ctx.fillStyle = "#3ee089";
+        this.drawRoll(ctx, cx, bodyTop + 16, `${pfx}.add`, plus, 3.6, r);
+        ctx.fillStyle = "#ff6055";
+        this.drawRoll(ctx, cx + ctx.measureText(plus).width + 3, bodyTop + 16, `${pfx}.del`, `-${c.del}`, 3.6, r);
+        churnBar(cx, bodyTop + 18.5, cwIn, c.add, c.del);
+        if (i === 2) {
+          const up = bd.unpushed, bh = bd.behind, sy = bodyBot - 1.5;
+          ctx.font = "3.6px 'Martian Mono', monospace";
+          if (up > 0 || bh > 0) {
+            let sx = cx;
+            if (up > 0) {
+              ctx.fillStyle = "#ffb13d";
+              ctx.fillText(`\u21E1${up}`, sx, sy);
+              sx += ctx.measureText(`\u21E1${up}`).width + 2.5;
+            }
+            if (bh > 0) {
+              ctx.fillStyle = "#56c7ff";
+              ctx.fillText(`\u21E3${bh}`, sx, sy);
+              sx += ctx.measureText(`\u21E3${bh}`).width + 2.5;
+            }
+            if (sync) {
+              ctx.fillStyle = bh > 0 ? "#56c7ff" : "#3ee089";
+              ctx.fillText("\u27F3", sx + 0.5, sy);
+            }
+          } else {
+            ctx.fillStyle = "rgba(120,200,255,0.5)";
+            ctx.font = "3px 'IBM Plex Mono', monospace";
+            ctx.fillText("synced", cx, sy);
+          }
+        }
+      });
+      const px = gitR + 4;
+      cellGlow(gitR + 2, innerR - gitR - 2, cp.pr);
+      ctx.fillStyle = "rgba(120,150,170,0.14)";
+      ctx.fillRect(gitR + 1, bodyTop, 0.7, bodyBot - bodyTop);
+      let py = bodyTop + 3;
+      ctx.textAlign = "left";
+      ctx.font = "3px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "rgba(170,182,190,0.7)";
+      ctx.fillText("PR", px, py);
+      const loadingPr = !bd.pr && !bd.prReady;
+      const pr = bd.pr;
+      if (pr) {
+        if (pr.draft) {
+          ctx.font = "bold 2.8px 'Martian Mono', monospace";
+          ctx.fillStyle = "rgba(180,190,198,0.85)";
+          ctx.fillText("DRAFT", px + 7, py);
+        }
+        ctx.font = "bold 6px 'Martian Mono', monospace";
+        ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
+        ctx.textAlign = "right";
+        ctx.fillText(`#${pr.number}`, innerR, py + 0.4);
+        ctx.textAlign = "left";
+      } else if (loadingPr) {
+        this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
+      }
+      py += 6;
+      if (!pr) {
+        ctx.font = "3.4px 'IBM Plex Mono', monospace";
+        if (loadingPr) {
+          ctx.fillStyle = "rgba(185,140,255,0.7)";
+          ctx.fillText("checking\u2026", px, py);
+        } else {
+          ctx.fillStyle = "rgba(170,182,190,0.55)";
+          ctx.fillText("no open PR", px, py);
+        }
+      } else {
+        ctx.font = "bold 3.4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(228,236,240,0.95)";
+        const words = pr.title.split(/\s+/).filter(Boolean);
+        let l1 = "", wi = 0;
+        for (; wi < words.length; wi++) {
+          const next = l1 ? `${l1} ${words[wi]}` : words[wi];
+          if (ctx.measureText(next).width > prW && l1)
             break;
-          ctx.fillStyle = "rgba(230,238,240,0.16)";
-          ctx.fillRect(cx + 1, cardY, cw - 2, 4);
-          ctx.fillStyle = tints[c];
-          ctx.fillRect(cx + 1, cardY, 1.4, 4);
+          l1 = next;
+        }
+        const rest = words.slice(wi).join(" ");
+        ctx.fillText(l1, px, py);
+        py += 4.4;
+        if (rest) {
+          const rw = ctx.measureText(rest).width;
+          if (rw <= prW) {
+            ctx.fillText(rest, px, py);
+          } else {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(px, py - 4, prW, 5.5);
+            ctx.clip();
+            const gap = 14, period = rw + gap;
+            const zoomedIn = this.cam.z > 3;
+            if (zoomedIn) {
+              this.marqueeOn = true;
+              if (r.marqueeStart === void 0)
+                r.marqueeStart = this.frame;
+            } else
+              r.marqueeStart = void 0;
+            const scroll = zoomedIn ? (this.frame - (r.marqueeStart ?? this.frame)) * 0.75 % period : 0;
+            ctx.fillText(rest, px - scroll, py);
+            ctx.fillText(rest, px - scroll + period, py);
+            ctx.restore();
+          }
+        }
+        py += 4.5;
+        ctx.fillStyle = "rgba(120,150,170,0.16)";
+        ctx.fillRect(px, py - 2.5, prW, 0.6);
+        py += 3.5;
+        if (pr.checksTotal > 0) {
+          ctx.font = "bold 4px 'Martian Mono', monospace";
+          let sx = px;
+          if (pr.checksPass > 0) {
+            ctx.fillStyle = "#3ee089";
+            const t = `${pr.checksPass}\u2713`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          }
+          if (pr.checksFailed > 0) {
+            ctx.fillStyle = "#ff6055";
+            const t = `${pr.checksFailed}\u2717`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          }
+          if (pr.checksRunning > 0) {
+            const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+            ctx.globalAlpha = pa;
+            ctx.fillStyle = "#ffb13d";
+            ctx.beginPath();
+            ctx.arc(sx + 1.4, py - 1.3, 1.4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = "#ffb13d";
+            ctx.fillText(`${pr.checksRunning}`, sx + 3.6, py);
+          }
+        } else {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = "rgba(150,160,168,0.55)";
+          ctx.fillText("no checks", px, py);
+        }
+        py += 5;
+        if (pr.draft && pr.approvals === 0 && pr.changesRequested === 0) {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = "#ffb13d";
+          ctx.fillText("reviewers pending", px, py);
+        } else {
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          let sx = px;
+          const seg = (label, n, on) => {
+            ctx.fillStyle = n > 0 ? on : "rgba(150,162,170,0.5)";
+            const t = `${n} ${label}`;
+            ctx.fillText(t, sx, py);
+            sx += ctx.measureText(t).width + 3;
+          };
+          seg("appr", pr.approvals, "#3ee089");
+          seg("chg", pr.changesRequested, "#ff6055");
+          seg("req", pr.reviewersPending, "#56c7ff");
+          seg("cmt", pr.comments, "rgba(210,218,224,0.85)");
         }
       }
+      ctx.restore();
     }
     drawDesks(ctx, r, row) {
       const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
       if (eFurn <= 0 || !r.plan)
         return;
-      const base = floorBase(r.floor);
+      const base = r.baseY;
       const db = base - row * ROW_DY;
       ctx.globalAlpha = eFurn;
       for (const [id, seat] of r.plan.seats) {
@@ -1328,8 +2306,14 @@
         const tn = this.toons.get(id);
         const occupied = !!tn?.sitting;
         const st = occupied ? tn.agent.state : void 0;
-        ctx.fillStyle = "#6e522f";
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.fillRect(dx + 1.5, db - 0.6, 19, 1.8);
+        ctx.fillStyle = "#7e5e35";
         ctx.fillRect(dx + 2, db - 11, 18, 2);
+        ctx.fillStyle = "#9c7a4c";
+        ctx.fillRect(dx + 2, db - 11, 18, 0.7);
+        ctx.fillStyle = "#382a16";
+        ctx.fillRect(dx + 2, db - 9.2, 18, 0.7);
         ctx.fillStyle = "#54401f";
         ctx.fillRect(dx + 3, db - 9, 1.5, 9);
         ctx.fillRect(dx + 17.5, db - 9, 1.5, 9);
@@ -1364,7 +2348,7 @@
         }
         if (occupied) {
           const c = st === "error" ? "217,83,79" : "159,216,255";
-          const peak = st === "error" ? 0.3 : st === "active" && this.frame % 4 < 2 ? 0.4 : 0.24;
+          const peak = st === "error" ? 0.3 : st === "active" && this.frame % 8 < 4 ? 0.4 : 0.24;
           const gx = dx + 13, gy = db - 16;
           const grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, 7);
           grd.addColorStop(0, `rgba(${c},${peak})`);
@@ -1525,6 +2509,9 @@
     setPrBranches(b) {
       this._instance?.setPrBranches(b);
     },
+    setBoards(boards) {
+      this._instance?.setBoards(boards);
+    },
     setSelected(id) {
       this._instance?.setSelected(id);
     },
@@ -1534,11 +2521,20 @@
     onReserve(cb) {
       this._instance?.onReserve(cb);
     },
-    onAddAgent(cb) {
-      this._instance?.onAddAgent(cb);
+    onAddDev(cb) {
+      this._instance?.onAddDev(cb);
+    },
+    onAddWorktree(cb) {
+      this._instance?.onAddWorktree(cb);
     },
     onRemoveRoom(cb) {
       this._instance?.onRemoveRoom(cb);
+    },
+    onRemoveWorktree(cb) {
+      this._instance?.onRemoveWorktree(cb);
+    },
+    onSync(cb) {
+      this._instance?.onSync(cb);
     },
     onCd(cb) {
       this._instance?.onCd(cb);

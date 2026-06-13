@@ -58,7 +58,7 @@ button{ font-family:inherit; }
 .tstat{ display:flex; align-items:center; gap:7px; font-size:12px; color:var(--text-dim); padding:9px 14px; border-right:1px solid var(--edge-soft); }
 .tstat:last-of-type{ border-right:none; }
 .tstat b{ color:var(--text); font-weight:600; font-size:13px; }
-.tstat .lbl{ font-family:var(--label); font-size:7.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--text-faint); }
+.tstat .lbl{ font-family:var(--label); font-size:7.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--text); }
 .pip{ width:7px; height:7px; border-radius:50%; display:inline-block; }
 .pip.active{ background:var(--active); box-shadow:0 0 8px var(--active); }
 .pip.waiting{ background:var(--waiting); box-shadow:0 0 8px var(--waiting); }
@@ -194,14 +194,6 @@ button{ font-family:inherit; }
 .feed-item .fi{ color:var(--c,var(--idle)); font-size:13px; }
 .feed-item .repo{ margin-left:auto; font-family:var(--label); font-size:7.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint); padding-left:8px; }
 @keyframes feedin{ from{ opacity:0; transform:translateY(14px) scale(.95); } }
-
-/* hint pill */
-.hint{
-  position:fixed; bottom:18px; left:50%; transform:translateX(-50%); z-index:5;
-  font-family:var(--label); font-size:8.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--text-dim);
-  background:var(--glass); border:1px solid var(--edge); padding:8px 18px; border-radius:20px;
-  backdrop-filter:var(--blur); box-shadow:var(--shadow); pointer-events:none; transition:opacity .4s;
-}
 
 /* ============ AGENT PANEL (right) ============ */
 .panel{
@@ -421,6 +413,10 @@ button{ font-family:inherit; }
 .pa:hover{ border-color:var(--text-faint); color:var(--text); background:var(--glass-2); }
 .pa.primary{ color:var(--on-amber); background:var(--amber); border-color:var(--amber); font-weight:700; }
 .pa.primary:hover{ filter:brightness(1.1); }
+/* external session: an info chip, not an actionable button */
+.pa.ext-note{ cursor:default; border-style:dashed; color:var(--text-faint); }
+.pa.ext-note:hover{ border-color:var(--edge); color:var(--text-faint); background:transparent; }
+.acts.ext-note{ font-size:10px; color:var(--text-faint); font-style:italic; }
 
 .chg-section{ padding:12px 18px 16px; }
 .chg-section .chg-title{

@@ -36,7 +36,7 @@ export class ClaudeDiscovery {
   // transcript reports the new cwd so the toon doesn't snap back meanwhile. The
   // timestamp bounds the hold: a /cd that fails or is declined never reports the
   // new cwd, so we give up after CD_HOLD_MS and revert to the real location.
-  private cdPending = new Map<string, { dir: string; at: number }>();
+  private cdPending = new Map<string, { dir: string; room?: string; at: number }>();
   private static readonly CD_HOLD_MS = 120_000;
   // session id → the panel-created placeholder agent it was adopted into, so a
   // launched Claude session flows into that agent rather than spawning a dup.
@@ -44,10 +44,12 @@ export class ClaudeDiscovery {
 
   constructor(private store: DevTowerStore) {}
 
-  /** Record that an agent was sent `/cd <dir>`; relocate it optimistically and
-   *  re-scan so the move shows immediately rather than on the next poll. */
-  expectCd(agentId: string, dir: string): void {
-    this.cdPending.set(agentId, { dir, at: Date.now() });
+  /** Record that an agent was sent `/cd <dir>`. The move is NOT applied until a
+   *  scan sees the transcript report `dir` as the live cwd — only then is the
+   *  agent relocated (to `room`). A declined/failed /cd never confirms, so the
+   *  agent stays put; the pending entry expires after CD_HOLD_MS. */
+  expectCd(agentId: string, dir: string, room?: string): void {
+    this.cdPending.set(agentId, { dir, room, at: Date.now() });
     void this.refresh();
   }
 
@@ -114,31 +116,43 @@ export class ClaudeDiscovery {
       return 0;
     }
 
-    // keep one transcript per live claude process (newest first per cwd);
-    // optionally also show recent-but-closed ones as idle "resumable" rooms.
-    // NB: key liveness by launchCwd (the dir claude started in, which is what
-    // `lsof` reports), NOT the latest cwd — a session that cd'd into a subdir
-    // still belongs to the process counted under its launch directory.
+    // Keep one transcript per live claude process. `found` is newest-first, so
+    // we walk it and CLAIM a live process slot for each kept session — by its
+    // launch dir, or (if renamed/cd'd mid-run) its current dir, whichever still
+    // has an unclaimed running process. Claiming per slot (not per dir) is what
+    // stops a CLOSED session whose dir was later reused/renamed from borrowing a
+    // newer session's live process at the same path (the phantom-agent bug).
     const liveCounts = await this.liveCwdCounts();
-    const usedPerCwd = new Map<string, number>();
     const kept: Found[] = [];
-    for (const f of found) {
-      // found is sorted newest-first, so a cwd's slots fill with its freshest
-      // sessions; the rest are treated as closed.
-      const used = usedPerCwd.get(f.launchCwd) ?? 0;
-      let isLive: boolean;
-      if (liveCounts === null) {
-        // no process info → treat only a single very-fresh session as live
-        isLive = used === 0 && Date.now() - f.mtime < 15 * 60_000;
-      } else {
-        isLive = used < (liveCounts.get(f.launchCwd) ?? 0);
+    const keptCwd = new Set<string>();
+    if (liveCounts === null) {
+      // no process info → treat only one very-fresh session per launch dir as live
+      for (const f of found) {
+        if (keptCwd.has(f.launchCwd)) continue;
+        if (Date.now() - f.mtime < 15 * 60_000) {
+          keptCwd.add(f.launchCwd);
+          kept.push(f);
+        } else if (showRecent) {
+          keptCwd.add(f.launchCwd);
+          kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
+        }
       }
-      if (isLive) {
-        usedPerCwd.set(f.launchCwd, used + 1);
-        kept.push(f);
-      } else if (showRecent && used === 0) {
-        usedPerCwd.set(f.launchCwd, 1);
-        kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
+    } else {
+      const remaining = new Map(liveCounts);
+      const claim = (cwd: string): boolean => {
+        const n = remaining.get(cwd) ?? 0;
+        if (n <= 0) return false;
+        remaining.set(cwd, n - 1);
+        return true;
+      };
+      for (const f of found) {
+        if (claim(f.launchCwd) || (f.cwd !== f.launchCwd && claim(f.cwd))) {
+          keptCwd.add(f.launchCwd);
+          kept.push(f);
+        } else if (showRecent && !keptCwd.has(f.launchCwd)) {
+          keptCwd.add(f.launchCwd);
+          kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
+        }
       }
     }
     found = kept;
@@ -182,23 +196,27 @@ export class ClaudeDiscovery {
       present.add(id);
       this.mine.add(id);
 
-      // honor a pending /cd until the transcript reports the new directory,
-      // or until the hold expires (a failed/declined /cd never lands)
-      let cwd = f.cwd;
+      // a pending /cd only takes effect once the transcript actually reports the
+      // target dir as the live cwd (the move "worked"); until then the agent is
+      // shown wherever it really is. The hold expires so a failed /cd is dropped.
+      const cwd = f.cwd;
       const pend = this.cdPending.get(id);
+      let cdRoom: string | undefined;
       if (pend) {
-        if (cwd === pend.dir || Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
+        if (cwd === pend.dir) {
+          cdRoom = pend.room; // confirmed — relocate to the requested room
           this.cdPending.delete(id);
-        } else {
-          cwd = pend.dir;
+        } else if (Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
+          this.cdPending.delete(id);
         }
       }
+      const cdConfirmed = cdRoom !== undefined || (pend !== undefined && cwd === pend.dir);
       let branch = this.branchCache.get(cwd);
       if (branch === undefined) {
         branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
         this.branchCache.set(cwd, branch);
       }
-      if (isAdopted) {
+      if (isAdopted && !cdConfirmed) {
         // keep the placeholder's identity (name/repo/worktree/branch/task);
         // only flow in the live session fields
         this.store.apply({
@@ -209,21 +227,28 @@ export class ClaudeDiscovery {
           transcriptPath: f.file,
           question: f.question,
           contextTokens: f.contextTokens,
+          external: false, // DevTower launched/owns this one
         });
       } else {
+        // a discovered agent (or a just-confirmed /cd) is placed at its real cwd.
+        // On a confirmed move, honor the requested room name; keep an adopted
+        // agent's own name rather than renaming it.
         this.store.apply({
           id,
-          name: `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
+          name: isAdopted ? undefined : `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
           model: f.model,
-          repo: path.basename(cwd),
+          repo: cdRoom ?? path.basename(cwd),
           worktree: cwd,
           branch: branch || "—",
           state: f.state,
-          task: f.task,
+          task: isAdopted ? undefined : f.task,
           elapsed: ago(f.mtime),
           transcriptPath: f.file,
           question: f.question,
           contextTokens: f.contextTokens,
+          // a purely discovered session (not adopted into a DevTower placeholder)
+          // is running in its own terminal outside DevTower
+          external: !isAdopted,
         });
       }
     }
@@ -318,7 +343,9 @@ async function readMeta(
     }
     // prefer the most recent cwd record so /cd mid-session relocates the agent
     const cwd = lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g) ?? headCwd;
-    const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g);
+    // newest real model id — synthetic/meta turns carry "model":"<synthetic>",
+    // which must not become the agent's displayed model
+    const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g, (v) => v !== "<synthetic>");
 
     // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
     // Mirrors Claude Code's own `/context`: input + the two cache buckets (all
@@ -354,9 +381,11 @@ async function readMeta(
             const text = flatten(rec.message?.content ?? rec.content);
             if (text) lastAssistantText = text;
           }
-          if (!task && role === "user") {
+          if (!task && role === "user" && rec.isMeta !== true) {
             const text = flatten(rec.message?.content ?? rec.content);
-            if (text) task = text.slice(0, 80);
+            // skip Claude Code's injected turns (synthetic continuations, slash
+            // command wrappers, system reminders) — they aren't the human task
+            if (text && !isSyntheticTask(text)) task = text.slice(0, 80);
           }
           if (lastRole && task && lastAssistantText) break;
         }
@@ -384,9 +413,19 @@ async function readMeta(
   }
 }
 
-function lastMatch(s: string, re: RegExp): string | undefined {
+/** True for non-human user turns Claude Code writes into the transcript:
+ *  synthetic continuations, slash-command wrappers, hook/system-reminder blocks.
+ *  These must never become an agent's displayed task. */
+function isSyntheticTask(text: string): boolean {
+  if (text === "<synthetic>") return true;
+  if (/^<(synthetic|command-|local-command|bash-(input|stdout|stderr)|system-reminder|user-prompt-submit-hook)/i.test(text)) return true;
+  if (/^Caveat: The messages below were generated/i.test(text)) return true;
+  return false;
+}
+
+function lastMatch(s: string, re: RegExp, accept?: (v: string) => boolean): string | undefined {
   let m: RegExpExecArray | null, last: string | undefined;
-  while ((m = re.exec(s))) last = m[1];
+  while ((m = re.exec(s))) if (!accept || accept(m[1])) last = m[1];
   return last;
 }
 

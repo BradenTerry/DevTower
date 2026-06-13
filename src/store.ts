@@ -44,6 +44,10 @@ export interface Agent {
   transcriptPath?: string;
   /** Tokens currently in the session's context window. */
   contextTokens?: number;
+  /** A live session discovered running OUTSIDE DevTower (e.g. an external
+   *  terminal). DevTower must not open/resume a terminal for it — it's managed
+   *  in its own session. */
+  external?: boolean;
 }
 
 /** A single event line in the generic state.jsonl feed. */
@@ -61,6 +65,7 @@ export interface StateEvent {
   /** the actual question the agent asked, when one exists */
   question?: string;
   contextTokens?: number;
+  external?: boolean;
 }
 
 export const STATE_LABEL: Record<AgentState, string> = {
@@ -135,6 +140,7 @@ export class DevTowerStore {
       session: existing?.session,
       transcriptPath: ev.transcriptPath ?? existing?.transcriptPath,
       contextTokens: ev.contextTokens ?? existing?.contextTokens,
+      external: ev.external ?? existing?.external,
     };
     this.agents.set(ev.id, merged);
     this._onChange.fire();

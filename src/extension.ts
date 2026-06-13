@@ -32,7 +32,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
   if (liveSessions === 0 && cfg.get<boolean>("useMockData", false)) store.seedMock();
   store.watchStateFile();
-  prs.start(120_000, 4_000); // PR polling stays off the startup path
+  prs.start(4_000); // adaptive PR polling (fast while a build runs); off the startup path
 
   // Native Changes tree (staged/unstaged, stage/unstage, open diff to the right).
   registerChanges(context, store);

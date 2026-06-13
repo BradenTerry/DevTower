@@ -27,6 +27,9 @@ interface ReservedRoom {
   path: string;
   floor: number;
   col: number;
+  // the island's worktrees (incl. the required main checkout), so empty rooms
+  // render before any agent is in them
+  worktrees?: { path: string; branch: string }[];
 }
 
 const STATE_COLOR: Record<string, string> = {
@@ -84,6 +87,9 @@ const DEPTH_Y = 22; // far-wall floor sits this far above the near floor
 // render-only: a dev's true baseline (tn.base) never moves, so floor-detection
 // and the fire-escape exit math stay correct.
 const ROWS_OF_DESKS = 2;
+// devs fill the front line first (close to the viewer, clear of the back-wall
+// board); only once the front row holds this many do they wrap to the back row
+const FRONT_CAP = 6;
 const ROW_DY = DEPTH_Y; // back row stands on the far-wall floor line
 // back-row desks are staggered toward room center by half the column pitch
 // (see PixelCrew.seatX); the pitch is per-room so it scales with desk count
@@ -114,39 +120,122 @@ const rollerPanel = (cx: number, base: number) => {
   return { x: cx - ROLLER_W / 2, y: stand - ROLLER_LEG - ROLLER_H, w: ROLLER_W, h: ROLLER_H };
 };
 
-/** Task board: the kanban panel centered on the back wall (planned / active /
- *  review). Placeholder art for now; agents will slide cards across it once it
- *  is wired to git/PR data. Sits below the room directory title. */
+/** Stat-tracker screen: a big flat-panel "TV" that fills the whole back wall
+ *  (the windows live on the side walls now). */
 const boardRect = (x0: number, base: number) => {
   const bw = backWall(x0, base);
-  const w = bw.x1 - bw.x0 - 94;
-  return { x: (bw.x0 + bw.x1) / 2 - w / 2, y: bw.yTop + 13, w, h: 26 };
+  const left = bw.x0 + 3;
+  const right = bw.x1 - 3;
+  const top = bw.yTop + 3;
+  const bottom = bw.yBot - 5; // leave the baseboard
+  return { x: left, y: top, w: Math.max(20, right - left), h: Math.max(14, bottom - top) };
 };
 // rooms share walls — one contiguous building, door to door
 const COL_STEP = ROOM_W;
 const cellX0 = (col: number) => col * COL_STEP - ROOM_W / 2;
 const WALK_SPEED = 30;
 
+// Island layout: an island is one repo/directory drawn as a vertical tower one
+// column wide — the main (root) checkout on the ground, each worktree stacked a
+// floor higher. Towers stand ISLAND_GAP columns apart so they read as distinct
+// landmasses, each on its own platform.
+const ISLAND_GAP = 1; // empty columns between adjacent islands
+const PLINTH_H = 22; // front-face height of the island pedestal (below ground)
+const PLINTH_APRON = 8; // depth of the pedestal's top surface tilting toward us
+const PLINTH_OV = 9; // how far the pedestal splays out past the tower on each side
+
 interface Particle {
   x: number; y: number; vx: number; vy: number;
   life: number; color: string; size: number; gravity: number;
 }
+/** A glowing "commit packet" that flies from a dev's desk to the room board
+ *  whenever that worktree's files change. */
+interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty: number; t: number; color: string; ph: number; path?: { x: number; y: number }[];
+  /** Board snapshot captured when this beam was fired; applied to the room's TV
+   *  when the beam lands (so the screen shows the data that triggered it, not
+   *  whatever the latest poll happens to be at landing time). */
+  applyKey?: string; applySnap?: BoardData }
 interface Stroke { x1: number; y1: number; x2: number; y2: number; color: string }
 
+// A "room" is now one BUILDING = one worktree/checkout. Buildings of the same
+// repo share an island; the map key is the building key (worktree path).
 interface Room {
-  name: string;
-  floor: number;
-  col: number;
-  x0: number; // left edge of this room (world)
-  path?: string; // set for reserved rooms
+  name: string; // unique building key (worktree path, or island name if none)
+  island: string; // island this building belongs to (the repo/directory name)
+  label: string; // building sign: "main" for the primary checkout, else branch
+  branch: string; // the checkout's branch name (shown under the board)
+  isMain: boolean; // the island's primary checkout
+  floor: number; // packed grid floor (target)
+  col: number; // packed grid column (target)
+  x0: number; // left edge of this building (world) — tweens toward cellX0(col)
+  baseY: number; // near-floor baseline (world) — tweens toward floorBase(floor)
+  path?: string; // island directory, when reserved
   hue: number;
   built: number;
   delay: number; // staggered construction start (seconds)
   dying?: boolean; // queued for demolition once its leavers are out
+  hasUpper?: boolean; // a worktree building stacks on top → draw an internal staircase
   agents: CrewAgent[];
   scribbles: Stroke[];
   decor: number;
   plan?: SeatPlan; // desks grouped by worktree (recomputed each layout)
+  board?: BoardData; // latest live git/PR data from the extension (incoming)
+  boardShown?: BoardData; // what the screen currently renders; swapped in when a beam lands
+  statSig: string; // last seen git signature; any change (stage/commit/…) → fire a beam
+  statPulse: number; // 0..1 board glow that decays after a change
+  cellPulse: { unstaged: number; staged: number; commits: number; pr: number }; // per-column flash
+  numAnim: Record<string, { from: string; to: string; t: number }>; // per-number flip transitions
+  marqueeStart?: number; // frame the PR-title marquee (re)started, so it restarts on zoom-in
+  swapPending?: boolean; // a beam is in flight; update the screen when it arrives
+  swapClock?: number; // seconds since the beam was fired
+}
+
+/** Board payload pushed from the extension (see consolePanel BoardData). */
+interface BoardData {
+  branch: string;
+  modified: number;
+  staged: number;
+  modifiedFiles: string[];
+  stagedFiles: string[];
+  unstagedAdd: number;
+  unstagedDel: number;
+  stagedAdd: number;
+  stagedDel: number;
+  committedAdd: number;
+  committedDel: number;
+  base: string;
+  ahead: number;
+  unpushed: number;
+  behind: number;
+  commits: string[];
+  missing?: boolean;
+  prReady?: boolean;
+  pr?: {
+    number: number;
+    title: string;
+    url: string;
+    draft: boolean;
+    checks: "pass" | "fail" | "pending" | "none";
+    checksPass: number;
+    checksFailed: number;
+    checksRunning: number;
+    checksTotal: number;
+    review: "approved" | "changes" | "required" | "none";
+    approvals: number;
+    changesRequested: number;
+    reviewersPending: number;
+    comments: number;
+  };
+}
+
+/** An island: one repo/directory hosting a contiguous cluster of buildings. */
+interface Island {
+  name: string; // repo / directory name
+  path?: string; // reserved directory, when known
+  laneStart: number; // first column of the island's lane
+  cols: number; // columns the lane spans
+  count: number; // number of live buildings (worktrees)
+  hue: number;
 }
 
 /** One worktree's block of desks within a room. */
@@ -176,12 +265,19 @@ interface Toon {
   targetX: number;
   base: number; // floor baseline (world y)
   x0: number; // left edge of the toon's room (for lift entry/exit)
+  bkey?: string; // building this toon belongs to (so tick can re-glue it)
+  seatCol: number; // cached seat within the building (recomputed on layout)
+  wbSlot: number; // cached whiteboard huddle slot
   deskIdx: number;
   row: number; // 0 = front aisle, 1 = back row (drawn higher)
   lift: number; // current render-only vertical offset toward the back row
   huddle: boolean;
   sitting: boolean;
   entering: boolean;
+  // entry path: upper-floor devs climb the staircase in the floor below to reach
+  // their door; ground-floor devs just walk in.
+  enterPhase?: "stairs" | "walk";
+  stairTopX?: number;
   leaving: boolean;
   // departure path: walk to the building edge → ladder to ground → away
   leavePhase?: "walk" | "ladder" | "away";
@@ -194,20 +290,84 @@ interface Toon {
 const floorBase = (floor: number) => -floor * FLOOR_STEP;
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
+/** Sample a quadratic bezier into `n` points (excluding the start point), so a
+ *  curved cable can be drawn and walked as a plain polyline. */
+function sampleQuad(
+  p0: { x: number; y: number },
+  c: { x: number; y: number },
+  p1: { x: number; y: number },
+  n: number
+): { x: number; y: number }[] {
+  const pts: { x: number; y: number }[] = [];
+  for (let i = 1; i <= n; i++) {
+    const t = i / n, mt = 1 - t;
+    pts.push({
+      x: mt * mt * p0.x + 2 * mt * t * c.x + t * t * p1.x,
+      y: mt * mt * p0.y + 2 * mt * t * c.y + t * t * p1.y,
+    });
+  }
+  return pts;
+}
+
+/** Position at fraction t (0..1) along a polyline, measured by arc length. */
+function pointOnPath(path: { x: number; y: number }[], t: number): { x: number; y: number } {
+  if (path.length === 1) return path[0];
+  const segs: number[] = [];
+  let total = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    const len = Math.hypot(path[i + 1].x - path[i].x, path[i + 1].y - path[i].y);
+    segs.push(len);
+    total += len;
+  }
+  if (total === 0) return path[0];
+  let d = clamp(t, 0, 1) * total;
+  for (let i = 0; i < segs.length; i++) {
+    if (d <= segs[i] || i === segs.length - 1) {
+      const f = segs[i] === 0 ? 0 : d / segs[i];
+      return { x: path[i].x + (path[i + 1].x - path[i].x) * f, y: path[i].y + (path[i + 1].y - path[i].y) * f };
+    }
+    d -= segs[i];
+  }
+  return path[path.length - 1];
+}
+
+/** Signature of every display-relevant board field (incl. PR/checks), so any
+ *  real change fires exactly one beam and identical polls fire none. */
+function boardSig(b: BoardData | undefined): string {
+  if (!b) return "none";
+  const pr = b.pr
+    ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.title}`
+    : "no";
+  return [
+    b.modified, b.staged, b.ahead, b.unstagedAdd, b.unstagedDel, b.stagedAdd, b.stagedDel,
+    b.committedAdd, b.committedDel, b.commits.length, b.base, b.prReady ? 1 : 0, b.missing ? 1 : 0, pr,
+  ].join("|");
+}
+
 class PixelCrew {
   private ctx: CanvasRenderingContext2D;
   private toons = new Map<string, Toon>();
   private leaving: Toon[] = [];
-  private rooms = new Map<string, Room>(); // key = room name
+  private rooms = new Map<string, Room>(); // key = building key (worktree path)
+  private islands = new Map<string, Island>(); // key = island name (repo)
   private reserved: ReservedRoom[] = [];
   private agents: CrewAgent[] = [];
   private particles: Particle[] = [];
-  private ghosts: { col: number; floor: number; x0: number; base: number }[] = [];
+  private packets: Packet[] = []; // desk → board "file changed" trails
+  private boardsMap: Record<string, BoardData> = {};
+  private hasFitted = false; // first layout fits the campus; later ones preserve the view
+  // ghost slots come in two kinds: "building" extends an island with the next
+  // worktree (click → add agent there), "island" reserves a brand-new directory.
+  private ghosts: {
+    col: number; floor: number; x0: number; base: number;
+    kind: "building" | "island"; island?: string;
+  }[] = [];
   private colRange = new Map<number, { min: number; max: number }>();
   private bounds = { minX: -120, maxX: 120, topY: -120, botY: 40, minFloor: 0 };
 
   private focusRoom_: string | null = null;
   private focusAgentId: string | null = null; // when set, the camera tracks this dev (not the room)
+  private focusIsland_: string | null = null; // when set, frame this whole directory (its tower)
   private prBranches = new Set<string>(); // branches (lowercased) with an open PR
   private focus = { x: 0, y: -ROOM_H / 2, spanW: ROOM_W + 60, spanH: FLOOR_STEP + 60 };
   private cam = { x: 0, y: -ROOM_H / 2, z: 4 };
@@ -216,7 +376,7 @@ class PixelCrew {
   private panY = 0;
   private drag = { active: false, moved: false, lastX: 0, lastY: 0 };
   // dragging a toon onto a room (or a ghost cell) issues a /cd for that agent
-  private toonDrag: { id: string; active: boolean; mx: number; my: number } | null = null;
+  private toonDrag: { id: string; active: boolean; mx: number; my: number; blocked: boolean } | null = null;
   private dropTarget: { room?: string; ghost?: { floor: number; col: number } } | null = null;
 
   private running = false;
@@ -224,6 +384,7 @@ class PixelCrew {
   private lastNow = 0;
   private acc = 0;
   private frame = 0;
+  private marqueeOn = false; // a PR title marquee is scrolling → keep the loop awake
   private dirty = true;
   private eco = false;
   // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
@@ -234,8 +395,14 @@ class PixelCrew {
   private selectedId?: string;
   private onSelectCb: (id: string) => void = () => {};
   private onReserveCb: (floor: number, col: number) => void = () => {};
-  private onAddAgentCb: (room: string) => void = () => {};
+  private onAddDevCb: (island: string, worktree: string) => void = () => {};
+  private onAddWorktreeCb: (island: string) => void = () => {};
   private onRemoveRoomCb: (room: string) => void = () => {};
+  private onRemoveWorktreeCb: (worktree: string, island: string) => void = () => {};
+  private onSyncCb: (room: string) => void = () => {};
+  /** room key → time a sync was requested, so the board change it causes flashes
+   *  without firing a beam (the agent didn't do that work). */
+  private syncSuppress = new Map<string, number>();
   private onCdCb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void =
     () => {};
 
@@ -266,11 +433,14 @@ class PixelCrew {
     };
     canvas.addEventListener("pointerdown", (e) => {
       canvas.setPointerCapture(e.pointerId);
-      // grabbing a toon begins a drag-to-relocate gesture, not a camera pan
+      // grabbing a toon begins a drag-to-relocate gesture, not a camera pan.
+      // An active agent can't be relocated (its session is mid-task), so the
+      // drag is blocked — a tap still selects it.
       const hit = this.pick(e);
       if (hit.agent) {
         const { mx, my } = canvasXY(e);
-        this.toonDrag = { id: hit.agent, active: false, mx, my };
+        const blocked = this.toons.get(hit.agent)?.agent.state === "active";
+        this.toonDrag = { id: hit.agent, active: false, mx, my, blocked };
         return;
       }
       this.drag.active = true;
@@ -287,8 +457,20 @@ class PixelCrew {
         this.toonDrag.mx = mx;
         this.toonDrag.my = my;
         if (this.toonDrag.active) {
+          if (this.toonDrag.blocked) {
+            // active agent: no relocation target, show it's not allowed
+            this.dropTarget = null;
+            this.container.style.cursor = "not-allowed";
+            this.invalidate();
+            return;
+          }
           const hit = this.pick(e);
-          this.dropTarget = hit.room ? { room: hit.room } : hit.ghost ? { ghost: hit.ghost } : null;
+          // dropping on a building (or a +building ghost) moves the agent into
+          // that island's directory; a +island ghost picks a new directory.
+          if (hit.island && !hit.ghost) this.dropTarget = { room: hit.island };
+          else if (hit.ghost?.kind === "building" && hit.ghost.island) this.dropTarget = { room: hit.ghost.island };
+          else if (hit.ghost?.kind === "island") this.dropTarget = { ghost: { floor: hit.ghost.floor, col: hit.ghost.col } };
+          else this.dropTarget = null;
           this.container.style.cursor = this.dropTarget ? "copy" : "grabbing";
           this.invalidate();
         }
@@ -297,7 +479,9 @@ class PixelCrew {
       if (!this.drag.active) {
         const hit = this.pick(e);
         this.container.style.cursor =
-          hit.agent || hit.room || hit.ghost || hit.addBtn || hit.removeBtn ? "pointer" : "default";
+          hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn || hit.removeWtBtn || hit.syncRoom
+            ? "pointer"
+            : "default";
         return;
       }
       const dx = e.clientX - this.drag.lastX;
@@ -356,8 +540,11 @@ class PixelCrew {
 
   onSelect(cb: (id: string) => void) { this.onSelectCb = cb; }
   onReserve(cb: (floor: number, col: number) => void) { this.onReserveCb = cb; }
-  onAddAgent(cb: (room: string) => void) { this.onAddAgentCb = cb; }
+  onAddDev(cb: (island: string, worktree: string) => void) { this.onAddDevCb = cb; }
+  onAddWorktree(cb: (island: string) => void) { this.onAddWorktreeCb = cb; }
   onRemoveRoom(cb: (room: string) => void) { this.onRemoveRoomCb = cb; }
+  onRemoveWorktree(cb: (worktree: string, island: string) => void) { this.onRemoveWorktreeCb = cb; }
+  onSync(cb: (room: string) => void) { this.onSyncCb = cb; }
   onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
     this.onCdCb = cb;
   }
@@ -367,6 +554,13 @@ class PixelCrew {
 
   setRooms(reserved: ReservedRoom[]) {
     this.reserved = reserved || [];
+    this.layout();
+  }
+
+  /** Live board data per worktree path (modified/staged/commits/PR), shown on
+   *  each room's back-wall screen. */
+  setBoards(boards: Record<string, BoardData>) {
+    this.boardsMap = boards || {};
     this.layout();
   }
 
@@ -389,7 +583,8 @@ class PixelCrew {
       let tn = this.toons.get(a.id);
       if (!tn) {
         tn = {
-          agent: a, p: persona(a.id), x: 0, targetX: 0, base: 0, x0: 0, deskIdx: 0,
+          agent: a, p: persona(a.id), x: 0, targetX: 0, base: 0, x0: 0,
+          seatCol: 0, wbSlot: 0, deskIdx: 0,
           row: 0, lift: 0,
           huddle: false, sitting: false, entering: true, leaving: false,
           ph: (hash(a.id) % 628) / 100,
@@ -428,10 +623,15 @@ class PixelCrew {
     let startCol = 0;
     let mainTaken = false; // at most one block is the "main" worktree
     for (const [key, ags] of entries) {
-      const cols = Math.max(1, Math.ceil(ags.length / ROWS_OF_DESKS));
+      // fill the front line left-to-right first, then wrap to the back row;
+      // the last row absorbs any overflow beyond the available rows
       ags.forEach((a, i) => {
-        seats.set(a.id, { col: startCol + Math.floor(i / ROWS_OF_DESKS), row: i % ROWS_OF_DESKS });
+        let row = Math.floor(i / FRONT_CAP);
+        let col = i % FRONT_CAP;
+        if (row > ROWS_OF_DESKS - 1) { row = ROWS_OF_DESKS - 1; col = i - row * FRONT_CAP; }
+        seats.set(a.id, { col: startCol + col, row });
       });
+      const cols = Math.max(1, Math.min(ags.length, FRONT_CAP));
       const main = !mainTaken && isMain(key, ags);
       if (main) mainTaken = true;
       groups.push({
@@ -461,87 +661,290 @@ class PixelCrew {
     return r.x0 + WB_W + col * pitch + row * (pitch / 2);
   }
 
-  /** Merge reserved rooms + live repos into grid cells; assign toon targets. */
+  /** An island's ordered rooms: ONLY the ones the operator added — the required
+   *  main checkout plus each assigned worktree. Live agents attach by checkout
+   *  path; agents in unassigned dirs aren't shown. Main leads. */
+  private planBuildings(reserved: ReservedRoom, agentsByKey: Map<string, CrewAgent[]>) {
+    const rootKey = reserved.path;
+    const treeName = (key: string) => key.split(/[\\/]/).pop() || key;
+    // declared building keys: main (root) + assigned worktrees (postState sends
+    // the main checkout as the first worktree entry, so dedupe against rootKey)
+    const branchByKey = new Map<string, string>();
+    branchByKey.set(rootKey, "");
+    for (const w of reserved.worktrees ?? []) {
+      if (!branchByKey.get(w.path)) branchByKey.set(w.path, w.branch || "");
+    }
+    const keys = [rootKey, ...[...branchByKey.keys()].filter((k) => k !== rootKey)];
+    return keys.map((key) => {
+      const agents = agentsByKey.get(key) ?? [];
+      const isMain = key === rootKey;
+      const branch = branchByKey.get(key) || agents[0]?.branch || "";
+      return {
+        key, agents, isMain, path: rootKey,
+        branch: branch || "—",
+        label: isMain ? "main" : branch || treeName(key),
+      };
+    });
+  }
+
+  /** Re-aim a toon at its desk/huddle spot using its building's CURRENT (tweening)
+   *  position, so seated devs ride a collapsing island instead of snapping. */
+  private retargetToon(tn: Toon) {
+    const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
+    if (!room) return;
+    tn.base = room.baseY;
+    tn.x0 = room.x0;
+    const deskX = this.seatX(room, tn.seatCol, tn.row);
+    if (tn.huddle) tn.targetX = room.x0 + 26 + tn.wbSlot * 9;
+    else if (tn.agent.state === "active") tn.targetX = deskX + 13;
+    else tn.targetX = deskX + 19;
+  }
+
+  /** The cable port: a jack on the wall just BELOW the TV that every desk's
+   *  cable runs into. The light-ball then hops up from here into the screen. */
+  private cablePlug(r: Room): { x: number; y: number } {
+    const b = boardRect(r.x0, r.baseY);
+    return { x: b.x + b.w / 2, y: b.y + b.h + 5 };
+  }
+
+  /** The cable polyline for a seat: computer → floor → a curved sweep to the
+   *  central floor bus → up the middle into the port below the screen. All
+   *  desks share the central bus, so the cables bundle before going in. */
+  private cableRoute(r: Room, seat: { col: number; row: number }): { x: number; y: number }[] {
+    const base = r.baseY;
+    const dx = this.seatX(r, seat.col, seat.row);
+    const db = base - seat.row * ROW_DY;
+    const cx = dx + 8; // behind the monitor
+    const C = { x: cx, y: db - 12 };
+    const F = { x: cx, y: db + 0.5 }; // drop to the floor at the desk
+    const J = { x: r.x0 + ROOM_W / 2, y: base - 3 }; // central floor bus
+    const P = this.cablePlug(r); // port below the screen
+    const cFJ = { x: (cx + J.x) / 2, y: Math.max(F.y, J.y) + 5 }; // bow along the floor to centre
+    const cJP = { x: J.x, y: (J.y + P.y) / 2 }; // sweep up the middle to the port
+    return [C, F, ...sampleQuad(F, cFJ, J, 8), ...sampleQuad(J, cJP, P, 10)];
+  }
+
+  /** Fire a glowing light-ball from a working dev's computer along its network
+   *  cable, through the port, and up into the screen — the "git changed" signal.
+   *  Falls back to a room-centre → port route when no dev/seat is known. */
+  private emitPacket(r: Room, delay = 0, snap?: BoardData) {
+    const plug = this.cablePlug(r);
+    const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
+    const seat = occ ? r.plan?.seats.get(occ.id) : undefined;
+    // the ball rides the cable and STOPS at the wall port below the screen
+    const path = seat
+      ? this.cableRoute(r, seat)
+      : [{ x: r.x0 + ROOM_W / 2, y: r.baseY - 16 }, plug];
+    const s = path[0];
+    // negative t holds the ball at the source so a burst streams out over time
+    this.packets.push({
+      x: s.x, y: s.y, sx: s.x, sy: s.y, tx: plug.x, ty: plug.y, t: -delay, path,
+      color: Math.random() < 0.6 ? "#3ee089" : "#56c7ff",
+      ph: Math.random() * Math.PI * 2, // flicker/pulse phase
+      applyKey: snap ? r.name : undefined, applySnap: snap,
+    });
+  }
+
+  /** True while a just-requested sync's resulting board change should flash but
+   *  not beam (15s window covers the pull-then-push sequence). */
+  private syncSuppressed(room: string): boolean {
+    const t = this.syncSuppress.get(room);
+    if (t === undefined) return false;
+    if (Date.now() - t < 15000) return true;
+    this.syncSuppress.delete(room);
+    return false;
+  }
+
+  /** A beam reached the screen: show the snapshot it carried, and flash only the
+   *  column(s) that differ from what was on the TV (so it's clear what moved). */
+  private applyBoardSnapshot(key: string | undefined, snap: BoardData) {
+    const r = key ? this.rooms.get(key) : undefined;
+    if (!r) return;
+    const o = r.boardShown, cp = r.cellPulse;
+    if (o) {
+      const uChanged = o.modified !== snap.modified || o.unstagedAdd !== snap.unstagedAdd || o.unstagedDel !== snap.unstagedDel;
+      const sChanged = o.staged !== snap.staged || o.stagedAdd !== snap.stagedAdd || o.stagedDel !== snap.stagedDel;
+      const cChanged = o.ahead !== snap.ahead || o.committedAdd !== snap.committedAdd || o.committedDel !== snap.committedDel || o.commits.length !== snap.commits.length;
+      if (uChanged) cp.unstaged = 1;
+      if (sChanged) cp.staged = 1;
+      if (cChanged) cp.commits = 1;
+      if (JSON.stringify(o.pr) !== JSON.stringify(snap.pr)) cp.pr = 1;
+      // a pure stage/unstage MOVE (file count conserved, the two sides swap in
+      // opposite directions) just flashes the columns; genuine new churn flips
+      // the numbers
+      const pureMove = uChanged && sChanged &&
+        o.modified + o.staged === snap.modified + snap.staged &&
+        (o.modified > snap.modified) !== (o.staged > snap.staged);
+      const num = (b: BoardData) => ({
+        "u.count": `${b.modified} file${b.modified === 1 ? "" : "s"}`, "u.add": `+${b.unstagedAdd}`, "u.del": `-${b.unstagedDel}`,
+        "s.count": `${b.staged} file${b.staged === 1 ? "" : "s"}`, "s.add": `+${b.stagedAdd}`, "s.del": `-${b.stagedDel}`,
+        "c.count": `${b.ahead}`, "c.add": `+${b.committedAdd}`, "c.del": `-${b.committedDel}`,
+      } as Record<string, string>);
+      const oN = num(o), nN = num(snap);
+      for (const k of Object.keys(nN)) {
+        if (oN[k] === nN[k]) continue;
+        if (pureMove && (k[0] === "u" || k[0] === "s")) continue; // moved → flash only
+        r.numAnim[k] = { from: oN[k], to: nN[k], t: 0 };
+      }
+    }
+    r.boardShown = snap;
+    r.statPulse = 1;
+  }
+
+  /** Draw each occupied desk's network cable: computer → floor → a curved sweep
+   *  to the central floor bus → up into the port below the screen. Static art;
+   *  the light-balls (packets) ride this same route when git changes. */
+  private drawCables(ctx: CanvasRenderingContext2D, r: Room) {
+    if (r.built < 0.85 || !r.plan) return;
+    ctx.save();
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    // one pass for the dark bodies, one for the highlights, so overlapping
+    // cables along the shared bus don't stack into a muddy dark band
+    for (const [, seat] of r.plan.seats) {
+      const route = this.cableRoute(r, seat);
+      ctx.beginPath();
+      ctx.moveTo(route[0].x, route[0].y);
+      for (let i = 1; i < route.length; i++) ctx.lineTo(route[i].x, route[i].y);
+      ctx.strokeStyle = "rgba(12,16,20,0.4)"; // cable body
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      ctx.strokeStyle = "rgba(80,102,122,0.4)"; // faint top highlight
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+      // a little jack where it plugs into the desk computer
+      ctx.fillStyle = "#2a3138";
+      ctx.fillRect(route[0].x - 1, route[0].y - 1, 2, 2);
+    }
+    // the wall port below the screen the whole bundle runs into
+    const plug = this.cablePlug(r);
+    ctx.fillStyle = "#10161c";
+    ctx.fillRect(plug.x - 4, plug.y - 1.5, 8, 3);
+    ctx.fillStyle = "#2a3138";
+    ctx.fillRect(plug.x - 3, plug.y - 0.6, 6, 1.2);
+    ctx.restore();
+  }
+
+  /** Build the campus: only rooms the operator added (reserved islands + their
+   *  assigned worktrees) render. Live agents attach to those rooms by their
+   *  checkout path; an agent whose room wasn't added simply isn't shown (its
+   *  session keeps running regardless). */
   private layout() {
-    const byRepo = new Map<string, CrewAgent[]>();
+    // 1. agents grouped by their checkout path (= the building key)
+    const agentsByKey = new Map<string, CrewAgent[]>();
     for (const a of this.agents) {
-      if (!byRepo.has(a.repo)) byRepo.set(a.repo, []);
-      byRepo.get(a.repo)!.push(a);
+      const key = a.worktree && a.worktree.trim() ? a.worktree : null;
+      if (!key) continue;
+      if (!agentsByKey.has(key)) agentsByKey.set(key, []);
+      agentsByKey.get(key)!.push(a);
     }
 
-    const wanted = new Map<string, { floor: number; col: number; path?: string }>();
-    const occupied = new Set<string>();
-    for (const r of this.reserved) {
-      const col = r.col ?? 0;
-      wanted.set(r.name, { floor: r.floor, col, path: r.path });
-      occupied.add(col + "," + r.floor);
-    }
-    // cells of soon-to-be-demolished rooms stay occupied so nothing replaces
-    // them while the leaver is still walking out / demolition is playing
-    for (const [name, room] of this.rooms) {
-      if (!wanted.has(name) && !byRepo.has(name)) occupied.add(room.col + "," + room.floor);
+    // island order: reserved islands by their stored col/floor hint (left→right)
+    const reservedByName = new Map(this.reserved.map((r) => [r.name, r] as const));
+    const order = [...this.reserved]
+      .sort((a, b) => a.col - b.col || a.floor - b.floor || (a.name < b.name ? -1 : 1))
+      .map((r) => r.name);
+
+    // 2. each island is a vertical tower one column wide: the main (root) checkout
+    //    sits on the ground at floor 0 and every worktree stacks upward (floor 1,
+    //    2, …). Towers stand ISLAND_GAP columns apart. Stacking keeps buildings
+    //    4-connected, and re-packing on removal drops survivors down (the collapse
+    //    animation in tick()).
+    const wanted = new Map<string, {
+      island: string; label: string; branch: string; isMain: boolean; col: number; floor: number;
+      path?: string; agents: CrewAgent[];
+    }>();
+    this.islands.clear();
+    let lane = 0;
+    for (const name of order) {
+      const reserved = reservedByName.get(name);
+      if (!reserved) continue;
+      const buildings = this.planBuildings(reserved, agentsByKey); // main first, then worktrees
+      const path = reserved.path;
+      buildings.forEach((b, i) => {
+        wanted.set(b.key, {
+          island: name, label: b.label, branch: b.branch, isMain: b.isMain,
+          col: lane, floor: i, path: b.path ?? path, agents: b.agents,
+        });
+      });
+      this.islands.set(name, {
+        name, path, laneStart: lane, cols: 1,
+        count: buildings.length, hue: hash(name) % 360,
+      });
+      lane += 1 + ISLAND_GAP;
     }
 
-    // live repos without a reservation fill column 0's free floors from 0 up
-    let next = 0;
-    for (const repo of byRepo.keys()) {
-      if (wanted.has(repo)) continue;
-      while (occupied.has("0," + next)) next++;
-      wanted.set(repo, { floor: next, col: 0 });
-      occupied.add("0," + next);
-      next++;
-    }
-
-    // rooms that lost their reservation/agents get demolished later (tick),
-    // not deleted mid-animation
-    for (const [name, room] of this.rooms) {
-      room.dying = !wanted.has(name);
+    // 3. buildings with no agents left (worktree closed) demolish in tick()
+    for (const [key, room] of this.rooms) {
+      room.dying = !wanted.has(key);
       if (room.dying) room.agents = [];
     }
+
+    // 4. create/update building objects. x0/baseY hold the animated position and
+    //    are tweened toward the packed cell in tick(); col/floor are the target.
     let newIdx = 0;
-    for (const [name, info] of wanted) {
-      let room = this.rooms.get(name);
+    for (const [key, info] of wanted) {
+      let room = this.rooms.get(key);
       if (!room) {
         room = {
-          name, floor: info.floor, col: info.col, x0: cellX0(info.col), path: info.path,
-          hue: hash(name) % 360, built: 0,
-          delay: newIdx++ * 0.45, // floors build one after another, not all at once
-          agents: [], scribbles: [], decor: hash(name + "decor"),
+          name: key, island: info.island, label: info.label, branch: info.branch, isMain: info.isMain,
+          floor: info.floor, col: info.col,
+          x0: cellX0(info.col), baseY: floorBase(info.floor), path: info.path,
+          hue: hash(info.island) % 360, built: 0,
+          delay: newIdx++ * 0.45, // buildings rise one after another
+          agents: [], scribbles: [], decor: hash(key + "decor"),
+          statSig: "", statPulse: 0,
+          cellPulse: { unstaged: 0, staged: 0, commits: 0, pr: 0 },
+          numAnim: {},
         };
-        this.rooms.set(name, room);
+        this.rooms.set(key, room);
       }
+      room.island = info.island;
+      room.label = info.label;
+      room.branch = info.branch;
+      room.isMain = info.isMain;
+      room.board = this.boardsMap[key];
       room.floor = info.floor;
       room.col = info.col;
-      room.x0 = cellX0(info.col);
       room.path = info.path ?? room.path;
-      room.agents = byRepo.get(name) ?? [];
+      room.agents = info.agents;
+      room.hasUpper = false; // recomputed below
     }
 
-    // ghost slots: every empty 4-neighbor of an occupied cell → build in any direction
-    this.ghosts = [];
-    const ghostKeys = new Set<string>();
-    if (occupied.size === 0) {
-      this.ghosts.push({ col: 0, floor: 0, x0: cellX0(0), base: floorBase(0) });
-    } else {
-      for (const key of occupied) {
-        const [c, f] = key.split(",").map(Number);
-        for (const [nc, nf] of [[c + 1, f], [c - 1, f], [c, f + 1], [c, f - 1]] as [number, number][]) {
-          const k = nc + "," + nf;
-          if (occupied.has(k) || ghostKeys.has(k)) continue;
-          ghostKeys.add(k);
-          this.ghosts.push({ col: nc, floor: nf, x0: cellX0(nc), base: floorBase(nf) });
+    // a building gets an internal staircase when another building stacks on top
+    for (const r of this.rooms.values()) {
+      if (r.dying) continue;
+      for (const u of this.rooms.values()) {
+        if (!u.dying && u.island === r.island && u.col === r.col && u.floor === r.floor + 1) {
+          r.hasUpper = true;
+          break;
         }
       }
     }
 
-    // per-column floor ranges (lift shafts/roofs) + world bounds
+    // 5. ghosts: a "+building" slot on top of each tower (the next worktree),
+    //    plus a "+island" reserve slot in the gap past the last tower.
+    this.ghosts = [];
+    for (const isl of this.islands.values()) {
+      const floor = isl.count; // stack the next worktree above the top building
+      this.ghosts.push({
+        col: isl.laneStart, floor, x0: cellX0(isl.laneStart), base: floorBase(floor),
+        kind: "building", island: isl.name,
+      });
+    }
+    const reserveCol = this.islands.size === 0 ? 0 : lane;
+    this.ghosts.push({
+      col: reserveCol, floor: 0, x0: cellX0(reserveCol), base: floorBase(0), kind: "island",
+    });
+
+    // 6. per-column roof ranges (skyline) + world bounds
     this.colRange.clear();
     let minX = Infinity, maxX = -Infinity, topY = Infinity, botY = -Infinity, minFloor = 0;
     const extend = (floor: number, x0: number, base: number) => {
       minX = Math.min(minX, x0);
       maxX = Math.max(maxX, x0 + ROOM_W);
       topY = Math.min(topY, base - ROOM_H);
-      botY = Math.max(botY, base + SLAB);
+      botY = Math.max(botY, base + SLAB + PLINTH_APRON + PLINTH_H + 2);
       minFloor = Math.min(minFloor, floor);
     };
     for (const r of this.rooms.values()) {
@@ -549,7 +952,7 @@ class PixelCrew {
       rng.min = Math.min(rng.min, r.floor);
       rng.max = Math.max(rng.max, r.floor);
       this.colRange.set(r.col, rng);
-      extend(r.floor, r.x0, floorBase(r.floor));
+      extend(r.floor, cellX0(r.col), floorBase(r.floor));
     }
     for (const g of this.ghosts) extend(g.floor, g.x0, g.base);
     if (!isFinite(minX)) {
@@ -557,61 +960,131 @@ class PixelCrew {
     }
     this.bounds = { minX, maxX, topY, botY, minFloor };
 
-    // toon targets per room
+    // 7. seat plan + cache each toon's seat; tick re-glues world coords so devs
+    //    follow their building as the island collapses.
+    const placed = new Set<string>();
     for (const room of this.rooms.values()) {
-      const base = floorBase(room.floor);
       const activeCount = room.agents.filter((a) => a.state === "active").length;
       const huddle = activeCount >= 2;
       let wbSlot = 0;
-      room.plan = this.seatPlan(room.agents); // desks grouped by worktree
+      room.plan = this.seatPlan(room.agents);
       room.agents.forEach((a, di) => {
         const tn = this.toons.get(a.id);
         if (!tn) return;
-        tn.base = base;
-        tn.x0 = room.x0;
+        placed.add(a.id);
+        tn.bkey = room.name;
         tn.deskIdx = di;
         const seat = room.plan!.seats.get(a.id) ?? { col: 0, row: 0 };
         tn.row = seat.row;
-        const deskX = this.seatX(room, seat.col, seat.row);
-        if (a.state === "active" && huddle) {
-          tn.huddle = true;
-          tn.targetX = room.x0 + 26 + wbSlot * 9;
-          wbSlot++;
-        } else if (a.state === "active") {
-          tn.huddle = false;
-          tn.targetX = deskX + 13;
-        } else {
-          tn.huddle = false;
-          tn.targetX = deskX + 19;
+        tn.seatCol = seat.col;
+        tn.huddle = a.state === "active" && huddle;
+        if (tn.huddle) tn.wbSlot = wbSlot++;
+        const firstPlace = tn.entering && tn.x === 0;
+        this.retargetToon(tn); // desk target + base on this floor
+        if (firstPlace) {
+          if (room.floor > 0) {
+            // arrive on the floor below and climb the staircase to this door
+            tn.x = room.x0 + ROOM_W - 40;
+            tn.base = floorBase(room.floor - 1);
+            tn.targetX = tn.x;
+            tn.enterPhase = "stairs";
+            tn.stairTopX = room.x0 + ROOM_W - 24;
+          } else {
+            tn.x = room.x0 + ROOM_W + 8; // walk in through the ground-floor door
+            tn.enterPhase = "walk";
+          }
         }
-        if (tn.entering && tn.x === 0) tn.x = room.x0 + ROOM_W + 8; // in through the door
       });
       if (!huddle) room.scribbles = [];
     }
 
-    // keep the operator's view across re-layouts: track a focused dev, else
-    // refit a focused room, else keep pan as-is. Never snap an agent zoom back
-    // to room center.
-    if (this.focusAgentId && this.toons.has(this.focusAgentId)) this.focusAgent(this.focusAgentId, false);
-    else if (this.focusRoom_ && this.rooms.has(this.focusRoom_)) this.focusOn(this.focusRoom_, false);
-    else this.clearFocus(false, true);
+    // cull toons whose room wasn't added to the UI — an agent only appears once
+    // its directory/worktree has a room (its session keeps running regardless)
+    for (const [id, tn] of this.toons) {
+      if (!placed.has(id)) {
+        tn.bkey = undefined;
+        this.toons.delete(id);
+      }
+    }
+
+    // Preserve the operator's view across re-layouts. Only TRACK a focused dev's
+    // (or room's) position so the camera follows it; never change zoom/pan, and
+    // never fall back to a wider view when the toon is briefly absent mid-refresh
+    // (that caused the random zoom-out). Centering/zoom is only set by a click.
+    if (this.focusAgentId) {
+      const tn = this.toons.get(this.focusAgentId);
+      if (tn) {
+        this.focus.x = tn.targetX;
+        this.focus.y = tn.base - ROOM_H / 2 + 6;
+      }
+      // toon momentarily gone during a re-layout → leave the camera put
+    } else if (this.focusRoom_) {
+      const r = this.rooms.get(this.focusRoom_);
+      if (r) {
+        this.focus.x = r.x0 + ROOM_W / 2;
+        this.focus.y = r.baseY - ROOM_H / 2;
+      }
+    } else if (this.focusIsland_) {
+      if (!this.frameIsland(this.focusIsland_)) this.focusIsland_ = null; // island gone
+    } else if (!this.hasFitted) {
+      this.clearFocus(true, false);
+      this.hasFitted = true;
+    }
     this.invalidate();
   }
 
   /* ============ CAMERA ============ */
 
+  /** Center on a building (by its key) or, failing that, on an island (by repo
+   *  name → that island's first building). */
   focusOn(name: string, resetZoom = true) {
-    const r = this.rooms.get(name);
+    let r = this.rooms.get(name);
+    if (!r) r = [...this.rooms.values()].find((b) => b.island === name);
     if (!r) return;
-    this.focusAgentId = null; // centering on a room releases any dev zoom
-    this.focusRoom_ = name;
+    this.focusAgentId = null; // centering on a building releases any dev zoom
+    this.focusIsland_ = null;
+    this.focusRoom_ = r.name;
     this.focus.x = r.x0 + ROOM_W / 2;
-    this.focus.y = floorBase(r.floor) - ROOM_H / 2;
+    this.focus.y = r.baseY - ROOM_H / 2;
     this.focus.spanW = ROOM_W + 26;
     this.focus.spanH = FLOOR_STEP + 34;
     this.panX = 0;
     this.panY = 0;
     if (resetZoom) this.zoomMul = 1;
+    this.invalidate();
+  }
+
+  /** Set the focus box to frame a whole directory (island): all its stacked
+   *  buildings plus the platform/signpost. Returns false if the island is gone. */
+  private frameIsland(islandName: string): boolean {
+    const rooms = [...this.rooms.values()].filter((b) => b.island === islandName && !b.dying);
+    if (!rooms.length) return false;
+    let minX = Infinity, maxX = -Infinity, topY = Infinity, botY = -Infinity;
+    for (const b of rooms) {
+      const rx = cellX0(b.col), ry = floorBase(b.floor);
+      minX = Math.min(minX, rx);
+      maxX = Math.max(maxX, rx + ROOM_W);
+      topY = Math.min(topY, ry - ROOM_H);
+      botY = Math.max(botY, ry + SLAB);
+    }
+    botY += 34; // room for the platform + directory name below
+    this.focus.x = (minX + maxX) / 2;
+    this.focus.y = (topY + botY) / 2;
+    this.focus.spanW = maxX - minX + 46;
+    this.focus.spanH = botY - topY + 40;
+    return true;
+  }
+
+  /** Zoom out from a room to an overview of just THAT directory (its tower),
+   *  rather than the whole campus. */
+  focusIslandView(islandName: string) {
+    this.focusAgentId = null;
+    this.focusRoom_ = null;
+    this.focusIsland_ = islandName;
+    if (!this.frameIsland(islandName)) { this.focusIsland_ = null; this.clearFocus(); return; }
+    this.panX = 0;
+    this.panY = 0;
+    this.zoomMul = 1;
     this.invalidate();
   }
 
@@ -621,8 +1094,9 @@ class PixelCrew {
   focusAgent(id: string, resetZoom = true) {
     const tn = this.toons.get(id);
     if (!tn) return;
-    const room = this.rooms.get(tn.agent.repo);
+    const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
     this.focusAgentId = id;
+    this.focusIsland_ = null;
     this.focusRoom_ = room?.name ?? null;
     this.focus.x = tn.targetX;
     this.focus.y = tn.base - ROOM_H / 2 + 6;
@@ -639,6 +1113,7 @@ class PixelCrew {
   clearFocus(resetZoom = true, preservePan = false) {
     this.focusRoom_ = null;
     this.focusAgentId = null;
+    this.focusIsland_ = null;
     this.focus.x = (this.bounds.minX + this.bounds.maxX) / 2;
     this.focus.y = (this.bounds.topY + this.bounds.botY) / 2;
     this.focus.spanW = this.bounds.maxX - this.bounds.minX + 60;
@@ -750,9 +1225,17 @@ class PixelCrew {
 
   /** True when nothing needs animating, so the loop can park until woken. */
   private sceneIdle(): boolean {
-    if (this.particles.length || this.leaving.length) return false;
+    if (this.particles.length || this.leaving.length || this.packets.length) return false;
+    if (this.marqueeOn) return false; // a PR title is scrolling
     for (const r of this.rooms.values()) {
-      if (r.dying || r.delay > 0 || r.built < 1) return false;
+      if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending) return false;
+      const cp = r.cellPulse;
+      if (cp.unstaged > 0.02 || cp.staged > 0.02 || cp.commits > 0.02 || cp.pr > 0.02) return false;
+      for (const _k in r.numAnim) return false; // a number is mid-flip
+      if (r.boardShown && r.boardShown.prReady === false) return false; // PR spinner still spinning
+      if (r.boardShown?.pr && r.boardShown.pr.checksRunning > 0) return false; // CI dot pulsing
+      // still sliding toward its packed cell (collapse animation)
+      if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5) return false;
     }
     for (const tn of this.toons.values()) {
       if (tn.entering || Math.abs(tn.targetX - tn.x) > 1) return false;
@@ -767,15 +1250,25 @@ class PixelCrew {
   private tick(dt: number) {
     const demolished: string[] = [];
     for (const r of this.rooms.values()) {
+      // slide each building toward its packed cell — this is the collapse: when
+      // a worktree closes, its island re-packs and the survivors glide together.
+      // Dying buildings freeze in place and just shrink.
+      if (!r.dying) {
+        const tx = cellX0(r.col), ty = floorBase(r.floor);
+        const k = Math.min(1, dt * 6);
+        r.x0 += (tx - r.x0) * k;
+        r.baseY += (ty - r.baseY) * k;
+        if (Math.abs(tx - r.x0) < 0.4) r.x0 = tx;
+        if (Math.abs(ty - r.baseY) < 0.4) r.baseY = ty;
+      }
       if (r.dying) {
         // wait until the departing dev has fully left, then deconstruct
-        const hasLeaver = this.leaving.some((t) => t.agent.repo === r.name);
+        const hasLeaver = this.leaving.some((t) => t.bkey === r.name);
         if (!hasLeaver) {
           r.built = Math.max(0, r.built - dt / 1.0);
           if (!this.eco) {
-            const base = floorBase(r.floor);
             this.particles.push({
-              x: r.x0 + Math.random() * ROOM_W * Math.max(0.1, r.built), y: base - 2 - Math.random() * 10,
+              x: r.x0 + Math.random() * ROOM_W * Math.max(0.1, r.built), y: r.baseY - 2 - Math.random() * 10,
               vx: (Math.random() - 0.5) * 10, vy: -4 - Math.random() * 6,
               life: 0.7, color: "#9a8a72", size: 1.2, gravity: 14,
             });
@@ -791,9 +1284,8 @@ class PixelCrew {
       if (r.built < 1) {
         r.built = Math.min(1, r.built + dt / 1.4);
         if (!this.eco) {
-          const base = floorBase(r.floor);
           this.particles.push({
-            x: r.x0 + Math.random() * ROOM_W * r.built, y: base - 2 - Math.random() * 10,
+            x: r.x0 + Math.random() * ROOM_W * r.built, y: r.baseY - 2 - Math.random() * 10,
             vx: (Math.random() - 0.5) * 10, vy: -4 - Math.random() * 6,
             life: 0.7, color: "#9a8a72", size: 1.2, gravity: 14,
           });
@@ -805,8 +1297,91 @@ class PixelCrew {
       this.layout(); // free the cells → ghost slots reappear
     }
 
+    // boards: a change the AGENT made locally (edits, staging, commits, push)
+    // fires a beam from its computer carrying a board SNAPSHOT; the TV updates
+    // to that snapshot when the beam lands. Changes it did NOT cause — a sync you
+    // triggered, or external PR/CI/remote updates — just flash the column, no beam
+    for (const r of this.rooms.values()) {
+      if (r.statPulse > 0) r.statPulse = Math.max(0, r.statPulse - dt * 1.4);
+      const cp = r.cellPulse;
+      if (cp.unstaged > 0) cp.unstaged = Math.max(0, cp.unstaged - dt * 0.9);
+      if (cp.staged > 0) cp.staged = Math.max(0, cp.staged - dt * 0.9);
+      if (cp.commits > 0) cp.commits = Math.max(0, cp.commits - dt * 0.9);
+      if (cp.pr > 0) cp.pr = Math.max(0, cp.pr - dt * 0.9);
+      for (const k in r.numAnim) {
+        const an = r.numAnim[k];
+        an.t += dt * 3; // ~0.33s flip
+        if (an.t >= 1) delete r.numAnim[k];
+      }
+      const b = r.board;
+      const o = r.boardShown;
+      const sig = boardSig(b);
+      if (r.statSig === "") { r.statSig = sig; r.boardShown = b; continue; } // first sync shows at once
+      if (sig === r.statSig) continue;
+      r.statSig = sig;
+      // did the AGENT change local state (working tree / staged / local commits /
+      // unpushed)? "behind", base, PR and checks are external — they never beam.
+      const localChanged = !o || !b ? !!b : (
+        o.modified !== b.modified || o.staged !== b.staged ||
+        o.unstagedAdd !== b.unstagedAdd || o.unstagedDel !== b.unstagedDel ||
+        o.stagedAdd !== b.stagedAdd || o.stagedDel !== b.stagedDel ||
+        o.ahead !== b.ahead || o.committedAdd !== b.committedAdd || o.committedDel !== b.committedDel ||
+        o.commits.length !== b.commits.length || o.unpushed !== b.unpushed
+      );
+      if (b && r.built > 0.6 && localChanged && !this.syncSuppressed(r.name)) {
+        this.emitPacket(r, 0, b); // agent did the work → beam carries the snapshot
+      } else if (b) {
+        this.applyBoardSnapshot(r.name, b); // external / synced → flash the column, no beam
+      } else {
+        r.boardShown = b; // board removed
+      }
+    }
+    for (let i = this.packets.length - 1; i >= 0; i--) {
+      const p = this.packets[i];
+      p.t += dt * 0.55; // slow travel so the run along the cable is easy to follow
+      const e = clamp(p.t, 0, 1); // negative t (staggered start) holds at the source
+      if (p.path && p.path.length >= 2) {
+        // ride the cable: computer → floor → screen, eased by arc length
+        const pos = pointOnPath(p.path, e * e * (3 - 2 * e));
+        p.x = pos.x; p.y = pos.y;
+      } else {
+        const ease = e * e * (3 - 2 * e);
+        p.x = p.sx + (p.tx - p.sx) * ease;
+        p.y = p.sy + (p.ty - p.sy) * ease - Math.sin(ease * Math.PI) * 16; // lob it up to the wall
+      }
+      if (p.t >= 1) {
+        if (p.applySnap) this.applyBoardSnapshot(p.applyKey, p.applySnap);
+        this.packets.splice(i, 1);
+      }
+    }
+
+    // re-glue seated/working devs to their building's live position so they ride
+    // the collapse instead of snapping to the final desk
+    for (const tn of this.toons.values()) {
+      if (!tn.leaving && !tn.entering) this.retargetToon(tn);
+    }
+
+    // upper-floor arrivals climb the staircase in the floor below to their door
+    for (const tn of this.toons.values()) {
+      if (!tn.entering || tn.enterPhase !== "stairs") continue;
+      const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
+      if (!room) { tn.enterPhase = "walk"; continue; }
+      tn.climbing = true;
+      const k = Math.min(1, dt * 4);
+      const tx = tn.stairTopX ?? tn.x;
+      tn.x += (tx - tn.x) * k;
+      tn.base += (room.baseY - tn.base) * k;
+      if (Math.abs(room.baseY - tn.base) < 2) {
+        tn.base = room.baseY;
+        tn.climbing = false;
+        tn.enterPhase = "walk";
+        this.retargetToon(tn); // now cross the floor to the desk
+      }
+    }
+
     const all: Toon[] = [...this.toons.values(), ...this.leaving];
     for (const tn of all) {
+      if (tn.entering && tn.enterPhase === "stairs") continue; // handled above
       const dx = tn.targetX - tn.x;
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
@@ -862,8 +1437,7 @@ class PixelCrew {
         return tn?.huddle;
       });
       if (huddlers.length >= 2 && r.scribbles.length < 16 && this.frame % 6 === 0) {
-        const base = floorBase(r.floor);
-        const wb = rollerPanel(r.x0 + WB_W / 2, base); // the main group's roller board
+        const wb = rollerPanel(r.x0 + WB_W / 2, r.baseY); // the main group's roller board
         r.scribbles.push({
           x1: wb.x + 3 + Math.random() * (wb.w - 6), y1: wb.y + 3 + Math.random() * (wb.h - 6),
           x2: wb.x + 3 + Math.random() * (wb.w - 6), y2: wb.y + 3 + Math.random() * (wb.h - 6),
@@ -921,29 +1495,36 @@ class PixelCrew {
 
   private pick(e: PointerEvent): {
     agent?: string;
-    room?: string;
-    ghost?: { floor: number; col: number };
-    addBtn?: string;
-    removeBtn?: string;
+    room?: string; // building key (for focus)
+    island?: string; // island name (for add/remove/cd)
+    ghost?: { floor: number; col: number; kind: "building" | "island"; island?: string };
+    addDev?: { island: string; key: string }; // + DEV on a specific room
+    removeBtn?: string; // island (nuke)
+    removeWtBtn?: string; // building key (worktree path)
+    syncRoom?: string; // building key → pull/push that branch
   } {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
 
-    // room buttons (highest priority): ✕ remove (reserved rooms) and + DEV
+    // building buttons (highest priority). Every room has a + DEV (drop an agent
+    // into this room's worktree). The main (root) building's ✕ nukes the whole
+    // directory; a worktree building's ✕ removes just that worktree.
     for (const r of this.rooms.values()) {
       if (r.built < 0.95) continue;
-      const base = floorBase(r.floor);
-      if (r.path && this.inRect(mx, my, r.x0 + ROOM_W - 10, base - ROOM_H + 2, 8, 8)) {
-        return { removeBtn: r.name };
+      const base = r.baseY;
+      if (this.inRect(mx, my, r.x0 + ROOM_W - 10, base - ROOM_H + 2, 8, 8)) {
+        return r.isMain ? { removeBtn: r.island } : { removeWtBtn: r.name, island: r.island };
       }
       if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3, 16, 8)) {
-        return { addBtn: r.name };
+        return { addDev: { island: r.island, key: r.name } };
       }
+      const sr = this.commitSyncRect(r);
+      if (sr && this.inRect(mx, my, sr.x, sr.y, sr.w, sr.h)) return { syncRoom: r.name };
     }
-    // ghost slots (any direction)
+    // ghost slots: +building (extend an island) and +island (reserve a directory)
     for (const g of this.ghosts) {
       if (this.inRect(mx, my, g.x0, g.base - ROOM_H, ROOM_W, ROOM_H)) {
-        return { ghost: { floor: g.floor, col: g.col } };
+        return { ghost: { floor: g.floor, col: g.col, kind: g.kind, island: g.island } };
       }
     }
     // toons
@@ -954,11 +1535,10 @@ class PixelCrew {
         return { agent: tn.agent.id };
       }
     }
-    // rooms
+    // buildings
     for (const r of this.rooms.values()) {
-      const base = floorBase(r.floor);
-      if (this.inRect(mx, my, r.x0, base - ROOM_H, ROOM_W, ROOM_H + SLAB)) {
-        return { room: r.name };
+      if (this.inRect(mx, my, r.x0, r.baseY - ROOM_H, ROOM_W, ROOM_H + SLAB)) {
+        return { room: r.name, island: r.island };
       }
     }
     return {};
@@ -966,23 +1546,38 @@ class PixelCrew {
 
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
-    if (hit.removeBtn) this.onRemoveRoomCb(hit.removeBtn);
-    else if (hit.addBtn) this.onAddAgentCb(hit.addBtn);
-    else if (hit.ghost) this.onReserveCb(hit.ghost.floor, hit.ghost.col);
-    else if (hit.agent) {
+    if (hit.syncRoom) { this.syncSuppress.set(hit.syncRoom, Date.now()); this.onSyncCb(hit.syncRoom); }
+    else if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
+    else if (hit.removeBtn) this.onRemoveRoomCb(hit.removeBtn);
+    else if (hit.addDev) this.onAddDevCb(hit.addDev.island, hit.addDev.key);
+    else if (hit.ghost) {
+      // +island reserves a new directory; +building creates a new worktree room
+      if (hit.ghost.kind === "island") this.onReserveCb(hit.ghost.floor, hit.ghost.col);
+      else if (hit.ghost.island) this.onAddWorktreeCb(hit.ghost.island);
+    } else if (hit.agent) {
       this.onSelectCb(hit.agent);
       this.focusAgent(hit.agent); // zoom onto the dev you clicked
     } else if (hit.room) {
-      // from a dev zoom, clicking the room centers it; clicking the already
-      // centered room toggles back out
-      if (!this.focusAgentId && this.focusRoom_ === hit.room) this.clearFocus();
+      // from a dev zoom, clicking the building centers it; clicking the already
+      // centered building toggles back out
+      // already centered on this room → zoom out to an overview of just this
+      // directory (its tower), not the whole campus
+      if (!this.focusAgentId && this.focusRoom_ === hit.room) this.focusIslandView(hit.island ?? "");
       else this.focusOn(hit.room);
-    } else this.clearFocus();
+    } else {
+      // clicking empty space steps out one level: room / dev → its directory
+      // overview → the whole campus
+      const key = this.focusRoom_ ?? (this.focusAgentId ? this.toons.get(this.focusAgentId)?.bkey : undefined);
+      const r = key ? this.rooms.get(key) : undefined;
+      if (r) this.focusIslandView(r.island);
+      else this.clearFocus();
+    }
   }
 
   /* ============ DRAW ============ */
 
   private draw() {
+    this.marqueeOn = false; // set true by drawBoard while a PR title is scrolling
     const ctx = this.ctx;
     const dpr = Math.min(window.devicePixelRatio, 2);
     const cw = this.container.clientWidth, ch = this.container.clientHeight;
@@ -1010,47 +1605,60 @@ class PixelCrew {
     const surfaceY = floorBase(0) + SLAB; // ground level under floor 0
     const { minX, maxX, botY, minFloor } = this.bounds;
 
-    // earth below the surface across the whole campus
-    if (minFloor <= 0 || botY > surfaceY) {
-      ctx.fillStyle = "#241a12";
-      ctx.fillRect(minX - 60, surfaceY, maxX - minX + 120, botY - surfaceY + 26);
-      ctx.fillStyle = "#3a2c1d";
-      for (let i = 0; i < 90; i++) {
+    // the whole campus sits on a 3D earth slab: a grass top surface that tilts
+    // toward the viewer (same apron depth as the island pedestals, so they read
+    // as one world) over a shaded dirt front face.
+    {
+      const gx = minX - 80, gw = maxX - minX + 160;
+      const apron = PLINTH_APRON;
+      const grassFront = surfaceY + apron;
+      const dirtBot = botY + 50;
+      // dirt front face (vertical gradient — lit near the grass, dark deep down)
+      const dg = ctx.createLinearGradient(0, grassFront, 0, dirtBot);
+      dg.addColorStop(0, "#3a2c1d");
+      dg.addColorStop(1, "#140d08");
+      ctx.fillStyle = dg;
+      ctx.fillRect(gx, grassFront, gw, dirtBot - grassFront);
+      // pebbles/grit in the dirt
+      ctx.fillStyle = "#4a3a26";
+      const span = Math.max(1, Math.round(gw));
+      const depth = Math.max(1, Math.round(dirtBot - grassFront - 4));
+      for (let i = 0; i < 110; i++) {
         const hsh = hash("rock" + i);
-        const rx = minX - 56 + (hsh % Math.max(1, Math.round(maxX - minX + 112)));
-        const ry = surfaceY + 4 + ((hsh >> 7) % Math.max(1, Math.round(botY - surfaceY + 16)));
-        ctx.fillRect(rx, ry, 2, 1.4);
+        ctx.fillRect(gx + (hsh % span), grassFront + 3 + ((hsh >> 7) % depth), 2, 1.4);
       }
+      // grass top surface (apron) — darker at the back, lit toward the viewer
+      const gg = ctx.createLinearGradient(0, surfaceY, 0, grassFront);
+      gg.addColorStop(0, "#2f5328");
+      gg.addColorStop(1, "#4f7d3f");
+      ctx.fillStyle = gg;
+      ctx.fillRect(gx, surfaceY, gw, apron);
+      // bright lip along the grass front edge + a contact shadow under it
+      ctx.fillStyle = "#5e9149";
+      ctx.fillRect(gx, surfaceY, gw, 1.2);
+      ctx.fillStyle = "rgba(0,0,0,0.28)";
+      ctx.fillRect(gx, grassFront, gw, 1.2);
     }
-    // grass lip at the surface
-    ctx.fillStyle = "#3f6a35";
-    ctx.fillRect(minX - 60, surfaceY - 1.6, maxX - minX + 120, 1.6);
 
-    // ragged skyline: a roof slab caps each column; beacon on the tallest
-    let tallestCol = 0, tallestMax = -Infinity;
-    for (const [col, rng] of this.colRange) {
-      if (rng.max > tallestMax) {
-        tallestMax = rng.max;
-        tallestCol = col;
-      }
-    }
+    // ragged skyline: a roof slab caps each column
     for (const [col, rng] of this.colRange) {
       const x0 = cellX0(col);
       const roofY = floorBase(rng.max) - ROOM_H;
       ctx.fillStyle = "#2c353e";
       ctx.fillRect(x0 - 1.5, roofY - 3, ROOM_W + 3, 3.4);
-      if (col === tallestCol) {
-        ctx.fillStyle = "#3a4550";
-        ctx.fillRect(x0 + 8, roofY - 9, 2, 6); // antenna
-        ctx.fillStyle = "#ff6055";
-        if (this.frame % 10 < 5) ctx.fillRect(x0 + 7.4, roofY - 10.6, 3.2, 1.6); // beacon
-      }
     }
+
+    // island platforms (the foundation the buildings stand on)
+    for (const isl of this.islands.values()) this.drawIslandPlatform(ctx, isl);
 
     // rooms back layer
     for (const r of this.rooms.values()) this.drawRoomBack(ctx, r);
 
-    // ghost slots (reserve a directory, any direction)
+    // network cables run each desk's computer down to the floor and back to the
+    // screen; drawn here so the desks + devs (next layer) occlude the near runs
+    for (const r of this.rooms.values()) this.drawCables(ctx, r);
+
+    // ghost slots (+building extends an island, +island reserves a directory)
     for (const g of this.ghosts) this.drawGhost(ctx, g);
 
     // fire-escape ladders under departing climbers
@@ -1080,7 +1688,7 @@ class PixelCrew {
     for (let row = ROWS_OF_DESKS - 1; row >= 0; row--) {
       for (const r of this.rooms.values()) {
         if (r.built < 0.7 || !r.plan) continue;
-        const base = floorBase(r.floor);
+        const base = r.baseY;
         for (const [, seat] of r.plan.seats) {
           if (seat.row !== row) continue;
           chair(this.seatX(r, seat.col, row), base - row * ROW_DY);
@@ -1100,53 +1708,71 @@ class PixelCrew {
     }
     ctx.globalAlpha = 1;
 
+    // a small glowing light that flickers + pulses as it travels the cable
+    for (const p of this.packets) {
+      if (p.t < 0) continue; // still queued at the source (staggered start)
+      const fade = p.t < 0.85 ? 1 : clamp((1 - p.t) / 0.15, 0, 1);
+      const pulse = 0.8 + 0.2 * Math.sin(this.frame * 0.55 + p.ph); // slow breathing
+      const flick = 0.82 + Math.random() * 0.18; // subtle flicker
+      const a = fade * pulse * flick;
+      const rad = 1.3 + 0.45 * Math.sin(this.frame * 0.55 + p.ph);
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = 0.22 * a; // soft outer halo
+      ctx.fillRect(p.x - rad - 1.4, p.y - rad - 1.4, (rad + 1.4) * 2, (rad + 1.4) * 2);
+      ctx.globalAlpha = 0.5 * a; // colored glow
+      ctx.fillRect(p.x - rad, p.y - rad, rad * 2, rad * 2);
+      ctx.globalAlpha = Math.min(1, a + 0.1); // small bright core
+      ctx.fillStyle = "#e6fff4";
+      ctx.fillRect(p.x - 0.6, p.y - 0.6, 1.2, 1.2);
+    }
+    ctx.globalAlpha = 1;
+
     /* ---- screen-space pass ---- */
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = "center";
+    const xBtn = (r: Room, title: string) => {
+      const base = r.baseY;
+      const c1 = this.screenOf(r.x0 + ROOM_W - 10, base - ROOM_H + 2);
+      const c2 = this.screenOf(r.x0 + ROOM_W - 2, base - ROOM_H + 10);
+      ctx.fillStyle = "rgba(10,15,18,0.8)";
+      ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
+      ctx.strokeStyle = "rgba(255,96,85,0.7)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
+      ctx.fillStyle = "#ff6055";
+      ctx.font = `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`;
+      ctx.textAlign = "center";
+      ctx.fillText(title, (c1.x + c2.x) / 2, (c1.y + c2.y) / 2 + 3);
+    };
     for (const r of this.rooms.values()) {
-      if (r.built < 0.85) continue;
-      const base = floorBase(r.floor);
-      // (room directory is painted on the back wall in drawRoomBack, not here)
-      // "+ DEV" button
-      if (r.built >= 0.95) {
-        const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
-        const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
-        ctx.fillStyle = "rgba(10,15,18,0.8)";
-        ctx.fillRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-        ctx.strokeStyle = "#3ee089";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
-        ctx.fillStyle = "#3ee089";
-        ctx.font = `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`;
-        ctx.textAlign = "center";
-        ctx.fillText("+ DEV", (b.x + b2.x) / 2, (b.y + b2.y) / 2 + 3);
-      }
-      // ✕ remove (reserved rooms only)
-      if (r.path && r.built >= 0.95) {
-        const c1 = this.screenOf(r.x0 + ROOM_W - 10, base - ROOM_H + 2);
-        const c2 = this.screenOf(r.x0 + ROOM_W - 2, base - ROOM_H + 10);
-        ctx.fillStyle = "rgba(10,15,18,0.8)";
-        ctx.fillRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-        ctx.strokeStyle = "rgba(255,96,85,0.7)";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(c1.x, c1.y, c2.x - c1.x, c2.y - c1.y);
-        ctx.fillStyle = "#ff6055";
-        ctx.font = `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`;
-        ctx.textAlign = "center";
-        ctx.fillText("✕", (c1.x + c2.x) / 2, (c1.y + c2.y) / 2 + 3);
-      }
+      if (r.built < 0.95) continue;
+      const base = r.baseY;
+      // "+ DEV" on every room — drop an agent into this room's worktree
+      const b = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 3);
+      const b2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, base - ROOM_H + 11);
+      ctx.fillStyle = "rgba(10,15,18,0.8)";
+      ctx.fillRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
+      ctx.strokeStyle = "#3ee089";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(b.x, b.y, b2.x - b.x, b2.y - b.y);
+      ctx.fillStyle = "#3ee089";
+      ctx.font = `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`;
+      ctx.textAlign = "center";
+      ctx.fillText("+ DEV", (b.x + b2.x) / 2, (b.y + b2.y) / 2 + 3);
+      // ✕ — main nukes the whole directory, a worktree removes just itself
+      xBtn(r, "✕");
     }
-    // ghost labels
+    // ghost labels: +building (create a worktree room) vs +island (reserve a dir)
     for (const g of this.ghosts) {
       const s = this.screenOf(g.x0 + ROOM_W / 2, g.base - ROOM_H / 2);
-      ctx.fillStyle = "rgba(170,180,186,0.75)";
+      const building = g.kind === "building";
+      ctx.fillStyle = building ? "rgba(110,210,150,0.8)" : "rgba(170,180,186,0.75)";
       ctx.font = `600 ${clamp(3 * this.cam.z, 8, 12)}px 'Martian Mono', monospace`;
       ctx.textAlign = "center";
-      ctx.fillText("+ RESERVE", s.x, s.y - 2);
+      ctx.fillText(building ? "+ WORKTREE" : "+ RESERVE", s.x, s.y - 2);
       ctx.font = `${clamp(2.4 * this.cam.z, 7, 10)}px 'IBM Plex Mono', monospace`;
       ctx.fillStyle = "rgba(140,150,156,0.6)";
-      const lvl = g.floor >= 0 ? `F${g.floor}` : `B${-g.floor}`;
-      ctx.fillText(`${lvl} · pick a directory`, s.x, s.y + 11);
+      ctx.fillText(building ? "new branch room" : "pick a directory", s.x, s.y + 11);
     }
     // toon labels + bubbles
     for (const tn of this.toons.values()) {
@@ -1187,19 +1813,27 @@ class PixelCrew {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const t = this.dropTarget;
     if (t?.room) {
-      const r = this.rooms.get(t.room);
-      if (r) this.strokeWorldRect(r.x0, floorBase(r.floor) - ROOM_H, ROOM_W, ROOM_H + SLAB, "#7fd1ff");
+      // t.room is an island name → highlight the whole island footprint
+      const isl = this.islands.get(t.room);
+      if (isl) {
+        const x0 = cellX0(isl.laneStart);
+        const x1 = cellX0(isl.laneStart + isl.cols - 1) + ROOM_W;
+        let top = floorBase(0);
+        for (const b of this.rooms.values()) if (b.island === isl.name) top = Math.min(top, b.baseY - ROOM_H);
+        this.strokeWorldRect(x0, top, x1 - x0, floorBase(0) + SLAB - top, "#7fd1ff");
+      }
     } else if (t?.ghost) {
       const g = this.ghosts.find((g) => g.floor === t.ghost!.floor && g.col === t.ghost!.col);
       if (g) this.strokeWorldRect(g.x0, g.base - ROOM_H, ROOM_W, ROOM_H, "#9be38b");
     }
     const d = this.toonDrag!;
-    const label = this.toons.get(d.id)?.agent.name ?? "agent";
+    const name = this.toons.get(d.id)?.agent.name ?? "agent";
+    const label = d.blocked ? `${name} · active, can't move` : name;
     ctx.font = "11px 'IBM Plex Mono', monospace";
     const w = ctx.measureText(label).width + 14;
     ctx.fillStyle = "rgba(12,16,20,0.92)";
     ctx.fillRect(d.mx + 12, d.my - 9, w, 18);
-    ctx.fillStyle = t ? "#cfe8ff" : "#9aa3ab";
+    ctx.fillStyle = d.blocked ? "#ff9a93" : t ? "#cfe8ff" : "#9aa3ab";
     ctx.fillText(label, d.mx + 19, d.my + 3.5);
   }
 
@@ -1216,15 +1850,16 @@ class PixelCrew {
     ctx.restore();
   }
 
-  private drawGhost(ctx: CanvasRenderingContext2D, g: { x0: number; base: number }) {
+  private drawGhost(ctx: CanvasRenderingContext2D, g: { x0: number; base: number; kind: "building" | "island" }) {
+    const building = g.kind === "building";
     ctx.save();
-    ctx.strokeStyle = "rgba(140,150,156,0.4)";
+    ctx.strokeStyle = building ? "rgba(110,210,150,0.45)" : "rgba(140,150,156,0.4)";
     ctx.lineWidth = 0.8;
     ctx.setLineDash([3, 3]);
     ctx.strokeRect(g.x0 + 1, g.base - ROOM_H + 1, ROOM_W - 2, ROOM_H - 2);
     ctx.setLineDash([]);
     // faint blueprint grid
-    ctx.strokeStyle = "rgba(86,140,180,0.08)";
+    ctx.strokeStyle = building ? "rgba(110,210,150,0.10)" : "rgba(86,140,180,0.08)";
     for (let gx = g.x0 + 12; gx < g.x0 + ROOM_W - 4; gx += 12) {
       ctx.beginPath();
       ctx.moveTo(gx, g.base - ROOM_H + 3);
@@ -1234,13 +1869,75 @@ class PixelCrew {
     ctx.restore();
   }
 
+  /** The island's foundation: a plinth spanning its lane at ground level, with a
+   *  signpost carrying the repo/directory name. The buildings stand on this. */
+  private drawIslandPlatform(ctx: CanvasRenderingContext2D, isl: Island) {
+    // The tower sits at the BACK-TOP of a solid pedestal. We look slightly down,
+    // so the pedestal's top surface (apron) tilts toward us and splays outward
+    // before dropping to a tall front face — a clear 3D block, not a flat band.
+    const tx0 = cellX0(isl.laneStart); // tower footprint
+    const tx1 = cellX0(isl.laneStart + isl.cols - 1) + ROOM_W;
+    const ground = floorBase(0) + SLAB; // where the tower meets the pedestal
+    const sat = isl.path ? 26 : 14; // reserved islands read a touch warmer
+    const L = (l: number) => `hsl(${isl.hue} ${sat}% ${l}%)`;
+
+    const aTop = ground; // apron back edge (under the tower)
+    const aBot = ground + PLINTH_APRON; // apron front edge (toward viewer)
+    const fBot = aBot + PLINTH_H; // front face bottom
+    const wx0 = tx0 - PLINTH_OV, wx1 = tx1 + PLINTH_OV; // splayed (wide) front corners
+
+    // left + right end faces (darkest), so the corners read as solid
+    ctx.fillStyle = L(9);
+    ctx.beginPath();
+    ctx.moveTo(tx0, aTop); ctx.lineTo(wx0, aBot); ctx.lineTo(wx0, fBot); ctx.lineTo(tx0, fBot); ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(tx1, aTop); ctx.lineTo(wx1, aBot); ctx.lineTo(wx1, fBot); ctx.lineTo(tx1, fBot); ctx.closePath(); ctx.fill();
+
+    // top apron (lightest — catches the light), splaying out toward the viewer
+    const ag = ctx.createLinearGradient(0, aTop, 0, aBot);
+    ag.addColorStop(0, L(34));
+    ag.addColorStop(1, L(26));
+    ctx.fillStyle = ag;
+    ctx.beginPath();
+    ctx.moveTo(tx0, aTop); ctx.lineTo(tx1, aTop);
+    ctx.lineTo(wx1, aBot); ctx.lineTo(wx0, aBot); ctx.closePath(); ctx.fill();
+
+    // front face (mid, shaded top→bottom) — holds the name
+    const fg = ctx.createLinearGradient(0, aBot, 0, fBot);
+    fg.addColorStop(0, L(19));
+    fg.addColorStop(1, L(11));
+    ctx.fillStyle = fg;
+    ctx.fillRect(wx0, aBot, wx1 - wx0, PLINTH_H);
+    ctx.fillStyle = L(8); // base shadow
+    ctx.fillRect(wx0, fBot - 2, wx1 - wx0, 2);
+
+    // signpost with the island (repo/directory) name — fills the front face
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = `hsl(${isl.hue} 50% 80%)`;
+    const cx = (wx0 + wx1) / 2;
+    const cy = aBot + PLINTH_H / 2 + 1;
+    const label = isl.name.toUpperCase();
+    let size = PLINTH_H - 10;
+    ctx.font = `bold ${size}px 'Martian Mono', monospace`;
+    const maxW = wx1 - wx0 - 10;
+    while (ctx.measureText(label).width > maxW && size > 6) {
+      size -= 0.5;
+      ctx.font = `bold ${size}px 'Martian Mono', monospace`;
+    }
+    ctx.fillText(label, cx, cy);
+    ctx.restore();
+  }
+
   private drawRoomBack(ctx: CanvasRenderingContext2D, r: Room) {
-    const base = floorBase(r.floor);
+    const base = r.baseY;
     const eFloor = clamp(r.built / 0.35, 0, 1);
     const eWall = clamp((r.built - 0.2) / 0.45, 0, 1);
     const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
     const x = r.x0, w = ROOM_W, H = ROOM_H;
     const underground = r.floor < 0;
+    const lit = r.agents.length > 0;
 
     // floor slab
     ctx.fillStyle = "#3d2f1f";
@@ -1261,6 +1958,23 @@ class PixelCrew {
     ctx.beginPath();
     ctx.moveTo(x, base); ctx.lineTo(x + w, base);
     ctx.lineTo(bw.x1, byB); ctx.lineTo(bw.x0, byB); ctx.closePath(); ctx.fill();
+    // smooth room light: brightest at the near (viewer) edge, fading toward the
+    // back wall / TV — replaces the patchy per-lamp cones with one soft gradient
+    if (grow > 0.5) {
+      const fl = ctx.createLinearGradient(0, base, 0, byB);
+      if (lit && !underground) {
+        fl.addColorStop(0, "rgba(255,208,130,0.20)");
+        fl.addColorStop(0.5, "rgba(255,198,120,0.07)");
+        fl.addColorStop(1, "rgba(255,198,120,0)");
+      } else {
+        fl.addColorStop(0, "rgba(150,172,196,0.07)");
+        fl.addColorStop(1, "rgba(150,172,196,0)");
+      }
+      ctx.fillStyle = fl;
+      ctx.beginPath();
+      ctx.moveTo(x, base); ctx.lineTo(x + w, base);
+      ctx.lineTo(bw.x1, byB); ctx.lineTo(bw.x0, byB); ctx.closePath(); ctx.fill();
+    }
     // ceiling (darkest)
     ctx.fillStyle = shade(underground ? 9 : 11);
     ctx.beginPath();
@@ -1286,46 +2000,56 @@ class PixelCrew {
     if (eFurn <= 0) return;
     ctx.globalAlpha = eFurn;
 
-    // room directory mounted on the far wall, centered above the board
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-    ctx.font = "bold 5px 'IBM Plex Mono', monospace";
-    ctx.fillStyle = `hsl(${r.hue} 52% 66%)`;
-    const lvl = r.floor >= 0 ? `F${r.floor}` : `B${-r.floor}`;
-    ctx.fillText(`${lvl} · ${r.name.toUpperCase()}`, (bw.x0 + bw.x1) / 2, bw.yTop + 9);
-    ctx.restore();
-
-    // task board on the far wall (placeholder kanban: planned / active / review)
+    // the big stat-tracker screen fills the whole far wall (branch + git/PR data);
+    // the island/repo name lives on the platform signpost below
     this.drawBoard(ctx, r, base);
 
-    // window: a large pane on the right of the far wall (rock face underground)
-    const win = { x: bw.x1 - 44, y: bw.yTop + 6, w: 38, h: 28 };
-    ctx.fillStyle = "#10151c";
-    ctx.fillRect(win.x - 2, win.y - 2, win.w + 4, win.h + 4);
+    // window on the LEFT side wall, drawn in perspective (rock face underground)
+    const onWall = (t: number, f: number) => {
+      // t: 0 near opening → 1 far wall; f: 0 ceiling → 1 floor at that depth
+      const xL = x + (bw.x0 - x) * t;
+      const yT = topY + (byT - topY) * t;
+      const yB = base + (byB - base) * t;
+      return { x: xL, y: yT + (yB - yT) * f };
+    };
+    const wp = [onWall(0.3, 0.26), onWall(0.64, 0.3), onWall(0.64, 0.66), onWall(0.3, 0.7)];
+    const quad = (pts: { x: number; y: number }[], fill: string | CanvasGradient) => {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+    };
+    const mid = (a: { x: number; y: number }, c: { x: number; y: number }) => ({ x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 });
+    // frame
+    ctx.strokeStyle = "#0c1116";
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "miter";
+    ctx.beginPath();
+    ctx.moveTo(wp[0].x, wp[0].y);
+    for (let i = 1; i < 4; i++) ctx.lineTo(wp[i].x, wp[i].y);
+    ctx.closePath();
+    ctx.stroke();
+    const ys = Math.min(...wp.map((p) => p.y)), yb = Math.max(...wp.map((p) => p.y));
     if (underground) {
-      ctx.fillStyle = "#241a12";
-      ctx.fillRect(win.x, win.y, win.w, win.h);
-      ctx.fillStyle = "#3a2c1d";
-      ctx.fillRect(win.x + 6, win.y + 8, 8, 4);
-      ctx.fillRect(win.x + 22, win.y + 16, 10, 4);
-      // a worm
-      ctx.fillStyle = "#c98ab0";
-      if (this.frame % 16 < 8) ctx.fillRect(win.x + 16, win.y + 20, 4, 2);
+      quad(wp, "#241a12");
     } else {
-      const sky = ctx.createLinearGradient(0, win.y, 0, win.y + win.h);
+      const sky = ctx.createLinearGradient(0, ys, 0, yb);
       sky.addColorStop(0, "#2c4a6e");
       sky.addColorStop(1, "#b86a3a");
-      ctx.fillStyle = sky;
-      ctx.fillRect(win.x, win.y, win.w, win.h);
-      ctx.fillStyle = "rgba(255,255,255,0.7)";
-      ctx.fillRect(win.x + 6, win.y + 6, 6, 2);
-      ctx.fillRect(win.x + 22, win.y + 12, 8, 2);
+      quad(wp, sky);
+      ctx.fillStyle = "rgba(255,255,255,0.6)"; // a distant cloud
+      const c = mid(wp[0], wp[2]);
+      ctx.fillRect(c.x - 2, c.y - 2.5, 4, 1.3);
     }
-    // muntins (cross bars)
-    ctx.fillStyle = "#10151c";
-    ctx.fillRect(win.x + win.w / 2 - 0.5, win.y, 1, win.h);
-    ctx.fillRect(win.x, win.y + win.h / 2 - 0.5, win.w, 1);
+    // muntins
+    ctx.strokeStyle = "#0c1116";
+    ctx.lineWidth = 0.8;
+    const mt = mid(wp[0], wp[1]), mb = mid(wp[3], wp[2]);
+    ctx.beginPath(); ctx.moveTo(mt.x, mt.y); ctx.lineTo(mb.x, mb.y); ctx.stroke();
+    const ml = mid(wp[0], wp[3]), mr = mid(wp[1], wp[2]);
+    ctx.beginPath(); ctx.moveTo(ml.x, ml.y); ctx.lineTo(mr.x, mr.y); ctx.stroke();
 
     // plant + hash decor
     const px = x + w - DOOR_W - 6;
@@ -1358,8 +2082,8 @@ class PixelCrew {
       ctx.fillRect(x + WB_W + 3.2, base - H + 12, 4.6, 1);
     }
 
-    // ceiling lamps: a row of pendants across the room
-    const lit = r.agents.length > 0;
+    // ceiling pendants: just the fixtures + a tight bulb glow — the room's actual
+    // lighting is the soft floor gradient above, so no big distracting cones
     const LAMPS = 3;
     for (let li = 0; li < LAMPS; li++) {
       const lx = x + (w * (li + 1)) / (LAMPS + 1);
@@ -1370,14 +2094,13 @@ class PixelCrew {
       // a warm bulb that glows when the room is occupied
       ctx.fillStyle = lit ? "#ffd27a" : "#4a4636";
       ctx.fillRect(lx - 1.4, base - H + 5.4, 2.8, 1.6);
-      ctx.fillStyle = lit ? "rgba(255,200,110,0.07)" : "rgba(255,200,110,0.02)";
-      ctx.beginPath();
-      ctx.moveTo(lx - 3, base - H + 6);
-      ctx.lineTo(lx + 3, base - H + 6);
-      ctx.lineTo(lx + 11, base);
-      ctx.lineTo(lx - 11, base);
-      ctx.closePath();
-      ctx.fill();
+      if (lit) {
+        const g = ctx.createRadialGradient(lx, base - H + 6.2, 0, lx, base - H + 6.2, 5);
+        g.addColorStop(0, "rgba(255,210,130,0.22)");
+        g.addColorStop(1, "rgba(255,210,130,0)");
+        ctx.fillStyle = g;
+        ctx.fillRect(lx - 5, base - H + 1, 10, 10);
+      }
     }
 
     // door to the lift, set into the right side wall so it follows the
@@ -1404,6 +2127,24 @@ class PixelCrew {
     ctx.fillStyle = "#d9b34a"; // handle on the far (latch) jamb
     ctx.fillRect(pf.x + 0.4, pf.y - 14, 1.4, 1.6);
 
+    // staircase up to the worktree stacked on top: a flight against the right
+    // wall that upper-floor devs climb in to reach their door
+    if (r.hasUpper) {
+      const steps = 8;
+      const botX = x + w - 42, topX = x + w - 22;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const sx = botX + (topX - botX) * t;
+        const sy = base - (H - 4) * t;
+        ctx.fillStyle = i % 2 ? "#454c53" : "#3c434a";
+        ctx.fillRect(sx - 5, sy - 2.2, 10, 2.4); // tread
+        ctx.fillStyle = "#20262c";
+        ctx.fillRect(sx - 5, sy + 0.2, 10, 1.8); // riser shadow
+      }
+      ctx.fillStyle = "#2a3138"; // stringer
+      ctx.fillRect(botX - 6, base - H + 2, 1.6, H - 2);
+    }
+
     // vacant reserved rooms sit dark until a dev moves in
     if (!lit && r.path) {
       ctx.fillStyle = "rgba(8,11,14,0.45)";
@@ -1412,49 +2153,338 @@ class PixelCrew {
     ctx.globalAlpha = 1;
   }
 
-  /** Placeholder task board on the far wall: a "TASKS" strip over three columns
-   *  (planned / active / review) with stub cards. Not wired to data yet — once
-   *  a room's directory has git configured, these columns will hold real tasks
-   *  / PRs that agents slide across as their state changes. */
+  /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
+   *  plus live git stats (files changed, lines +/-). It glows when the worktree's
+   *  files change (see the packets fired from the desks in tick). */
+  /** World rect of the COMMITS-cell sync button when the branch is out of date
+   *  (has unpushed or behind commits); null otherwise. Shared by the renderer and
+   *  the hit-test so they always agree. Must mirror drawBoard's cell geometry. */
+  private commitSyncRect(r: Room): { x: number; y: number; w: number; h: number } | null {
+    const bd = r.boardShown ?? r.board;
+    if (!bd || bd.missing || (bd.unpushed <= 0 && bd.behind <= 0)) return null;
+    const b = boardRect(r.x0, r.baseY);
+    if (b.w < 20 || b.h < 14) return null;
+    const pad = 4;
+    const innerL = b.x + pad, innerR = b.x + b.w - pad;
+    const prW = Math.min(96, (innerR - innerL) * 0.42);
+    const gitR = innerR - prW - 4;
+    const cw = (gitR - innerL) / 3;
+    const cx = innerL + 2 * cw; // COMMITS cell
+    return { x: cx - 1, y: b.y + b.h - 8, w: cw, h: 8 };
+  }
+
+  /** Draw a number, rolling the old value up and out while the new value rises in
+   *  when it just changed (a flip-board feel). Uses the caller's font + fillStyle.
+   *  `fontH` is the cap height, used to size the clip box and the roll distance. */
+  private drawRoll(ctx: CanvasRenderingContext2D, x: number, y: number, key: string, text: string, fontH: number, r: Room) {
+    const an = r.numAnim[key];
+    if (!an || an.to !== text) { ctx.fillText(text, x, y); return; }
+    const e = an.t * an.t * (3 - 2 * an.t);
+    const h = fontH * 1.2;
+    const w = Math.max(ctx.measureText(an.from).width, ctx.measureText(text).width) + 2;
+    const a0 = ctx.globalAlpha;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x - 1, y - fontH, w + 2, fontH + 2.5);
+    ctx.clip();
+    ctx.globalAlpha = a0 * (1 - e);
+    ctx.fillText(an.from, x, y - e * h); // old rolls up and out
+    ctx.globalAlpha = a0 * e;
+    ctx.fillText(text, x, y + (1 - e) * h); // new rises into place
+    ctx.restore();
+    ctx.globalAlpha = a0;
+  }
+
+  /** A small spinning arc, e.g. while the first GitHub PR lookup is in flight. */
+  private drawSpinner(ctx: CanvasRenderingContext2D, cx: number, cy: number, rad: number, color: string) {
+    const a0 = (this.frame * 0.35) % (Math.PI * 2);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 0.9;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, a0, a0 + Math.PI * 1.4);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   private drawBoard(ctx: CanvasRenderingContext2D, r: Room, base: number) {
     const b = boardRect(r.x0, base);
-    if (b.w < 24 || b.h < 14) return;
-    ctx.fillStyle = "#10151c"; // frame
-    ctx.fillRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4);
-    ctx.fillStyle = "#161d24"; // panel
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-    ctx.fillStyle = "#222d35"; // title strip
-    ctx.fillRect(b.x, b.y, b.w, 5);
-    ctx.fillStyle = "rgba(230,238,240,0.7)";
-    ctx.fillRect(b.x + 2, b.y + 2, 14, 1);
+    if (b.w < 20 || b.h < 14) return;
+    const glow = r.statPulse;
 
-    const tints = ["#5b6675", "#3a78c2", "#c89a3a"]; // planned, active, review
-    const pad = 3;
-    const top = b.y + 7;
-    const colH = b.h - 10;
-    const cw = (b.w - pad * 4) / 3;
-    for (let c = 0; c < 3; c++) {
-      const cx = b.x + pad + c * (cw + pad);
-      ctx.fillStyle = tints[c]; // column header
-      ctx.fillRect(cx, top, cw, 3);
-      ctx.fillStyle = "rgba(255,255,255,0.04)"; // well
-      ctx.fillRect(cx, top + 4, cw, colH - 4);
-      const n = 1 + (hash(r.name + "card" + c) % 3); // stub cards
-      for (let i = 0; i < n; i++) {
-        const cardY = top + 6 + i * 5;
-        if (cardY + 4 > top + colH) break;
-        ctx.fillStyle = "rgba(230,238,240,0.16)";
-        ctx.fillRect(cx + 1, cardY, cw - 2, 4);
-        ctx.fillStyle = tints[c]; // colored spine
-        ctx.fillRect(cx + 1, cardY, 1.4, 4);
+    // bezel + screen
+    ctx.fillStyle = "#05080b";
+    ctx.fillRect(b.x - 2.5, b.y - 2.5, b.w + 5, b.h + 5);
+    ctx.fillStyle = "#0b0f14";
+    ctx.fillRect(b.x - 1.5, b.y - 1.5, b.w + 3, b.h + 3);
+    const scr = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+    scr.addColorStop(0, "#101b27");
+    scr.addColorStop(1, "#0a1118");
+    ctx.fillStyle = scr;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    // faint scanlines for the screen feel
+    ctx.fillStyle = "rgba(120,200,255,0.035)";
+    for (let yy = b.y + 2; yy < b.y + b.h - 1; yy += 3) ctx.fillRect(b.x, yy, b.w, 1);
+
+    const pad = 4;
+    // header: branch on the left, a live activity dot on the right
+    ctx.save();
+    ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "left";
+    const branch = r.branch && r.branch !== "—" ? r.branch : r.isMain ? "main" : "—";
+    // " → base" suffix tells you what this branch targets / is based off of
+    const baseName = (r.boardShown ?? r.board)?.base || "";
+    const suffix = baseName && baseName !== branch ? `→ ${baseName}` : "";
+    ctx.font = "4px 'IBM Plex Mono', monospace";
+    const suffixW = suffix ? ctx.measureText(suffix).width + 3 : 0;
+    ctx.font = "bold 5px 'Martian Mono', monospace";
+    ctx.fillStyle = r.isMain ? "hsl(150 60% 80%)" : `hsl(${r.hue} 65% 82%)`;
+    let bt = `⌥ ${branch}`;
+    while (ctx.measureText(bt).width > b.w - 12 - suffixW && bt.length > 6) bt = bt.slice(0, -2);
+    if (bt !== `⌥ ${branch}`) bt += "…";
+    ctx.fillText(bt, b.x + pad, b.y + 7);
+    if (suffix) {
+      const branchW = ctx.measureText(bt).width;
+      ctx.font = "bold 4px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "rgba(205,220,232,0.95)";
+      ctx.fillText(suffix, b.x + pad + branchW + 3, b.y + 7);
+    }
+    ctx.fillStyle = glow > 0.02 ? `rgba(62,224,137,${0.35 + glow * 0.65})` : "rgba(90,100,108,0.5)";
+    ctx.fillRect(b.x + b.w - pad - 3, b.y + 3, 3, 3);
+    // header divider
+    ctx.fillStyle = "rgba(120,150,170,0.18)";
+    ctx.fillRect(b.x + pad, b.y + 9.5, b.w - pad * 2, 0.8);
+    ctx.restore();
+
+    const bd = r.boardShown ?? r.board;
+    const placeholder = (text: string, color: string) => {
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "alphabetic";
+      ctx.font = "4px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = color;
+      ctx.fillText(text, b.x + b.w / 2, b.y + b.h / 2 + 4);
+      ctx.restore();
+    };
+    if (!bd) { placeholder("no git", "rgba(225,233,238,0.6)"); return; }
+    if (bd.missing) { placeholder("dir missing", "rgba(255,154,147,0.85)"); return; }
+
+    // The board is wide and short, so stats run HORIZONTALLY: three git cells
+    // (unstaged · staged · commits), each a count + line churn + a green/red
+    // diffstat bar, then a wider PR cell on the right.
+    const bodyTop = b.y + 12;
+    const bodyBot = b.y + b.h - 2;
+    const innerL = b.x + pad;
+    const innerR = b.x + b.w - pad;
+    const prW = Math.min(96, (innerR - innerL) * 0.42); // wider PR cell for review detail
+    const gitR = innerR - prW - 4; // right edge of the git region
+    const cw = (gitR - innerL) / 3; // one git cell
+    // truncate a string to a pixel width, adding a trailing ellipsis when cut
+    const fit = (s: string, maxW: number) => {
+      if (ctx.measureText(s).width <= maxW) return s;
+      let t = s;
+      while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
+      return t + "…";
+    };
+    // a slim diffstat bar: green share = additions, red = deletions
+    const churnBar = (x: number, yy: number, w: number, add: number, del: number) => {
+      ctx.fillStyle = "rgba(120,150,170,0.16)";
+      ctx.fillRect(x, yy, w, 2);
+      const total = add + del;
+      if (total <= 0) return;
+      const aw = Math.max(1, Math.min(w - 1, Math.round((w * add) / total)));
+      ctx.fillStyle = "#3ee089";
+      ctx.fillRect(x, yy, aw, 2);
+      ctx.fillStyle = "#ff6055";
+      ctx.fillRect(x + aw, yy, w - aw, 2);
+    };
+    // flash a single column when its value just changed (set in applyBoardSnapshot)
+    const cellGlow = (x: number, w: number, pulse: number) => {
+      if (pulse <= 0.02) return;
+      const a = Math.min(1, pulse);
+      ctx.fillStyle = `rgba(62,224,137,${0.14 * a})`;
+      ctx.fillRect(x, bodyTop - 2, w, bodyBot - bodyTop + 4);
+      ctx.strokeStyle = `rgba(62,224,137,${0.9 * a})`;
+      ctx.lineWidth = 0.8;
+      ctx.strokeRect(x + 0.4, bodyTop - 1.6, w - 0.8, bodyBot - bodyTop + 3.2);
+    };
+    const cp = r.cellPulse;
+
+    ctx.save();
+    ctx.textBaseline = "alphabetic";
+
+    /* ---- left: three git cells ---- */
+    const cells = [
+      { label: "UNSTAGED", count: `${bd.modified} file${bd.modified === 1 ? "" : "s"}`, add: bd.unstagedAdd, del: bd.unstagedDel, tint: "#ffb13d" },
+      { label: "STAGED", count: `${bd.staged} file${bd.staged === 1 ? "" : "s"}`, add: bd.stagedAdd, del: bd.stagedDel, tint: "#3ee089" },
+      { label: "COMMITS", count: `${bd.ahead}`, add: bd.committedAdd, del: bd.committedDel, tint: "#56c7ff" },
+    ];
+    const sync = this.commitSyncRect(r); // bottom-of-COMMITS sync button rect (or null)
+    const cellKeys = ["unstaged", "staged", "commits"] as const;
+    cells.forEach((c, i) => {
+      const cx = innerL + i * cw;
+      const cwIn = cw - 4; // inner width (leaves a gutter before the divider)
+      cellGlow(cx - 1.5, cw - 1, cp[cellKeys[i]]);
+      if (i > 0) {
+        ctx.fillStyle = "rgba(120,150,170,0.12)";
+        ctx.fillRect(cx - 2, bodyTop, 0.7, bodyBot - bodyTop);
+      }
+      const pfx = ["u", "s", "c"][i];
+      ctx.textAlign = "left";
+      ctx.font = "3px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "rgba(170,182,190,0.7)";
+      ctx.fillText(c.label, cx, bodyTop + 3);
+      ctx.font = "bold 5.5px 'Martian Mono', monospace";
+      ctx.fillStyle = c.tint;
+      this.drawRoll(ctx, cx, bodyTop + 10, `${pfx}.count`, fit(c.count, cwIn), 5.5, r);
+      ctx.font = "bold 3.6px 'Martian Mono', monospace";
+      const plus = `+${c.add}`;
+      ctx.fillStyle = "#3ee089";
+      this.drawRoll(ctx, cx, bodyTop + 16, `${pfx}.add`, plus, 3.6, r);
+      ctx.fillStyle = "#ff6055";
+      this.drawRoll(ctx, cx + ctx.measureText(plus).width + 3, bodyTop + 16, `${pfx}.del`, `-${c.del}`, 3.6, r);
+      churnBar(cx, bodyTop + 18.5, cwIn, c.add, c.del);
+      // COMMITS cell also shows push/pull sync state + a sync button
+      if (i === 2) {
+        const up = bd.unpushed, bh = bd.behind, sy = bodyBot - 1.5;
+        ctx.font = "3.6px 'Martian Mono', monospace";
+        if (up > 0 || bh > 0) {
+          let sx = cx;
+          if (up > 0) { ctx.fillStyle = "#ffb13d"; ctx.fillText(`⇡${up}`, sx, sy); sx += ctx.measureText(`⇡${up}`).width + 2.5; }
+          if (bh > 0) { ctx.fillStyle = "#56c7ff"; ctx.fillText(`⇣${bh}`, sx, sy); sx += ctx.measureText(`⇣${bh}`).width + 2.5; }
+          if (sync) {
+            ctx.fillStyle = bh > 0 ? "#56c7ff" : "#3ee089";
+            ctx.fillText("⟳", sx + 0.5, sy);
+          }
+        } else {
+          ctx.fillStyle = "rgba(120,200,255,0.5)";
+          ctx.font = "3px 'IBM Plex Mono', monospace";
+          ctx.fillText("synced", cx, sy);
+        }
+      }
+    });
+
+    /* ---- right: PR ---- */
+    const px = gitR + 4;
+    cellGlow(gitR + 2, innerR - gitR - 2, cp.pr);
+    ctx.fillStyle = "rgba(120,150,170,0.14)";
+    ctx.fillRect(gitR + 1, bodyTop, 0.7, bodyBot - bodyTop);
+    let py = bodyTop + 3;
+    ctx.textAlign = "left";
+    ctx.font = "3px 'IBM Plex Mono', monospace";
+    ctx.fillStyle = "rgba(170,182,190,0.7)";
+    ctx.fillText("PR", px, py);
+    const loadingPr = !bd.pr && !bd.prReady; // first GitHub lookup still in flight
+    const pr = bd.pr;
+    if (pr) {
+      if (pr.draft) { // draft badge by the PR label
+        ctx.font = "bold 2.8px 'Martian Mono', monospace";
+        ctx.fillStyle = "rgba(180,190,198,0.85)";
+        ctx.fillText("DRAFT", px + 7, py);
+      }
+      ctx.font = "bold 6px 'Martian Mono', monospace";
+      ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
+      ctx.textAlign = "right";
+      ctx.fillText(`#${pr.number}`, innerR, py + 0.4);
+      ctx.textAlign = "left";
+    } else if (loadingPr) {
+      this.drawSpinner(ctx, innerR - 2.6, py - 1.4, 2.4, "rgba(185,140,255,0.9)");
+    }
+    py += 6;
+    if (!pr) {
+      ctx.font = "3.4px 'IBM Plex Mono', monospace";
+      if (loadingPr) {
+        ctx.fillStyle = "rgba(185,140,255,0.7)";
+        ctx.fillText("checking…", px, py);
+      } else {
+        ctx.fillStyle = "rgba(170,182,190,0.55)";
+        ctx.fillText("no open PR", px, py);
+      }
+    } else {
+      // ---- title at the TOP, up to 2 lines (2nd line marquees if it overflows) ----
+      ctx.font = "bold 3.4px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "rgba(228,236,240,0.95)";
+      const words = pr.title.split(/\s+/).filter(Boolean);
+      let l1 = "", wi = 0;
+      for (; wi < words.length; wi++) {
+        const next = l1 ? `${l1} ${words[wi]}` : words[wi];
+        if (ctx.measureText(next).width > prW && l1) break;
+        l1 = next;
+      }
+      const rest = words.slice(wi).join(" ");
+      ctx.fillText(l1, px, py);
+      py += 4.4;
+      if (rest) {
+        const rw = ctx.measureText(rest).width;
+        if (rw <= prW) {
+          ctx.fillText(rest, px, py);
+        } else {
+          ctx.save();
+          ctx.beginPath(); ctx.rect(px, py - 4, prW, 5.5); ctx.clip();
+          const gap = 14, period = rw + gap;
+          const zoomedIn = this.cam.z > 3; // only animate when it's actually readable
+          if (zoomedIn) { this.marqueeOn = true; if (r.marqueeStart === undefined) r.marqueeStart = this.frame; }
+          else r.marqueeStart = undefined;
+          const scroll = zoomedIn ? ((this.frame - (r.marqueeStart ?? this.frame)) * 0.75) % period : 0;
+          ctx.fillText(rest, px - scroll, py);
+          ctx.fillText(rest, px - scroll + period, py); // seamless wrap
+          ctx.restore();
+        }
+      }
+      py += 4.5;
+      // divider between the title and the chart
+      ctx.fillStyle = "rgba(120,150,170,0.16)";
+      ctx.fillRect(px, py - 2.5, prW, 0.6);
+      py += 3.5;
+      // ---- chart: checks (✓ pass / ✗ fail / pulsing dot while running) ----
+      if (pr.checksTotal > 0) {
+        ctx.font = "bold 4px 'Martian Mono', monospace";
+        let sx = px;
+        if (pr.checksPass > 0) { ctx.fillStyle = "#3ee089"; const t = `${pr.checksPass}✓`; ctx.fillText(t, sx, py); sx += ctx.measureText(t).width + 3; }
+        if (pr.checksFailed > 0) { ctx.fillStyle = "#ff6055"; const t = `${pr.checksFailed}✗`; ctx.fillText(t, sx, py); sx += ctx.measureText(t).width + 3; }
+        if (pr.checksRunning > 0) {
+          const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+          ctx.globalAlpha = pa; ctx.fillStyle = "#ffb13d";
+          ctx.beginPath(); ctx.arc(sx + 1.4, py - 1.3, 1.4, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = 1; ctx.fillStyle = "#ffb13d";
+          ctx.fillText(`${pr.checksRunning}`, sx + 3.6, py);
+        }
+      } else {
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(150,160,168,0.55)";
+        ctx.fillText("no checks", px, py);
+      }
+      py += 5;
+      // ---- chart: reviewers compressed onto one line (0 if none) ----
+      if (pr.draft && pr.approvals === 0 && pr.changesRequested === 0) {
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "#ffb13d";
+        ctx.fillText("reviewers pending", px, py);
+      } else {
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        let sx = px;
+        const seg = (label: string, n: number, on: string) => {
+          ctx.fillStyle = n > 0 ? on : "rgba(150,162,170,0.5)";
+          const t = `${n} ${label}`;
+          ctx.fillText(t, sx, py);
+          sx += ctx.measureText(t).width + 3;
+        };
+        seg("appr", pr.approvals, "#3ee089");
+        seg("chg", pr.changesRequested, "#ff6055");
+        seg("req", pr.reviewersPending, "#56c7ff");
+        seg("cmt", pr.comments, "rgba(210,218,224,0.85)");
       }
     }
+    ctx.restore();
+    // (column-level flashes are drawn per cell above via cellGlow; no full-board
+    // border pulse anymore, so it's clear which stat changed)
   }
 
   private drawDesks(ctx: CanvasRenderingContext2D, r: Room, row: number) {
     const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
     if (eFurn <= 0 || !r.plan) return;
-    const base = floorBase(r.floor);
+    const base = r.baseY;
     const db = base - row * ROW_DY; // this row's baseline (back row sits higher)
     ctx.globalAlpha = eFurn;
     for (const [id, seat] of r.plan.seats) {
@@ -1463,8 +2493,16 @@ class PixelCrew {
       const tn = this.toons.get(id);
       const occupied = !!tn?.sitting; // monitor lights only when the dev is seated
       const st = occupied ? tn!.agent.state : undefined;
-      ctx.fillStyle = "#6e522f";
+      // contact shadow on the floor so the desk doesn't melt into the boards
+      ctx.fillStyle = "rgba(0,0,0,0.3)";
+      ctx.fillRect(dx + 1.5, db - 0.6, 19, 1.8);
+      // desktop — lighter than the floor, with a top highlight + underside shadow
+      ctx.fillStyle = "#7e5e35";
       ctx.fillRect(dx + 2, db - 11, 18, 2);
+      ctx.fillStyle = "#9c7a4c";
+      ctx.fillRect(dx + 2, db - 11, 18, 0.7); // top highlight
+      ctx.fillStyle = "#382a16";
+      ctx.fillRect(dx + 2, db - 9.2, 18, 0.7); // shadow line under the top
       ctx.fillStyle = "#54401f";
       ctx.fillRect(dx + 3, db - 9, 1.5, 9);
       ctx.fillRect(dx + 17.5, db - 9, 1.5, 9);
@@ -1504,7 +2542,7 @@ class PixelCrew {
       // the screen faces the dev, so its glow flickers onto them
       if (occupied) {
         const c = st === "error" ? "217,83,79" : "159,216,255";
-        const peak = st === "error" ? 0.3 : st === "active" && this.frame % 4 < 2 ? 0.4 : 0.24;
+        const peak = st === "error" ? 0.3 : st === "active" && this.frame % 8 < 4 ? 0.4 : 0.24;
         const gx = dx + 13, gy = db - 16; // on the seated dev, not the monitor
         const grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, 7);
         grd.addColorStop(0, `rgba(${c},${peak})`);
@@ -1682,6 +2720,9 @@ class PixelCrew {
   setPrBranches(b: string[]) {
     this._instance?.setPrBranches(b);
   },
+  setBoards(boards: Record<string, any>) {
+    this._instance?.setBoards(boards);
+  },
   setSelected(id: string | undefined) {
     this._instance?.setSelected(id);
   },
@@ -1691,11 +2732,20 @@ class PixelCrew {
   onReserve(cb: (floor: number) => void) {
     this._instance?.onReserve(cb);
   },
-  onAddAgent(cb: (room: string) => void) {
-    this._instance?.onAddAgent(cb);
+  onAddDev(cb: (island: string, worktree: string) => void) {
+    this._instance?.onAddDev(cb);
+  },
+  onAddWorktree(cb: (island: string) => void) {
+    this._instance?.onAddWorktree(cb);
   },
   onRemoveRoom(cb: (room: string) => void) {
     this._instance?.onRemoveRoom(cb);
+  },
+  onRemoveWorktree(cb: (worktree: string, island: string) => void) {
+    this._instance?.onRemoveWorktree(cb);
+  },
+  onSync(cb: (room: string) => void) {
+    this._instance?.onSync(cb);
   },
   onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
     this._instance?.onCd(cb);
