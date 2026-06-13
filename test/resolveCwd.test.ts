@@ -13,7 +13,7 @@ const agent = (worktree: string) => ({ worktree } as any);
 
 let tmp: string;
 beforeEach(() => {
-  tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "devtower-cwd-")));
+  tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "devtower-cwd-")));
 });
 afterEach(() => {
   (vscode as any).__reset();
@@ -41,6 +41,6 @@ describe("resolveCwd", () => {
     fs.mkdirSync(sub, { recursive: true });
     set([tmp]);
     const resolved = resolveCwd(agent(path.join("packages", "api")));
-    expect(resolved && fs.realpathSync(resolved)).toBe(fs.realpathSync(sub));
+    expect(resolved && fs.realpathSync.native(resolved)).toBe(fs.realpathSync.native(sub));
   });
 });

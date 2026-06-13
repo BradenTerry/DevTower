@@ -23,7 +23,10 @@ import { makeTempRepo, seedCommit, TempRepo } from "./helpers";
 // and path handling on every runner in the CI matrix, so a Windows-only
 // path-separator or line-ending bug surfaces here.
 
-const real = (p: string) => fs.realpathSync(p); // macOS tmp is a symlink
+// macOS tmp is a symlink (/var → /private/var) and Windows mkdtemp can hand back
+// an 8.3 short path (RUNNER~1) while git reports the long form (runneradmin);
+// realpathSync.native canonicalizes both so path comparisons hold on every OS.
+const real = (p: string) => fs.realpathSync.native(p);
 
 let repo: TempRepo;
 beforeEach(() => {

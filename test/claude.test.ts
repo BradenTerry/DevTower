@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { ago, isSyntheticTask, lastMatch, readMeta } from "../src/claude";
+import { ago, isSyntheticTask, jsonUnescape, lastMatch, readMeta } from "../src/claude";
 
 describe("ago", () => {
   it("formats sub-minute, minutes, and hours", () => {
@@ -43,6 +43,20 @@ describe("lastMatch", () => {
   });
   it("returns undefined with no match", () => {
     expect(lastMatch("nothing", /"m":"([^"]+)"/g)).toBeUndefined();
+  });
+});
+
+describe("jsonUnescape", () => {
+  it("unescapes doubled backslashes (Windows paths)", () => {
+    expect(jsonUnescape("C:\\\\Users\\\\me\\\\proj")).toBe("C:\\Users\\me\\proj");
+  });
+  it("leaves plain strings (and undefined) untouched", () => {
+    expect(jsonUnescape("/Users/me/proj")).toBe("/Users/me/proj");
+    expect(jsonUnescape(undefined)).toBeUndefined();
+  });
+  it("handles quotes and unicode escapes", () => {
+    expect(jsonUnescape('a\\"b')).toBe('a"b');
+    expect(jsonUnescape("\\u00a6")).toBe("¦");
   });
 });
 
@@ -114,6 +128,17 @@ describe("readMeta", () => {
     ]);
     const meta = await readMeta(file, size);
     expect(meta.skills).toContain("code-review");
+  });
+
+  it("unescapes a Windows-style cwd path (regression: backslash mangling)", async () => {
+    const winCwd = "C:\\Users\\me\\proj";
+    const { file, size } = write([
+      { type: "user", cwd: winCwd, message: { role: "user", content: "hi" } },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.cwd).toBe(winCwd);
+    expect(meta.launchCwd).toBe(winCwd);
   });
 
   it("returns {} for an unreadable file", async () => {

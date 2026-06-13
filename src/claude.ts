@@ -365,7 +365,11 @@ export async function readMeta(
     const headBuf = Buffer.alloc(Math.min(CHUNK, size));
     await fh.read(headBuf, 0, headBuf.length, 0);
     const head = headBuf.toString("utf8");
-    const headCwd = /"cwd"\s*:\s*"([^"]+)"/.exec(head)?.[1];
+    // cwd is pulled out by regex (not JSON.parse, which can't span chunk
+    // boundaries), so the captured value is still JSON-escaped. On Windows the
+    // path has backslashes that JSON stores doubled ("C:\\Users\\me"), so it
+    // MUST be unescaped or every discovered session lands at a bogus path.
+    const headCwd = jsonUnescape(/"cwd"\s*:\s*"([^"]+)"/.exec(head)?.[1]);
 
     let tail = head;
     if (size > CHUNK) {
@@ -374,7 +378,7 @@ export async function readMeta(
       tail = tailBuf.toString("utf8");
     }
     // prefer the most recent cwd record so /cd mid-session relocates the agent
-    const cwd = lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g) ?? headCwd;
+    const cwd = jsonUnescape(lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g)) ?? headCwd;
     // newest real model id — synthetic/meta turns carry "model":"<synthetic>",
     // which must not become the agent's displayed model
     const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g, (v) => v !== "<synthetic>");
@@ -476,6 +480,27 @@ export function isSyntheticTask(text: string): boolean {
   if (/^<(synthetic|command-|local-command|bash-(input|stdout|stderr)|system-reminder|user-prompt-submit-hook)/i.test(text)) return true;
   if (/^Caveat: The messages below were generated/i.test(text)) return true;
   return false;
+}
+
+/** Unescape a JSON string body captured by regex (we can't always JSON.parse —
+ *  the record may straddle a read-chunk boundary). Critical for Windows paths,
+ *  where backslashes are stored doubled. Returns undefined unchanged. */
+export function jsonUnescape(s: string | undefined): string | undefined {
+  if (s === undefined || s.indexOf("\\") === -1) return s;
+  return s.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (m, esc: string) => {
+    switch (esc[0]) {
+      case "\\": return "\\";
+      case '"': return '"';
+      case "/": return "/";
+      case "n": return "\n";
+      case "r": return "\r";
+      case "t": return "\t";
+      case "b": return "\b";
+      case "f": return "\f";
+      case "u": return String.fromCharCode(parseInt(esc.slice(1), 16));
+      default: return esc; // unknown escape → keep the char as-is
+    }
+  });
 }
 
 export function lastMatch(s: string, re: RegExp, accept?: (v: string) => boolean): string | undefined {
