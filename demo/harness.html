@@ -20,7 +20,6 @@
     <div class="spacer"></div>
     <button class="iconbtn" id="prbtn" title="Pull requests">&#8644;<span class="nbadge" id="pr-badge" hidden>0</span></button>
     <button class="iconbtn" id="ecobtn" title="Efficiency mode">&#9889;</button>
-    <button class="iconbtn" id="themebtn" title="Toggle theme">&#9790;</button>
   </header>
   <div class="rd-scrim" id="reviewdispatch" hidden></div>
   <div class="feed" id="feed"></div>
@@ -43,7 +42,7 @@
   const REPOS = "/repos";
   const rooms = [
     { name: "atlas-web", path: REPOS + "/atlas-web", floor: 0, col: 0,
-      worktrees: [{ path: REPOS + "/atlas-web", branch: "feat/agent-cockpit" }] },
+      worktrees: [{ path: REPOS + "/atlas-web", branch: "feat/diff-viewer" }] },
     { name: "atlas-api", path: REPOS + "/atlas-api", floor: 0, col: 1,
       worktrees: [
         { path: REPOS + "/atlas-api", branch: "main" },
@@ -62,10 +61,10 @@
   });
 
   const boards = {
-    [REPOS + "/atlas-web"]: Object.assign(blankBoard("feat/agent-cockpit"), {
+    [REPOS + "/atlas-web"]: Object.assign(blankBoard("feat/diff-viewer"), {
       staged: 3, stagedAdd: 120, stagedDel: 18, ahead: 4, unpushed: 0,
-      committedAdd: 540, committedDel: 96, commits: ["cockpit tree", "diff panel", "polish", "tests"],
-      pr: { number: 142, title: "Agent cockpit: tree + diff panel",
+      committedAdd: 540, committedDel: 96, commits: ["tree view", "diff pane", "polish", "tests"],
+      pr: { number: 142, title: "Live diff viewer panel",
         url: "https://github.com/acme/atlas-web/pull/142", draft: false,
         checks: "pass", checksPass: 5, checksFailed: 0, checksRunning: 0, checksTotal: 5,
         review: "approved", approvals: 2, changesRequested: 0, reviewersPending: 0, comments: 1 },
@@ -90,8 +89,8 @@
   };
 
   const agents = [
-    { id: "a3", name: "Nova", state: "complete", repo: "atlas-web", model: "opus",
-      worktree: REPOS + "/atlas-web", branch: "feat/agent-cockpit", skills: ["typescript", "react"] },
+    { id: "a3", name: "Nova", state: "active", repo: "atlas-web", model: "opus",
+      worktree: REPOS + "/atlas-web", branch: "feat/diff-viewer", skills: [] },
     { id: "a1", name: "Echo", state: "active", repo: "atlas-api", model: "opus",
       worktree: REPOS + "/atlas-api-sse", branch: "feat/streaming-sse", skills: ["rust", "http"] },
     { id: "a2", name: "Sol", state: "error", repo: "atlas-api", model: "sonnet",
@@ -103,8 +102,8 @@
   ];
 
   const crewPrs = [
-    { id: "atlas-web#142", number: 142, title: "Agent cockpit: tree + diff panel",
-      repo: "atlas-web", branch: "feat/agent-cockpit", url: "https://github.com/acme/atlas-web/pull/142",
+    { id: "atlas-web#142", number: 142, title: "Live diff viewer panel",
+      repo: "atlas-web", branch: "feat/diff-viewer", url: "https://github.com/acme/atlas-web/pull/142",
       isDraft: false, checks: "pass", checksPass: 5, checksFailed: 0, checksRunning: 0, checksTotal: 5,
       review: "approved", approvals: 2, changesRequested: 0, reviewersPending: 0, comments: 1, author: "you", agentId: "a3" },
     { id: "atlas-api#318", number: 318, title: "SSE streaming for /v1/messages",
@@ -131,12 +130,31 @@
   window.__feed = () => {
     send({ type: "config", eco: false,
       reviewSkills: ["code-review", "security-review"],
-      reviewDefaults: { skill: "code-review", model: "opus" },
-      reviewAgents: ["claude"] });
+      // reviewAgents are { label, path } objects (see discoverReviewAgents in
+      // src/consolePanel.ts); reviewDefaults preselects one by its path
+      reviewAgents: [
+        { label: "claude (default)", path: "claude" },
+        { label: "code-reviewer", path: ".claude/agents/code-reviewer.md" },
+      ],
+      reviewDefaults: { skills: ["code-review"], effort: "high", agent: "claude" } });
     send({ type: "state", agents, selectedId: null, rooms, boards });
     send({ type: "prs", crew: crewPrs, review: reviewPrs });
   };
   window.__focusBillboard = () => window.DevTowerCrew && window.DevTowerCrew.focusReviewBoard();
+  // mutate the atlas-web board (as if the seated dev just staged/committed work) and
+  // re-send state; the changed git signature fires a beam from the desk to the board.
+  window.__bumpBoard = () => {
+    const path = REPOS + "/atlas-web";
+    const prev = boards[path];
+    // a NEW object (not an in-place mutation) so the renderer sees board !==
+    // boardShown and fires a beam, exactly like a fresh poll from the extension
+    boards[path] = Object.assign({}, prev, {
+      // the agent is editing the working tree, so only the UNSTAGED column grows
+      modified: Math.min(9, prev.modified + 1),
+      unstagedAdd: prev.unstagedAdd + 16, unstagedDel: prev.unstagedDel + 5,
+    });
+    send({ type: "state", agents, selectedId: null, rooms, boards });
+  };
   // auto-feed on load
   window.__feed();
   </script>

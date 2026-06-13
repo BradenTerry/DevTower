@@ -1,5 +1,5 @@
 {
-  "name": "devtower",
+  "name": "DevTower",
   "displayName": "DevTower",
   "description": "A pixel office tower for your coding agents - watch Claude sessions work, dig new floors, spawn devs into worktrees, review diffs and PRs.",
   "version": "0.1.0",
@@ -9,11 +9,11 @@
   "icon": "media/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/BradenTerry/devtower.git"
+    "url": "https://github.com/BradenTerry/DevTower.git"
   },
-  "homepage": "https://github.com/BradenTerry/devtower#readme",
+  "homepage": "https://github.com/BradenTerry/DevTower#readme",
   "bugs": {
-    "url": "https://github.com/BradenTerry/devtower/issues"
+    "url": "https://github.com/BradenTerry/DevTower/issues"
   },
   "keywords": [
     "claude",
@@ -245,7 +245,7 @@
     "watch": "node esbuild.js --watch",
     "compile": "node esbuild.js",
     "typecheck": "tsc --noEmit -p .",
-    "package": "npx --yes @vscode/vsce package --pre-release --readme-path MARKETPLACE.md"
+    "package": "npx --yes @vscode/vsce package --readme-path MARKETPLACE.md"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

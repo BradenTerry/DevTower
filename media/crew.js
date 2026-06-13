@@ -2243,14 +2243,14 @@
       ctx.fillRect(px + 0.5, base - 9, 1.4, 4.5);
       ctx.fillRect(px + 2.2, base - 8, 1.4, 3.5);
       ctx.fillRect(px - 0.8, base - 7.5, 1.4, 3);
-      const extra = r.decor % 3;
+      const extra = r.decor % 2;
       if (extra === 0) {
         const wx = x + WB_W - 8;
         ctx.fillStyle = "#cfd6da";
         ctx.fillRect(wx, base - 12, 5, 10.5);
         ctx.fillStyle = "#56c7ff";
         ctx.fillRect(wx + 0.8, base - 15.5, 3.4, 4);
-      } else if (extra === 1) {
+      } else {
         const sx = x + w - DOOR_W - 14;
         ctx.fillStyle = "#171c21";
         ctx.fillRect(sx, base - 16, 6, 14.5);
@@ -2259,11 +2259,6 @@
           ctx.fillStyle = on ? i === 2 ? "#3ee089" : "#ffb13d" : "#2a3138";
           ctx.fillRect(sx + 4.2, base - 14.5 + i * 3.2, 1, 1);
         }
-      } else {
-        ctx.fillStyle = `hsl(${(r.hue + 120) % 360} 40% 45%)`;
-        ctx.fillRect(x + WB_W + 2, base - H + 10, 7, 9);
-        ctx.fillStyle = "rgba(255,255,255,0.6)";
-        ctx.fillRect(x + WB_W + 3.2, base - H + 12, 4.6, 1);
       }
       const LAMPS = 3;
       for (let li = 0; li < LAMPS; li++) {

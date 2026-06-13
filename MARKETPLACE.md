@@ -4,7 +4,11 @@
 
 **A pixel office tower for your coding agents.** DevTower turns your repos into a tiny 2D office campus inside VS Code: each repo is a cutaway room, and every live Claude Code session is a pixel dev working at a desk. Spawn new agents into git worktrees, watch them type, see when one needs you, open diffs in the native editor, and review pull requests - all from one playful, low-overhead scene.
 
-> **Preview release.** DevTower ships on the **pre-release** channel while features settle. Install it, kick the tires, and [file issues](https://github.com/BradenTerry/devtower/issues) - feedback shapes the 1.0.
+![An agent at its desk: as it edits the working tree, the change streams up the network cable to the room's board and the UNSTAGED column updates live.](media/agent-stream.gif)
+
+> **Early Preview.** DevTower is on the VS Code Marketplace, flagged as a Preview while features settle. Install it, kick the tires, and [file issues](https://github.com/BradenTerry/DevTower/issues) - feedback shapes future releases.
+
+![Inside a room: the cutaway board shows the worktree's branch, unstaged / staged / commit counts with line stats, a synced indicator, and the PR cell (#142 with its checks and review status); the agent works at their desk.](media/room.png)
 
 ## Why DevTower
 
@@ -50,8 +54,7 @@ DevTower drives your existing command-line tools and makes **no network calls of
 > On macOS, launch VS Code from a terminal so the extension host inherits your shell `PATH`; otherwise `claude` and `gh` may not be found.
 
 <!--
-Screenshots: drop captures into media/ and uncomment. The pre-release page ships
-with the banner above until live captures of the current pixel-office theme are added.
+More screenshots: drop captures into media/ and uncomment.
 ![The DevTower campus with live agents](media/screenshot-campus.png)
 ![Agent panel: context bar, model, branch, quick actions](media/screenshot-agent.png)
 ![PR board and Review Dispatch](media/screenshot-prs.png)
@@ -75,8 +78,8 @@ with the banner above until live captures of the current pixel-office theme are 
 
 ## Issues and support
 
-Open an issue at [github.com/BradenTerry/devtower/issues](https://github.com/BradenTerry/devtower/issues).
+Open an issue at [github.com/BradenTerry/DevTower/issues](https://github.com/BradenTerry/DevTower/issues).
 
 ## License
 
-[MIT](https://github.com/BradenTerry/devtower/blob/main/LICENSE)
+[MIT](https://github.com/BradenTerry/DevTower/blob/main/LICENSE)

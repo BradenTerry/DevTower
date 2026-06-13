@@ -17,7 +17,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const htmlUrl = "file://" + join(__dirname, "harness.html");
 
 async function launch() {
-  try { return await chromium.launch(); }
+  // allow an explicit browser via PW_EXECUTABLE, else let playwright pick
+  const executablePath = process.env.PW_EXECUTABLE || undefined;
+  try { return await chromium.launch({ executablePath }); }
   catch { return await chromium.launch({ channel: "chrome" }); }
 }
 
@@ -33,6 +35,12 @@ await page.evaluate(() => window.__feed());
 await page.waitForTimeout(2500);
 await page.screenshot({ path: join(__dirname, "01-overview.png") });
 
+// frame a single room: the dev walks to and sits at the desk (active state),
+// the board shows branch + git churn + the PR cell. Used in the READMEs.
+await page.evaluate(() => window.DevTowerCrew._instance.focusOn("atlas-web"));
+await page.waitForTimeout(5000); // wait out the walk-in so the dev is seated
+await page.screenshot({ path: join(__dirname, "room.png") });
+
 // fly the camera to the central review-requested billboard
 await page.evaluate(() => window.__focusBillboard());
 await page.waitForTimeout(2500);
@@ -47,7 +55,8 @@ await page.evaluate(() => {
   });
 });
 await page.waitForTimeout(800);
-await page.screenshot({ path: join(__dirname, "03-dispatch.png") });
+// capture the card itself (the scene behind is irrelevant for this shot)
+await page.locator(".rd-card").screenshot({ path: join(__dirname, "03-dispatch.png") });
 
 await browser.close();
 console.log("done");

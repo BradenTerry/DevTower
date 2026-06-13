@@ -3,12 +3,13 @@ name: Release
 # Runs when you push a version tag (e.g. v0.2.0) to a commit on main. The tag is the
 # single source of truth for the version: it is injected into package.json at build
 # time (the committed "version" is just a placeholder and is never edited by hand).
-# The job typechecks, builds, packages the extension as a pre-release .vsix, creates a
-# GitHub pre-release with auto-generated notes and the .vsix attached, and publishes to
-# the VS Code Marketplace pre-release channel when VSCE_PAT is set.
+# The job typechecks, builds, packages the extension as a .vsix, creates a GitHub release
+# with auto-generated notes and the .vsix attached, and publishes to the VS Code
+# Marketplace (regular channel) when VSCE_PAT is set.
 #
-# DevTower ships on the Marketplace *pre-release* (preview) channel for now, so both the
-# package and publish steps pass --pre-release.
+# DevTower publishes to the regular Marketplace channel (it carries the "preview" flag in
+# package.json while features settle, which only badges the listing, it does not gate
+# installs like the pre-release channel would).
 #
 #   git tag v0.2.0 && git push origin v0.2.0
 on:
@@ -47,14 +48,14 @@ jobs:
       - name: Build (production bundle)
         run: npm run build
 
-      - name: Package extension (pre-release)
-        run: npx --yes @vscode/vsce package --pre-release --readme-path MARKETPLACE.md --out devtower.vsix
+      - name: Package extension
+        run: npx --yes @vscode/vsce package --readme-path MARKETPLACE.md --out devtower.vsix
 
-      - name: Create GitHub pre-release with .vsix
+      - name: Create GitHub release with .vsix
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" devtower.vsix --title "$GITHUB_REF_NAME" --generate-notes --prerelease
+        run: gh release create "$GITHUB_REF_NAME" devtower.vsix --title "$GITHUB_REF_NAME" --generate-notes
 
-      - name: Publish to VS Code Marketplace (pre-release)
+      - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
-        run: npx --yes @vscode/vsce publish --pre-release --packagePath devtower.vsix -p "$VSCE_PAT"
+        run: npx --yes @vscode/vsce publish --packagePath devtower.vsix -p "$VSCE_PAT"

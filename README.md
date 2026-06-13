@@ -4,7 +4,9 @@
 
 A pixel office tower (VS Code extension) for your coding agents. Each repo is a cutaway **room** in a 2D campus grid - build up, dig down, expand sideways. Live **Claude Code CLI sessions are auto-discovered** from `~/.claude/projects` and appear as pixel devs at their desks. Reserve empty cells for directories and spawn new agents into **git worktrees** or the project dir. Diffs open in the **native** VS Code diff editor; each agent gets a **native** integrated terminal rooted in its worktree; pull requests show on an in-scene **PR board** and you can dispatch a reviewer agent straight from a PR row.
 
-> DevTower is published on the VS Code Marketplace **pre-release (preview)** channel. See [Releasing](#releasing).
+![Inside a room: the cutaway board shows the worktree's branch, unstaged / staged / commit counts (with +/- line stats and a synced indicator), and the PR cell - #142 with its checks and review status.](media/room.png)
+
+> DevTower is an early **Preview** release on the VS Code Marketplace. See [Releasing](#releasing).
 
 ## Run it
 
@@ -115,9 +117,9 @@ echo '{"hook_event_name":"Notification","cwd":"'$PWD'","session_id":"s1","messag
 
 ## Releasing
 
-DevTower follows the same tag-driven release as the Claude Asset Manager, on the Marketplace **pre-release** channel.
+DevTower follows a tag-driven release to the VS Code Marketplace (regular channel; the `preview` flag in `package.json` only badges the listing while features settle, it does not gate installs).
 
-The git tag is the single source of truth for the version (the committed `version` is a placeholder). Pushing a `v*` tag runs `.github/workflows/release.yml`, which typechecks, builds, packages a pre-release `.vsix` (using `MARKETPLACE.md` as the Marketplace readme), creates a GitHub pre-release with the `.vsix` attached, and publishes to the Marketplace pre-release channel when the `VSCE_PAT` secret is set.
+The git tag is the single source of truth for the version (the committed `version` is a placeholder). Pushing a `v*` tag runs `.github/workflows/release.yml`, which typechecks, builds, packages the `.vsix` (using `MARKETPLACE.md` as the Marketplace readme), creates a GitHub release with the `.vsix` attached, and publishes to the Marketplace when the `VSCE_PAT` secret is set.
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0

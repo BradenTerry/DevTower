@@ -2,8 +2,8 @@
 
 All notable changes to the DevTower extension are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
-DevTower is published on the VS Code Marketplace **pre-release (preview)** channel. Older
-releases are listed at [GitHub Releases](https://github.com/BradenTerry/devtower/releases).
+DevTower is published on the VS Code Marketplace (flagged as a Preview). Older releases
+are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases).
 
 ## [Unreleased]
 
@@ -43,5 +43,5 @@ First public preview.
 
 ### Release infrastructure
 
-- Tag-driven pre-release pipeline (`.github/workflows/release.yml`) that builds, packages, and
-  publishes to the Marketplace pre-release channel, mirroring the Claude Asset Manager setup.
+- Tag-driven release pipeline (`.github/workflows/release.yml`) that builds, packages, and
+  publishes to the VS Code Marketplace.

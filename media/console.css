@@ -70,7 +70,7 @@ button{ font-family:inherit; }
 }
 .umeter{ display:flex; align-items:center; gap:8px; padding:9px 13px; border-right:1px solid var(--edge-soft); }
 .umeter:last-of-type{ border-right:none; }
-.umeter .ulbl{ font-family:var(--label); font-size:7.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--text-faint); }
+.umeter .ulbl{ font-family:var(--label); font-size:7.5px; letter-spacing:.14em; text-transform:uppercase; color:#fff; }
 .umeter .ubar{ width:54px; height:5px; border-radius:3px; background:var(--edge-soft); overflow:hidden; }
 .umeter .ubar i{ display:block; height:100%; width:0; background:var(--active); box-shadow:0 0 8px var(--active); transition:width .4s ease; }
 .umeter .upct{ font-size:12px; font-weight:600; color:var(--text); min-width:30px; text-align:right; font-variant-numeric:tabular-nums; }

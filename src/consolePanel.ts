@@ -1184,7 +1184,6 @@ export class ConsolePanel {
     <div class="spacer"></div>
     <button class="iconbtn" id="prbtn" title="Pull requests">⇄<span class="nbadge" id="pr-badge" hidden>0</span></button>
     <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">⚡</button>
-    <button class="iconbtn" id="themebtn" title="Toggle theme">☾</button>
   </header>
 
   <!-- review dispatch card (modal) -->

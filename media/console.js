@@ -388,11 +388,6 @@
     vscode.postMessage({ type: "refreshPrs" });
     if (window.DevTowerCrew) window.DevTowerCrew.focusReviewBoard();
   };
-  $("#themebtn").onclick = () => {
-    theme = theme === "dark" ? "light" : "dark";
-    document.body.setAttribute("data-theme", theme);
-    $("#themebtn").textContent = theme === "dark" ? "☾" : "☀";
-  };
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (reviewDispatchOpen()) closeReviewDispatch();
