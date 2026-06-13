@@ -7,6 +7,12 @@ are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases
 
 ## [Unreleased]
 
+### Changed
+
+- PR status polling now uses **ETag conditional requests** for settled PRs: an unchanged PR is
+  re-checked with `If-None-Match` and GitHub answers `304 Not Modified`, which does not count
+  against the API rate limit. Active builds (checks running) still fetch in full each poll.
+
 ### Fixed
 
 - **Board label contrast.** The cell headings (UNSTAGED / STAGED / COMMITS / PR) and secondary

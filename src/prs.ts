@@ -47,6 +47,35 @@ function runGh(cwd: string | undefined, args: string[], token: string): Promise<
   });
 }
 
+/** A conditional `gh api` GET with response headers, used for ETag polling. A
+ *  304 (Not Modified) does NOT count against the GitHub rate limit, so re-polling
+ *  an unchanged PR is free. `{owner}/{repo}` in `apiPath` is filled by gh from the
+ *  cwd's git remote. Returns the raw `--include` output (headers + body), or null
+ *  on a transport error. */
+function ghApiInclude(cwd: string, apiPath: string, token: string, etag?: string): Promise<string | null> {
+  const env: NodeJS.ProcessEnv = { ...process.env, GH_TOKEN: token, GH_PROMPT_DISABLED: "1" };
+  const args = ["api", apiPath, "--include"];
+  if (etag) args.push("-H", `If-None-Match: ${etag}`);
+  return new Promise((resolve) => {
+    execFile("gh", args, { cwd, timeout: 20000, maxBuffer: 8 * 1024 * 1024, env },
+      // gh exits 0 for 200/304; on a 4xx/5xx err is set but stdout still holds the
+      // response. Treat "no output at all" as a transport failure.
+      (err, stdout) => resolve(err && !stdout ? null : (stdout || "")));
+  });
+}
+
+/** HTTP status code from a `gh api --include` response, or 0 if unparseable. */
+export function httpStatus(resp: string): number {
+  const m = /^HTTP\/[\d.]+\s+(\d+)/m.exec(resp);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+/** The ETag header from a `gh api --include` response, or undefined. */
+export function etagOf(resp: string): string | undefined {
+  const m = /^etag:\s*(.+?)\s*$/im.exec(resp);
+  return m ? m[1] : undefined;
+}
+
 const CHECK_OK = ["SUCCESS", "NEUTRAL", "SKIPPED"];
 const CHECK_BAD = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"];
 
@@ -132,6 +161,9 @@ export class PrService {
   private extraSig = "";
   private signInPrompted = false; // only nudge the user to connect GitHub once
   private connected = false; // is a GitHub token present (drives the disconnected UI)
+  /** Per-branch ETag cache: a settled PR's last fetch + its PR-resource ETag, so
+   *  the next poll can short-circuit with a free 304 when nothing changed. */
+  private prCache = new Map<string, { etag: string; info: PrInfo }>();
 
   constructor(private store: DevTowerStore) {}
 
@@ -278,20 +310,42 @@ export class PrService {
     if (queried.has(qkey)) return true;
     queried.add(qkey);
     if (!(await isRepo(cwd))) return true;
+
+    // Fast path: if we have a SETTLED PR cached for this branch, ask GitHub "has
+    // PR #N changed?" with its ETag. A 304 is free (no rate-limit cost), so an
+    // unchanged PR re-uses the cached data without the expensive GraphQL fetch.
+    // (We only do this when checks aren't running — an active build changes every
+    // poll anyway, and a check completing doesn't bump the PR's ETag.)
+    const cached = this.prCache.get(qkey);
+    let freshEtag: string | undefined;
+    if (cached && cached.info.checksRunning === 0) {
+      const resp = await ghApiInclude(cwd, `repos/{owner}/{repo}/pulls/${cached.info.number}`, token, cached.etag);
+      if (resp !== null) {
+        const status = httpStatus(resp);
+        if (status === 304) {
+          if (!seen.has(cached.info.id)) { seen.add(cached.info.id); out.push({ ...cached.info, agentId }); }
+          return true; // unchanged — served for free
+        }
+        if (status === 200) freshEtag = etagOf(resp); // changed; reuse this ETag below
+      }
+    }
+
     const raw = await runGh(cwd, [
       "pr", "list", "--head", branch, "--state", "open", "--limit", "1",
       "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,author,reviews,reviewRequests,comments",
     ], token);
     if (raw === null) return false; // gh errored (auth / rate limit)
+    let matched = false;
     try {
       for (const p of JSON.parse(raw)) {
         const id = `${repo}#${p.number}`;
         if (seen.has(id)) continue;
         seen.add(id);
+        matched = true;
         const cc = checkCounts(p.statusCheckRollup);
         const rc = reviewCounts(p.reviews, p.reviewRequests);
         const comments = (Array.isArray(p.comments) ? p.comments.length : 0) + rc.commented;
-        out.push({
+        const info: PrInfo = {
           id,
           number: p.number,
           title: p.title,
@@ -311,11 +365,25 @@ export class PrService {
           comments,
           author: p.author?.login,
           agentId,
-        });
+        };
+        out.push(info);
+        // cache a SETTLED PR with its current ETag so the next poll 304s for free.
+        // Reuse the ETag from the conditional 200 above when it's the same PR;
+        // otherwise one extra cheap REST call fetches it (paid once per change).
+        if (info.checksRunning === 0) {
+          const etag = freshEtag && info.number === cached?.info.number
+            ? freshEtag
+            : etagOf((await ghApiInclude(cwd, `repos/{owner}/{repo}/pulls/${info.number}`, token)) ?? "");
+          if (etag) this.prCache.set(qkey, { etag, info });
+          else this.prCache.delete(qkey);
+        } else {
+          this.prCache.delete(qkey); // checks running → data moves every poll
+        }
       }
     } catch {
       /* skip malformed */
     }
+    if (!matched) this.prCache.delete(qkey); // no open PR on this branch anymore
     return true;
   }
 
