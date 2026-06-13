@@ -3128,30 +3128,13 @@ class PixelCrew {
       ctx.fillStyle = p.shirt; // other hand resting on the desk
       ctx.fillRect(x + 2.6, ty + 2, 1.4, 2.6);
     } else if (sitting && tn.booksInHand > 0) {
-      // reading the fetched skill book(s) at the desk for the duration of the
-      // active task: hold an open book up at chest/face height (drawn before the
-      // desk so the monitor edge occludes only its far corner)
-      const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
-      const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
+      // reading the fetched skill book(s) at the desk: the forearms come up
+      // here (below the head, so they stay behind it), but the open book itself
+      // is drawn after the head further down so it reads as held up in front of
+      // the face rather than tucked behind the skull
       ctx.fillStyle = p.shirt; // forearms up to the book
       ctx.fillRect(x - 2.4, ty + 1.4, 1.8, 1.8);
       ctx.fillRect(x + 2.2, ty + 1.4, 1.8, 1.8);
-      ctx.fillStyle = "#e9e3d2"; // open pages
-      ctx.fillRect(bx, by, bw, bh);
-      const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
-      ctx.fillStyle = `hsl(${hue} 42% 40%)`; // cover edges
-      ctx.fillRect(bx - 0.7, by - 0.4, 0.9, bh + 0.8);
-      ctx.fillRect(bx + bw - 0.2, by - 0.4, 0.9, bh + 0.8);
-      ctx.fillStyle = "#b6ae98"; // center gutter
-      ctx.fillRect(bx + bw / 2 - 0.25, by, 0.5, bh);
-      ctx.fillStyle = "rgba(70,70,70,0.45)"; // a few text lines
-      ctx.fillRect(bx + 0.8, by + 1.1, 1.8, 0.4);
-      ctx.fillRect(bx + 0.8, by + 2.1, 1.5, 0.4);
-      ctx.fillRect(bx + bw / 2 + 0.7, by + 1.1, 1.7, 0.4);
-      ctx.fillRect(bx + bw / 2 + 0.7, by + 2.1, 1.4, 0.4);
-      ctx.fillStyle = handC; // hands gripping the lower corners
-      ctx.fillRect(bx - 0.6, by + bh - 0.4, 1.4, 1.4);
-      ctx.fillRect(bx + bw - 0.8, by + bh - 0.4, 1.4, 1.4);
     } else if (sitting) {
       // typing toward the keyboard/monitor on the left
       const tap = f % 2 === 0 ? 0 : 0.8;
@@ -3231,6 +3214,30 @@ class PixelCrew {
       const ey = hy + 2.6;
       ctx.strokeRect(x - 1.4, ey - 0.8, 1.9, 1.9);
       ctx.strokeRect(x + 0.9, ey - 0.8, 1.9, 1.9);
+    }
+
+    // the open book is drawn after the head so it sits in front of the face
+    // (the dev is holding it up to read), not occluded behind the skull; still
+    // drawn within drawToon, so the desk/monitor edge occludes only its far corner
+    if (sitting && tn.booksInHand > 0 && !tn.agent.reviewOf) {
+      const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
+      const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
+      ctx.fillStyle = "#e9e3d2"; // open pages
+      ctx.fillRect(bx, by, bw, bh);
+      const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
+      ctx.fillStyle = `hsl(${hue} 42% 40%)`; // cover edges
+      ctx.fillRect(bx - 0.7, by - 0.4, 0.9, bh + 0.8);
+      ctx.fillRect(bx + bw - 0.2, by - 0.4, 0.9, bh + 0.8);
+      ctx.fillStyle = "#b6ae98"; // center gutter
+      ctx.fillRect(bx + bw / 2 - 0.25, by, 0.5, bh);
+      ctx.fillStyle = "rgba(70,70,70,0.45)"; // a few text lines
+      ctx.fillRect(bx + 0.8, by + 1.1, 1.8, 0.4);
+      ctx.fillRect(bx + 0.8, by + 2.1, 1.5, 0.4);
+      ctx.fillRect(bx + bw / 2 + 0.7, by + 1.1, 1.7, 0.4);
+      ctx.fillRect(bx + bw / 2 + 0.7, by + 2.1, 1.4, 0.4);
+      ctx.fillStyle = handC; // hands gripping the lower corners
+      ctx.fillRect(bx - 0.6, by + bh - 0.4, 1.4, 1.4);
+      ctx.fillRect(bx + bw - 0.8, by + bh - 0.4, 1.4, 1.4);
     }
 
     // skill books in the dev's arms on the way back from the shelf (it leaves

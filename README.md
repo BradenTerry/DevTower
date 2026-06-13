@@ -1,6 +1,10 @@
+![DevTower](media/banner.png)
+
 # DevTower
 
-A pixel office tower (VS Code extension) for your coding agents. Each repo is a room in a 2D campus grid — build up, dig down, expand sideways. Live **Claude Code CLI sessions are auto-discovered** from `~/.claude/projects` and appear as pixel devs at their desks; reserve empty cells for directories and spawn new agents into **git worktrees** or the project dir. Diffs open in the **native** VS Code diff editor; each agent gets a **native** integrated terminal rooted in its worktree.
+A pixel office tower (VS Code extension) for your coding agents. Each repo is a cutaway **room** in a 2D campus grid - build up, dig down, expand sideways. Live **Claude Code CLI sessions are auto-discovered** from `~/.claude/projects` and appear as pixel devs at their desks. Reserve empty cells for directories and spawn new agents into **git worktrees** or the project dir. Diffs open in the **native** VS Code diff editor; each agent gets a **native** integrated terminal rooted in its worktree; pull requests show on an in-scene **PR board** and you can dispatch a reviewer agent straight from a PR row.
+
+> DevTower is published on the VS Code Marketplace **pre-release (preview)** channel. See [Releasing](#releasing).
 
 ## Run it
 
@@ -9,61 +13,87 @@ npm install
 npm run watch        # or: npm run compile
 ```
 
-Press **F5** (Run DevTower Extension) to launch an Extension Development Host. The **DevTower** view (the 3D tower) opens automatically. Re-open it any time from the **◆ DevTower** activity-bar view's title (`⤢`) or Command Palette → **DevTower: Open Tower**.
+Press **F5** (Run DevTower Extension) to launch an Extension Development Host. The **DevTower** console opens automatically. Re-open it any time from the **◆ DevTower** activity-bar view's title (`⤢`) or Command Palette -> **DevTower: Open Tower**.
 
 > After rebuilding, reload the Extension Development Host (**Cmd/Ctrl+R** in that window) so it runs the new bundle.
 
-Ships with mock agents so you can try the whole loop immediately:
+Ships with mock agents (`devtower.useMockData`) so you can try the whole loop without a live session.
 
-- **DevTower** (the 3D interface):
-  - A Three.js scene of **voxel characters**, one per agent, with a deterministic look (hue/hat/accessory from the agent id).
-  - **Grouped by file path**: each repo is a **floating grassy island** (trees, dirt underside, nameplate) joined by rope bridges. Agents on the same worktree stand together; a new agent **walks onto** its island and a removed one **walks off and fades**.
-  - **State-driven animation**: active types with swinging arms, waiting raises a hand and waves, complete cheers and hops, error slumps, idle breathes.
-  - **Click a character** to select it. An overlay **control card** appears with state-aware actions:
-    - *Awaiting input* → Approve / Request changes / Answer (composer glows).
-    - *Active* → Queue / Interrupt. *Complete* → New task. *Error* → Retry / Send fix.
-    - Typing + ⏎ writes to the agent's terminal and flips it back to **active**.
-    - Card tools: **Session** (slide-in conversation panel), **Diff →** (native diff editor, opens to the right), **Terminal** (native, in the worktree).
-- **Changes view** (native tree, in the ◆ DevTower activity-bar):
-  - Selected agent's changed files, split into **Staged Changes** and **Changes**.
-  - Inline **stage** (`+`) / **unstage** (`−`); **stage all** / **unstage all** in the title bar.
-  - Click a file → **native diff** (HEAD ↔ working tree). Live `git status` for real worktrees; read-only list for mock agents.
+## What's in the tower
 
-### Real git, real terminals
+- **The campus** (Canvas2D pixel scene): each repo is a cutaway office room - tinted walls, dusk window, whiteboard, desks/monitors, plant and hash-picked decor. Rooms share walls into one contiguous building; **ghost slots** at every empty neighbour cell let you build up, dig down, or expand left/right.
+- **Pixel devs**: one sprite per agent with a deterministic persona (hair/shirt/cap/glasses from the id hash). State drives the animation - active types, waiting raises a hand, complete cheers, error slumps, idle breathes. Two or more active agents in a room huddle at the whiteboard.
+- **Arrivals/departures**: a joining agent walks in through the door (with a room construction animation on a new repo); a leaver walks to the edge, climbs a fire-escape ladder down, and an emptied room deconstructs after they exit.
+- **Click a dev** to select it (amber ring) and open the agent panel. Click a room to zoom to its crew, click away for the overview; scroll to zoom, click-drag to pan.
+- **Agent panel**: context-window % bar + token count, model, branch, changed-file counts, a live "now" strip of what the agent is doing/asking, and state-aware quick actions (Approve / Request changes when waiting). A composer sends text to the agent's terminal.
+- **Changes view** (native tree in the ◆ DevTower activity-bar): the selected agent's files split into **Staged Changes** and **Changes**, inline stage (`+`) / unstage (`-`), stage all / unstage all, and click-to-diff (native HEAD <-> working tree).
+- **PR board + review dispatch**: per-worktree PRs (checks + review status) via `gh`, a standalone "PRs to review" billboard for review-requested PRs, and a Review Dispatch modal that spawns a reviewer agent in an isolated worktree with selected skills/effort/instructions.
 
-- The Changes view runs `git status --porcelain` in the selected agent's resolved worktree, and stage/unstage call `git add` / `git reset HEAD`. Diffs read `git show HEAD:<file>` for the left side and the working file for the right (edits in the diff write to disk).
-- Each agent gets a terminal rooted in its worktree (`cwd`). Set **`devtower.launchCommand`** to run a command on first open — e.g. to resume an agent session — so that subsequent sends go to that process. Placeholders: `${worktree}`, `${branch}`, `${id}`.
+See [FEATURES.md](FEATURES.md) for the full capability map and the data-core / presentation split.
+
+## Real git, real terminals, real PRs
+
+- The Changes view runs `git status --porcelain` (+ numstat) in the selected agent's resolved worktree; stage/unstage call `git add` / `git reset HEAD`. Diffs read `git show HEAD:<file>` for the left side and the working file for the right.
+- Each agent gets a terminal rooted in its worktree (`cwd`). Set **`devtower.launchCommand`** to run a command on first open (e.g. resume a session) so subsequent sends reach that process. Placeholders: `${worktree}`, `${branch}`, `${id}`.
+- Spawning a dev into a room either creates a git worktree (`git worktree add` + a `fleet/<name>-<n>` branch) or runs in the project base dir, then launches `devtower.claudeCommand` in its terminal.
+- PR features shell out to the GitHub CLI (`gh pr list --head <branch>`, `gh search prs --review-requested=@me`, `gh pr create --web`, `gh pr checkout`).
+
+## Requirements and what it runs on your machine
+
+DevTower drives your existing CLIs; it makes no network calls of its own (git/gh do their own).
+
+| Tool | Required? | Used for |
+|---|---|---|
+| **VS Code** 1.85+ | required | host |
+| **git** | required | Changes view, native diffs, `git worktree add`, per-room push/pull/fetch |
+| **claude** ([Claude Code](https://claude.com/claude-code) CLI) | required for live agents | spawning/resuming sessions in terminals (`devtower.claudeCommand`); session discovery reads `~/.claude/projects` transcripts |
+| **gh** ([GitHub CLI](https://cli.github.com), authenticated) | optional | PR board, review-requested billboard, review dispatch, create/view PR. Without it, PR features fall back to mock data |
+| **ps** / **lsof** (Unix) | optional | phantom-session filter - only show sessions whose `claude` process is still running. Unavailable on Windows (a 15-min freshness fallback is used) |
+
+What it accesses currently:
+
+- **Reads** `~/.claude/projects/*/*.jsonl` transcripts (cwd, model, usage, last role) to discover and describe live sessions.
+- **Reads/writes** the state feed file (`devtower.stateFile`, default `.devtower/state.jsonl`) via a `FileSystemWatcher`.
+- **Reads** working-tree files and `git show HEAD:<file>` to render diffs.
+- **Creates** git worktrees (under `.claude/worktrees` for PR review) and runs `git` / `gh` / `ps` / `lsof` subprocesses.
+- **Spawns** one VS Code integrated terminal per agent and runs the configured launch command in it.
+
+On macOS, launch VS Code from a terminal so the extension host inherits your shell `PATH`; otherwise `claude` / `gh` may not be found.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   subgraph host[Extension host]
-    FS[DevTowerStore<br/>source of truth]
+    ST[DevTowerStore<br/>source of truth]
     TM[TerminalManager<br/>native terminals]
-    DP[DiffProvider<br/>virtual content -> native diff]
+    DP[DiffProvider<br/>virtual -> native diff]
+    PR[PrService<br/>gh PRs]
+    CD[ClaudeDiscovery<br/>~/.claude sessions]
   end
-  SF[(state.jsonl<br/>generic feed)] -->|FileSystemWatcher| FS
-  WV[Webview: tree + dock] <-->|postMessage| CV[CockpitViewProvider]
-  CV --> FS & TM & DP
+  SF[(state.jsonl<br/>generic feed)] -->|FileSystemWatcher| ST
+  WV[Webview: pixel scene + HUD] <-->|postMessage| CP[ConsolePanel]
+  CP --> ST & TM & DP & PR & CD
 ```
 
-- `src/store.ts` — agent model, mock seed, and the `state.jsonl` watcher.
-- `src/cockpitView.ts` — webview view provider + message bridge.
-- `src/terminals.ts` — one native terminal per agent.
-- `src/diffProvider.ts` — virtual content provider feeding the native diff editor.
-- `media/cockpit.{css,js}` — the skinned tree + interaction dock (light/dark, high contrast).
+| Layer | Files |
+|---|---|
+| Data core | `src/store.ts` (DevTowerStore + `state.jsonl` watcher), `src/git.ts`, `src/prs.ts`, `src/claude.ts`, `src/session.ts`, `src/terminals.ts`, `src/diffProvider.ts`, `src/changesView.ts` |
+| Bridge | `src/consolePanel.ts` (webview provider + message bridge) |
+| Presentation | `src/webview/crew.ts` (pixel scene, bundled to `media/crew.js`), `media/console.{css,js}` |
 
-## Wiring real agents (next step)
+The data core and the webview message contract are theme-agnostic; the pixel scene is a presentation layer that can be reskinned without touching them.
 
-State comes from a generic append-only JSONL file (`devtower.stateFile`, default `.devtower/state.jsonl`). Any runner — Claude Code hooks, a shell wrapper, CI — appends one JSON event per line:
+## Wiring real agents
+
+State comes from a generic append-only JSONL file (`devtower.stateFile`, default `.devtower/state.jsonl`). Any runner - Claude Code hooks, a shell wrapper, CI - appends one JSON event per line:
 
 ```json
 {"id":"a1","name":"streamer","repo":"atlas-api","worktree":"../wt/feat-sse","branch":"feat/sse","state":"active","task":"wiring SSE","elapsed":"2m"}
 {"id":"a1","state":"waiting","task":"needs a decision on rotation"}
 ```
 
-The watcher ingests changes live and the cockpit re-renders. Set `devtower.useMockData` to `false` to run purely off the feed.
+The watcher ingests changes live and the scene re-renders. Set `devtower.useMockData` to `false` to run purely off the feed and live session discovery.
 
 ### Claude Code hooks (auto state)
 
@@ -78,7 +108,23 @@ The watcher ingests changes live and the cockpit re-renders. Set `devtower.useMo
 Copy the hooks from `hooks/claude-settings.sample.json` into your project's `.claude/settings.json` (fix the absolute path if you moved the repo). Override the feed location with `DEVTOWER_STATE_FILE`; otherwise it writes `<git toplevel>/.devtower/state.jsonl`.
 
 ```bash
-# one emitter handles every event — it switches on hook_event_name
+# one emitter handles every event - it switches on hook_event_name
 echo '{"hook_event_name":"Notification","cwd":"'$PWD'","session_id":"s1","message":"needs permission"}' \
   | node hooks/devtower-emit.mjs
 ```
+
+## Releasing
+
+DevTower follows the same tag-driven release as the Claude Asset Manager, on the Marketplace **pre-release** channel.
+
+The git tag is the single source of truth for the version (the committed `version` is a placeholder). Pushing a `v*` tag runs `.github/workflows/release.yml`, which typechecks, builds, packages a pre-release `.vsix` (using `MARKETPLACE.md` as the Marketplace readme), creates a GitHub pre-release with the `.vsix` attached, and publishes to the Marketplace pre-release channel when the `VSCE_PAT` secret is set.
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Build a `.vsix` locally with `npm run package`.
+
+## License
+
+[MIT](LICENSE)

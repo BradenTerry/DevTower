@@ -2878,27 +2878,9 @@
         ctx.fillStyle = p.shirt;
         ctx.fillRect(x + 2.6, ty + 2, 1.4, 2.6);
       } else if (sitting && tn.booksInHand > 0) {
-        const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
-        const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
         ctx.fillStyle = p.shirt;
         ctx.fillRect(x - 2.4, ty + 1.4, 1.8, 1.8);
         ctx.fillRect(x + 2.2, ty + 1.4, 1.8, 1.8);
-        ctx.fillStyle = "#e9e3d2";
-        ctx.fillRect(bx, by, bw, bh);
-        const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
-        ctx.fillStyle = `hsl(${hue} 42% 40%)`;
-        ctx.fillRect(bx - 0.7, by - 0.4, 0.9, bh + 0.8);
-        ctx.fillRect(bx + bw - 0.2, by - 0.4, 0.9, bh + 0.8);
-        ctx.fillStyle = "#b6ae98";
-        ctx.fillRect(bx + bw / 2 - 0.25, by, 0.5, bh);
-        ctx.fillStyle = "rgba(70,70,70,0.45)";
-        ctx.fillRect(bx + 0.8, by + 1.1, 1.8, 0.4);
-        ctx.fillRect(bx + 0.8, by + 2.1, 1.5, 0.4);
-        ctx.fillRect(bx + bw / 2 + 0.7, by + 1.1, 1.7, 0.4);
-        ctx.fillRect(bx + bw / 2 + 0.7, by + 2.1, 1.4, 0.4);
-        ctx.fillStyle = handC;
-        ctx.fillRect(bx - 0.6, by + bh - 0.4, 1.4, 1.4);
-        ctx.fillRect(bx + bw - 0.8, by + bh - 0.4, 1.4, 1.4);
       } else if (sitting) {
         const tap = f % 2 === 0 ? 0 : 0.8;
         ctx.fillRect(x - 6, ty + 2.2, 3.4, 1.4);
@@ -2970,6 +2952,26 @@
         const ey = hy + 2.6;
         ctx.strokeRect(x - 1.4, ey - 0.8, 1.9, 1.9);
         ctx.strokeRect(x + 0.9, ey - 0.8, 1.9, 1.9);
+      }
+      if (sitting && tn.booksInHand > 0 && !tn.agent.reviewOf) {
+        const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
+        const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
+        ctx.fillStyle = "#e9e3d2";
+        ctx.fillRect(bx, by, bw, bh);
+        const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
+        ctx.fillStyle = `hsl(${hue} 42% 40%)`;
+        ctx.fillRect(bx - 0.7, by - 0.4, 0.9, bh + 0.8);
+        ctx.fillRect(bx + bw - 0.2, by - 0.4, 0.9, bh + 0.8);
+        ctx.fillStyle = "#b6ae98";
+        ctx.fillRect(bx + bw / 2 - 0.25, by, 0.5, bh);
+        ctx.fillStyle = "rgba(70,70,70,0.45)";
+        ctx.fillRect(bx + 0.8, by + 1.1, 1.8, 0.4);
+        ctx.fillRect(bx + 0.8, by + 2.1, 1.5, 0.4);
+        ctx.fillRect(bx + bw / 2 + 0.7, by + 1.1, 1.7, 0.4);
+        ctx.fillRect(bx + bw / 2 + 0.7, by + 2.1, 1.4, 0.4);
+        ctx.fillStyle = handC;
+        ctx.fillRect(bx - 0.6, by + bh - 0.4, 1.4, 1.4);
+        ctx.fillRect(bx + bw - 0.8, by + bh - 0.4, 1.4, 1.4);
       }
       if (tn.errand && tn.errand.phase !== "out") {
         const carry = Math.max(0, tn.skills.length - tn.booksShown);

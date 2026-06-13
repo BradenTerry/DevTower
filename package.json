@@ -1,9 +1,30 @@
 {
   "name": "devtower",
   "displayName": "DevTower",
-  "description": "A pixel office tower for your coding agents — watch Claude sessions work, dig new floors, spawn devs into worktrees, review diffs and PRs.",
+  "description": "A pixel office tower for your coding agents - watch Claude sessions work, dig new floors, spawn devs into worktrees, review diffs and PRs.",
   "version": "0.1.0",
-  "publisher": "devtower",
+  "preview": true,
+  "publisher": "BradenTerry",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BradenTerry/devtower.git"
+  },
+  "homepage": "https://github.com/BradenTerry/devtower#readme",
+  "bugs": {
+    "url": "https://github.com/BradenTerry/devtower/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude code",
+    "anthropic",
+    "agents",
+    "worktrees",
+    "git",
+    "pull requests",
+    "code review"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -175,17 +196,43 @@
         },
         "devtower.reviewSkills": {
           "type": "array",
-          "items": { "type": "string" },
-          "default": ["code-review", "security-review", "review", "simplify", "verify"],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "code-review",
+            "security-review",
+            "review",
+            "simplify",
+            "verify"
+          ],
           "description": "Skills (slash commands) offered as selectable chips in the Review Dispatch card when assigning an agent to review a PR."
         },
         "devtower.reviewDefaults": {
           "type": "object",
           "default": {},
           "properties": {
-            "skills": { "type": "array", "items": { "type": "string" }, "description": "Skills pre-selected when the Review Dispatch card opens." },
-            "effort": { "type": "string", "enum": ["low", "medium", "high", "max"], "description": "Default effort level for code-review/review skills." },
-            "instructions": { "type": "string", "description": "Default reviewer instructions pre-filled in the card." }
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Skills pre-selected when the Review Dispatch card opens."
+            },
+            "effort": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "max"
+              ],
+              "description": "Default effort level for code-review/review skills."
+            },
+            "instructions": {
+              "type": "string",
+              "description": "Default reviewer instructions pre-filled in the card."
+            }
           },
           "description": "Saved defaults for the Review Dispatch card. Written when you check \"Save as default\" while dispatching a review."
         }
@@ -197,7 +244,8 @@
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "compile": "node esbuild.js",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "package": "npx --yes @vscode/vsce package --pre-release --readme-path MARKETPLACE.md"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
