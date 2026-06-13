@@ -2,6 +2,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore } from "./store";
 import { isRepo, resolveCwd } from "./git";
+import { getGithubToken } from "./github";
 
 export interface PrInfo {
   id: string; // "<repo>#<number>"
@@ -31,12 +32,16 @@ export interface PrInfo {
   updatedAt?: string;
 }
 
-function runGh(cwd: string | undefined, args: string[]): Promise<string | null> {
+// Run gh with DevTower's PAT forced via GH_TOKEN, so gh uses it instead of any
+// `gh auth login` keyring credential (GH_TOKEN takes precedence). GH_PROMPT_DISABLED
+// keeps gh from ever blocking on a TTY.
+function runGh(cwd: string | undefined, args: string[], token: string): Promise<string | null> {
+  const env: NodeJS.ProcessEnv = { ...process.env, GH_TOKEN: token, GH_PROMPT_DISABLED: "1" };
   return new Promise((resolve) => {
     execFile(
       "gh",
       args,
-      { cwd, timeout: 20000, maxBuffer: 8 * 1024 * 1024 },
+      { cwd, timeout: 20000, maxBuffer: 8 * 1024 * 1024, env },
       (err, stdout) => resolve(err ? null : stdout)
     );
   });
@@ -104,10 +109,11 @@ export function mapDecision(d: string | undefined): PrInfo["review"] {
 }
 
 /**
- * Tracks two PR sets via the gh CLI:
+ * Tracks two PR sets via the gh CLI (using DevTower's GitHub token):
  *  - crew:   open PRs for each agent's branch (run in that agent's worktree)
  *  - review: open PRs where the user's review is requested (any repo)
- * Falls back to seeded mock PRs when gh/data is unavailable and mock mode is on.
+ * With no token the sets are empty and the UI shows a disconnected state. There
+ * is no mock data.
  */
 export class PrService {
   private crew: PrInfo[] = [];
@@ -124,8 +130,16 @@ export class PrService {
    *  so a branch+PR created outside DevTower (e.g. from the CLI) still surfaces. */
   private extraTargets: { cwd: string; repo: string; branch: string }[] = [];
   private extraSig = "";
+  private signInPrompted = false; // only nudge the user to connect GitHub once
+  private connected = false; // is a GitHub token present (drives the disconnected UI)
 
   constructor(private store: DevTowerStore) {}
+
+  /** Whether DevTower currently has a GitHub token. False => the webview shows a
+   *  disconnected placeholder instead of (now nonexistent) mock data. */
+  isConnected(): boolean {
+    return this.connected;
+  }
 
   /** Register the room checkouts (cwd + repo label + current branch) whose PRs
    *  should be tracked alongside the agents'. When the set changes, kick a prompt
@@ -170,14 +184,28 @@ export class PrService {
     this.refreshing = true;
     this.lastFetchAt = Date.now();
     try {
-      const [crew, review] = await Promise.all([this.fetchCrew(), this.fetchReview()]);
-      const mock = vscode.workspace.getConfiguration("devtower").get<boolean>("useMockData", false);
+      // DevTower's GitHub PAT (from the settings page). Absent until the user adds
+      // one. Never falls back to the gh CLI login, and there is no mock data.
+      const token = await getGithubToken();
+      if (!token) {
+        // not connected: nudge once, clear any stale PRs so the UI shows the
+        // disconnected state rather than leftover data
+        if (!this.signInPrompted) { this.signInPrompted = true; void this.promptSignIn(); }
+        this.connected = false;
+        this.crew = [];
+        this.review = [];
+        const firstFetch = !this.fetched;
+        this.fetched = true;
+        this._onChange.fire(); // always re-emit so the disconnected state shows
+        void firstFetch;
+        return;
+      }
+      this.connected = true;
+      const [crew, review] = await Promise.all([this.fetchCrew(token), this.fetchReview(token)]);
       // keep prior data when a fetch FAILED (auth / rate limit) so the PR doesn't
       // vanish on a transient error
-      this.crew = (!crew.ok && crew.prs.length === 0 && this.crew.length)
-        ? this.crew : (crew.prs.length || !mock ? crew.prs : MOCK_CREW_PRS);
-      this.review = (!review.ok && review.prs.length === 0 && this.review.length)
-        ? this.review : (review.prs.length || !mock ? review.prs : MOCK_REVIEW_PRS);
+      this.crew = (!crew.ok && crew.prs.length === 0 && this.crew.length) ? this.crew : crew.prs;
+      this.review = (!review.ok && review.prs.length === 0 && this.review.length) ? this.review : review.prs;
       const firstFetch = !this.fetched;
       this.fetched = true; // set before firing so refreshState reads it live
       // only repaint when the PR data actually changed — otherwise every poll /
@@ -192,6 +220,24 @@ export class PrService {
     }
   }
 
+  /** Re-poll now that a token may have been added/changed (called from the
+   *  settings page after a save). Bypasses the throttle floor. */
+  async reauth(): Promise<void> {
+    this.signInPrompted = true;
+    this.lastFetchAt = 0;
+    await this.refresh();
+  }
+
+  /** One-time, dismissible nudge when no token is set yet, pointing at the
+   *  settings page where the user adds one. */
+  private async promptSignIn(): Promise<void> {
+    const pick = await vscode.window.showInformationMessage(
+      "DevTower needs a GitHub token to show PRs and checks. Add one in DevTower settings.",
+      "Open settings"
+    );
+    if (pick === "Open settings") await vscode.commands.executeCommand("devtower.openSettings");
+  }
+
   /** Stable fingerprint of the display-relevant PR fields, sorted by id so a
    *  reordered fetch doesn't read as a change. */
   private signature(): string {
@@ -201,7 +247,7 @@ export class PrService {
     return JSON.stringify([this.crew.map(key).sort(), this.review.map(key).sort()]);
   }
 
-  private async fetchCrew(): Promise<{ prs: PrInfo[]; ok: boolean }> {
+  private async fetchCrew(token: string): Promise<{ prs: PrInfo[]; ok: boolean }> {
     const out: PrInfo[] = [];
     const seen = new Set<string>();
     const queried = new Set<string>(); // repo+branch already asked, skip duplicate gh calls
@@ -210,13 +256,13 @@ export class PrService {
     for (const agent of this.store.list()) {
       const cwd = resolveCwd(agent);
       if (!cwd) continue;
-      if (!(await this.queryHead(cwd, agent.repo, agent.branch, out, seen, queried, agent.id))) ok = false;
+      if (!(await this.queryHead(cwd, agent.repo, agent.branch, out, seen, queried, token, agent.id))) ok = false;
     }
     // ... plus the room checkouts (main building + worktree rooms) so a PR opened
     // outside any DevTower agent still shows on that building's board
     for (const t of this.extraTargets) {
       if (!t.branch) continue;
-      if (!(await this.queryHead(t.cwd, t.repo, t.branch, out, seen, queried))) ok = false;
+      if (!(await this.queryHead(t.cwd, t.repo, t.branch, out, seen, queried, token))) ok = false;
     }
     return { prs: out, ok };
   }
@@ -226,7 +272,7 @@ export class PrService {
    *  caller can preserve prior data instead of blanking the panel. */
   private async queryHead(
     cwd: string, repo: string, branch: string,
-    out: PrInfo[], seen: Set<string>, queried: Set<string>, agentId?: string
+    out: PrInfo[], seen: Set<string>, queried: Set<string>, token: string, agentId?: string
   ): Promise<boolean> {
     const qkey = `${repo} ${branch}`;
     if (queried.has(qkey)) return true;
@@ -235,7 +281,7 @@ export class PrService {
     const raw = await runGh(cwd, [
       "pr", "list", "--head", branch, "--state", "open", "--limit", "1",
       "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,author,reviews,reviewRequests,comments",
-    ]);
+    ], token);
     if (raw === null) return false; // gh errored (auth / rate limit)
     try {
       for (const p of JSON.parse(raw)) {
@@ -273,11 +319,11 @@ export class PrService {
     return true;
   }
 
-  private async fetchReview(): Promise<{ prs: PrInfo[]; ok: boolean }> {
+  private async fetchReview(token: string): Promise<{ prs: PrInfo[]; ok: boolean }> {
     const raw = await runGh(undefined, [
       "search", "prs", "--review-requested=@me", "--state", "open", "--limit", "20",
       "--json", "number,title,url,repository,isDraft,author,updatedAt",
-    ]);
+    ], token);
     if (raw === null) return { prs: [], ok: false };
     try {
       const prs = (JSON.parse(raw) as any[]).map((p) => ({
@@ -311,55 +357,3 @@ export class PrService {
     this._onChange.dispose();
   }
 }
-
-/* ============ MOCK PRS (UI preview without gh) ============ */
-const MOCK_CREW_PRS: PrInfo[] = [
-  {
-    id: "atlas-web#142", number: 142,
-    title: "Agent cockpit: tree + diff panel",
-    repo: "atlas-web", branch: "feat/agent-cockpit",
-    url: "https://github.com/acme/atlas-web/pull/142",
-    isDraft: false, checks: "pass", checksPass: 5, checksFailed: 0, checksRunning: 0, checksTotal: 5,
-    review: "approved", approvals: 2, changesRequested: 0, reviewersPending: 0, comments: 1,
-    author: "you", agentId: "a3",
-  },
-  {
-    id: "atlas-api#318", number: 318,
-    title: "SSE streaming for /v1/messages",
-    repo: "atlas-api", branch: "feat/streaming-sse",
-    url: "https://github.com/acme/atlas-api/pull/318",
-    isDraft: true, checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5,
-    review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2, comments: 0,
-    author: "you", agentId: "a1",
-  },
-  {
-    id: "atlas-api#316", number: 316,
-    title: "Fix refresh-token rotation race",
-    repo: "atlas-api", branch: "fix/auth-refresh-race",
-    url: "https://github.com/acme/atlas-api/pull/316",
-    isDraft: false, checks: "fail", checksPass: 4, checksFailed: 1, checksRunning: 1, checksTotal: 6,
-    review: "changes", approvals: 1, changesRequested: 1, reviewersPending: 0, comments: 4,
-    author: "you", agentId: "a2",
-  },
-];
-
-const MOCK_REVIEW_PRS: PrInfo[] = [
-  {
-    id: "acme/atlas-api#311", number: 311,
-    title: "Rate limiter cleanup + sliding window",
-    repo: "acme/atlas-api",
-    url: "https://github.com/acme/atlas-api/pull/311",
-    isDraft: false, checks: "none", checksPass: 0, checksFailed: 0, checksRunning: 0, checksTotal: 0,
-    review: "required", approvals: 0, changesRequested: 0, reviewersPending: 1, comments: 0,
-    author: "jchen", updatedAt: "2026-06-10T18:22:00Z",
-  },
-  {
-    id: "acme/infra#87", number: 87,
-    title: "Terraform: split staging state",
-    repo: "acme/infra",
-    url: "https://github.com/acme/infra/pull/87",
-    isDraft: false, checks: "none", checksPass: 0, checksFailed: 0, checksRunning: 0, checksTotal: 0,
-    review: "required", approvals: 0, changesRequested: 0, reviewersPending: 1, comments: 0,
-    author: "mrivera", updatedAt: "2026-06-11T09:10:00Z",
-  },
-];

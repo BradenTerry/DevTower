@@ -9,6 +9,7 @@
   const esc = (s) => String(s).replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
 
   let agents = [], selectedId = null, theme = "dark", panelOpen = false;
+  let panelSig = ""; // fingerprint of the open panel, so polls don't rebuild (flash) it
   let firstState = true;
   let prs = { crew: [], review: [] };
   const prevStates = new Map();
@@ -67,6 +68,7 @@
 
   function closePanel() {
     panelOpen = false;
+    panelSig = ""; // force a fresh build (and re-wire) on the next open
     $("#panel").hidden = true;
     if (window.DevTowerCrew) window.DevTowerCrew.setSelected(undefined);
     selectedId = null;
@@ -273,6 +275,141 @@
   function reviewDispatchOpen() { return !$("#reviewdispatch").hidden; }
   function closeReviewDispatch() { const s = $("#reviewdispatch"); s.hidden = true; s.innerHTML = ""; }
 
+  /* ---------- settings overlay (tabbed: GitHub / General) ---------- */
+  let settings = null; // last { caps, scopeHelp } pushed by the extension
+  let settingsTab = "github"; // active left-rail tab
+  const SETTINGS_TABS = [{ id: "github", label: "GitHub" }, { id: "general", label: "General" }];
+  function settingsOpen() { return !$("#settings").hidden; }
+  function closeSettings() { const s = $("#settings"); s.hidden = true; s.innerHTML = ""; }
+  function openSettings() {
+    const s = $("#settings");
+    s.hidden = false;
+    renderSettings(); // render immediately (cached), then refresh from the host
+    vscode.postMessage({ type: "getSettings" });
+  }
+
+  // ---- GitHub tab ----
+  function githubPaneHTML() {
+    const caps = settings?.caps;
+    let status;
+    if (!caps || !caps.connected) {
+      status = caps?.error
+        ? `<div class="s-status err"><b>Not connected.</b> ${esc(caps.error)}</div>`
+        : `<div class="s-status idle">No token set. Add one below to show your PRs and checks.</div>`;
+    } else {
+      const feats = (caps.features || []).map((f) =>
+        `<li class="${f.enabled ? "on" : "off"}" title="${esc(f.why)}">
+           <span class="fmark">${f.enabled ? "✓" : "✕"}</span>
+           <span class="flabel">${esc(f.label)}</span>
+           <span class="fscope">${esc(f.scope)}</span>
+         </li>`).join("");
+      const scopeline = caps.tokenType === "fine-grained"
+        ? "fine-grained token"
+        : `scopes: ${caps.scopes && caps.scopes.length ? esc(caps.scopes.join(", ")) : "none"}`;
+      status = `<div class="s-status ok">
+          <b>Connected as ${esc(caps.login || "?")}</b>
+          <span class="s-ttype">${esc(scopeline)}</span>
+        </div>
+        <ul class="s-feats">${feats}</ul>`;
+    }
+    return `
+      <h3>GitHub access</h3>
+      <p class="s-desc">DevTower reads your pull requests and CI checks through the GitHub API using a
+        Personal Access Token. The token is stored in VS Code SecretStorage, used only by the extension
+        (never your terminals or git), and never displayed back.</p>
+      ${status}
+      <div class="s-why">
+        <div class="s-why-title">Create a token — pick one type</div>
+
+        <div class="s-tok">
+          <div class="s-tok-h"><span class="s-tok-name">Fine-grained</span><span class="s-tok-tag rec">recommended · read-only</span></div>
+          <p>Limited to the repositories you choose. The link below pre-fills the name and most permissions:</p>
+          <ul class="s-perms">
+            <li>Pull requests: <b>Read</b></li>
+            <li>Contents: <b>Read</b></li>
+            <li>Commit statuses: <b>Read</b></li>
+            <li>Checks: <b>Read</b> <span class="dim">— set this one by hand</span></li>
+            <li class="dim">Metadata: Read (added automatically)</li>
+          </ul>
+          <a class="s-link" data-url="https://github.com/settings/personal-access-tokens/new?name=DevTower&description=DevTower%20PR%20%26%20checks%20viewer&contents=read&pull_requests=read&statuses=read">Create fine-grained token (name + perms pre-filled) ↗</a>
+          <div class="s-note">Pick the repos under "Repository access", and add Checks: Read manually (GitHub doesn't allow it in the link).</div>
+        </div>
+
+        <div class="s-tok">
+          <div class="s-tok-h"><span class="s-tok-name">Classic</span><span class="s-tok-tag">simpler · spans all orgs</span></div>
+          <p>Broader (read+write across your repos), but one token reaches every org. Scopes:</p>
+          <ul class="s-perms">
+            <li><code>repo</code> — private PRs and CI checks</li>
+            <li><code>read:org</code> — review requests across orgs</li>
+          </ul>
+          <a class="s-link" data-url="https://github.com/settings/tokens/new?scopes=repo,read:org&description=DevTower">Create classic token (scopes pre-filled) ↗</a>
+        </div>
+      </div>
+      <div class="s-field">
+        <input type="password" id="s-token" placeholder="ghp_… or github_pat_…" autocomplete="off" spellcheck="false" />
+        <button class="s-save" id="s-save">Save token</button>
+      </div>
+      ${caps && caps.connected ? `<button class="s-clear" id="s-clear">Remove token</button>` : ""}`;
+  }
+
+  // ---- General tab ----
+  function generalPaneHTML() {
+    return `
+      <h3>General</h3>
+      <div class="s-row">
+        <div class="s-row-t">
+          <div class="s-row-name">Efficiency mode</div>
+          <div class="s-row-sub">Reduce animation and CPU use. Turns on automatically when on battery.</div>
+        </div>
+        <button class="s-toggle ${eco ? "on" : ""}" id="s-eco" role="switch" aria-checked="${eco}"><span class="knob"></span></button>
+      </div>`;
+  }
+
+  function renderSettings() {
+    const s = $("#settings");
+    if (s.hidden) return;
+    const nav = SETTINGS_TABS.map((t) =>
+      `<button class="s-tab ${settingsTab === t.id ? "on" : ""}" data-tab="${t.id}">${t.label}</button>`).join("");
+    const pane = settingsTab === "general" ? generalPaneHTML() : githubPaneHTML();
+
+    s.innerHTML = `
+      <div class="settings-card">
+        <button class="s-close" id="s-close" title="Close (Esc)">✕</button>
+        <h2>Settings</h2>
+        <div class="s-body">
+          <nav class="s-tabs">${nav}</nav>
+          <div class="s-pane">${pane}</div>
+        </div>
+      </div>`;
+
+    // shared wiring
+    $("#s-close", s).onclick = closeSettings;
+    s.onclick = (e) => { if (e.target === s) closeSettings(); }; // click backdrop to close
+    $$(".s-tab", s).forEach((b) => (b.onclick = () => { settingsTab = b.dataset.tab; renderSettings(); }));
+    $$(".s-link", s).forEach((a) => (a.onclick = () =>
+      vscode.postMessage({ type: "action", act: "openPr", url: a.dataset.url })));
+
+    // GitHub-tab wiring
+    const save = $("#s-save", s), input = $("#s-token", s);
+    if (save && input) {
+      const doSave = () => {
+        const token = input.value.trim();
+        if (!token) return;
+        vscode.postMessage({ type: "setGithubToken", token });
+        input.value = "";
+        save.textContent = "Saving…"; save.disabled = true;
+      };
+      save.onclick = doSave;
+      input.onkeydown = (e) => { if (e.key === "Enter") doSave(); };
+    }
+    const clear = $("#s-clear", s);
+    if (clear) clear.onclick = () => vscode.postMessage({ type: "clearGithubToken" });
+
+    // General-tab wiring
+    const ecoT = $("#s-eco", s);
+    if (ecoT) ecoT.onclick = () => { applyEco(!eco); vscode.postMessage({ type: "setEco", on: eco }); renderSettings(); };
+  }
+
   function prChipHTML(a) {
     const p = prFor(a.id);
     if (!p) return "";
@@ -301,6 +438,21 @@
     if (!a || !panelOpen) { panel.hidden = true; return; }
     panel.hidden = false;
 
+    // Skip the innerHTML rebuild (which replays the entry animation = a visible
+    // flash) when nothing the panel shows has changed. Elapsed time is patched in
+    // place below so it still ticks without a rebuild.
+    const sig = JSON.stringify([
+      a.id, a.name, a.repo, a.state, a.model, a.contextTokens,
+      (a.skills || []).join("|"), a.question || "", !!a.external,
+      prFor(a.id) || null,
+    ]);
+    if (sig === panelSig) {
+      const elEl = panel.querySelector(".el-elapsed");
+      if (elEl) elEl.textContent = a.elapsed || "";
+      return;
+    }
+    panelSig = sig;
+
     const hue = hueOf(a.id);
     const pct = contextOf(a);
     const pctColor = pct === null ? "var(--idle)" : pct < 60 ? "var(--active)" : pct < 85 ? "var(--waiting)" : "var(--error)";
@@ -313,7 +465,7 @@
           <div class="avatar" style="--av1:hsl(${hue} 55% 58%); --av2:hsl(${hue} 50% 38%)"></div>
           <div>
             <h1>${esc(a.name)}</h1>
-            <div class="sub"><b>${esc(a.repo)}</b><span class="sep">·</span>${esc(a.elapsed || "")}</div>
+            <div class="sub"><b>${esc(a.repo)}</b><span class="sep">·</span><span class="el-elapsed">${esc(a.elapsed || "")}</span></div>
           </div>
           <span class="statebadge" data-state="${a.state}"><i></i>${STATE_LABEL[a.state]}</span>
         </div>
@@ -388,9 +540,12 @@
     vscode.postMessage({ type: "refreshPrs" });
     if (window.DevTowerCrew) window.DevTowerCrew.focusReviewBoard();
   };
+  $("#settingsbtn").onclick = openSettings;
+
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (reviewDispatchOpen()) closeReviewDispatch();
+      if (settingsOpen()) closeSettings();
+      else if (reviewDispatchOpen()) closeReviewDispatch();
       else if (panelOpen) closePanel();
     }
   });
@@ -414,6 +569,7 @@
       if (panelOpen) renderPanel();
       // tell the tower which branches have an open PR (shown on each board)
       if (window.DevTowerCrew) {
+        window.DevTowerCrew.setGithubConnected(m.connected); // drives the disconnected placeholder
         const branches = [...prs.crew, ...prs.review].map((p) => p.branch).filter(Boolean);
         window.DevTowerCrew.setPrBranches(branches);
         // feed the central billboard the PRs waiting on the operator's review
@@ -428,6 +584,11 @@
       if (Array.isArray(m.reviewSkills) && m.reviewSkills.length) reviewSkills = m.reviewSkills;
       if (m.reviewDefaults && typeof m.reviewDefaults === "object") reviewDefaults = m.reviewDefaults;
       if (Array.isArray(m.reviewAgents)) reviewAgents = m.reviewAgents;
+    } else if (m.type === "settings") {
+      settings = { caps: m.caps, scopeHelp: m.scopeHelp };
+      renderSettings(); // refresh the overlay if it is open
+    } else if (m.type === "openSettings") {
+      openSettings();
     }
   });
 
