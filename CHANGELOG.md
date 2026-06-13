@@ -7,6 +7,13 @@ are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases
 
 ## [Unreleased]
 
+### Fixed
+
+- **Board label contrast.** The cell headings (UNSTAGED / STAGED / COMMITS / PR) and secondary
+  labels ("no open PR", "no checks", repo names, "nothing awaiting you") were drawn at low alpha and
+  read as dim gray on the dark board. They now use opaque palette colors that clear WCAG AA (>= 4.5:1)
+  against the board background, enforced by a contrast unit test.
+
 ## [0.3.0] - 2026-06-13
 
 ### Added
