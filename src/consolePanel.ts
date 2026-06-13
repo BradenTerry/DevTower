@@ -35,6 +35,7 @@ interface BoardData {
   stagedDel: number;
   committedAdd: number;
   committedDel: number;
+  base: string;
   ahead: number;
   commits: string[];
   /** Set when the room's directory no longer exists on disk (a worktree removed
@@ -46,7 +47,12 @@ interface BoardData {
     url: string;
     draft: boolean;
     checks: "pass" | "fail" | "pending" | "none";
+    checksPass: number;
+    checksTotal: number;
     review: "approved" | "changes" | "required" | "none";
+    approvals: number;
+    changesRequested: number;
+    reviewersPending: number;
   };
 }
 
@@ -470,7 +476,7 @@ export class ConsolePanel {
     const emptyBoard = (over: Partial<BoardData>): BoardData => ({
       branch: "", modified: 0, staged: 0, modifiedFiles: [], stagedFiles: [],
       unstagedAdd: 0, unstagedDel: 0, stagedAdd: 0, stagedDel: 0,
-      committedAdd: 0, committedDel: 0, ahead: 0, commits: [], ...over,
+      committedAdd: 0, committedDel: 0, base: "", ahead: 0, commits: [], ...over,
     });
     for (const [roomKey, p] of pairs) {
       // directory removed out from under us (e.g. a deleted worktree): a worktree
@@ -500,10 +506,16 @@ export class ConsolePanel {
           stagedDel: sum.stagedDel,
           committedAdd: sum.committedAdd,
           committedDel: sum.committedDel,
+          base: sum.base,
           ahead: sum.ahead,
           commits: sum.commits,
           pr: pr
-            ? { number: pr.number, title: pr.title, url: pr.url, draft: pr.isDraft, checks: pr.checks, review: pr.review }
+            ? {
+                number: pr.number, title: pr.title, url: pr.url, draft: pr.isDraft,
+                checks: pr.checks, checksPass: pr.checksPass, checksTotal: pr.checksTotal,
+                review: pr.review, approvals: pr.approvals,
+                changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
+              }
             : undefined,
         });
       } catch {

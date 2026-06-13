@@ -49,6 +49,7 @@
   var DEPTH_X = 24;
   var DEPTH_Y = 22;
   var ROWS_OF_DESKS = 2;
+  var FRONT_CAP = 6;
   var ROW_DY = DEPTH_Y;
   var ROOM_W = 260;
   var backWall = (x0, base) => ({
@@ -375,10 +376,16 @@
       let startCol = 0;
       let mainTaken = false;
       for (const [key, ags] of entries) {
-        const cols = Math.max(1, Math.ceil(ags.length / ROWS_OF_DESKS));
         ags.forEach((a, i) => {
-          seats.set(a.id, { col: startCol + Math.floor(i / ROWS_OF_DESKS), row: i % ROWS_OF_DESKS });
+          let row = Math.floor(i / FRONT_CAP);
+          let col = i % FRONT_CAP;
+          if (row > ROWS_OF_DESKS - 1) {
+            row = ROWS_OF_DESKS - 1;
+            col = i - row * FRONT_CAP;
+          }
+          seats.set(a.id, { col: startCol + col, row });
         });
+        const cols = Math.max(1, Math.min(ags.length, FRONT_CAP));
         const main = !mainTaken && isMain(key, ags);
         if (main)
           mainTaken = true;
@@ -1689,14 +1696,24 @@
       ctx.textBaseline = "alphabetic";
       ctx.textAlign = "left";
       const branch = r.branch && r.branch !== "\u2014" ? r.branch : r.isMain ? "main" : "\u2014";
+      const baseName = r.board?.base || "";
+      const suffix = baseName && baseName !== branch ? `\u2192 ${baseName}` : "";
+      ctx.font = "4px 'IBM Plex Mono', monospace";
+      const suffixW = suffix ? ctx.measureText(suffix).width + 3 : 0;
       ctx.font = "bold 5px 'Martian Mono', monospace";
       ctx.fillStyle = r.isMain ? "hsl(150 60% 80%)" : `hsl(${r.hue} 65% 82%)`;
       let bt = `\u2325 ${branch}`;
-      while (ctx.measureText(bt).width > b.w - 12 && bt.length > 6)
+      while (ctx.measureText(bt).width > b.w - 12 - suffixW && bt.length > 6)
         bt = bt.slice(0, -2);
       if (bt !== `\u2325 ${branch}`)
         bt += "\u2026";
       ctx.fillText(bt, b.x + pad, b.y + 7);
+      if (suffix) {
+        const branchW = ctx.measureText(bt).width;
+        ctx.font = "4px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(150,170,190,0.6)";
+        ctx.fillText(suffix, b.x + pad + branchW + 3, b.y + 7);
+      }
       ctx.fillStyle = glow > 0.02 ? `rgba(62,224,137,${0.35 + glow * 0.65})` : "rgba(90,100,108,0.5)";
       ctx.fillRect(b.x + b.w - pad - 3, b.y + 3, 3, 3);
       ctx.fillStyle = "rgba(120,150,170,0.18)";
@@ -1805,12 +1822,25 @@
           ctx.fillText(fit(text, prW), px, py);
           py += 4.6;
         };
-        if (bd.pr.checks !== "none") {
-          line(checkTxt[bd.pr.checks], bd.pr.checks === "pass" ? "#3ee089" : bd.pr.checks === "fail" ? "#ff6055" : "#ffb13d");
+        const checkCol = bd.pr.checks === "pass" ? "#3ee089" : bd.pr.checks === "fail" ? "#ff6055" : "#ffb13d";
+        if (bd.pr.checksTotal > 0) {
+          const icon = bd.pr.checks === "pass" ? "\u2713" : bd.pr.checks === "fail" ? "\u2717" : "\u2026";
+          line(`checks ${bd.pr.checksPass}/${bd.pr.checksTotal} ${icon}`, checkCol);
+        } else if (bd.pr.checks !== "none") {
+          line(checkTxt[bd.pr.checks], checkCol);
         }
-        if (bd.pr.review !== "none") {
+        const rparts = [];
+        if (bd.pr.approvals > 0)
+          rparts.push(`${bd.pr.approvals} approved`);
+        if (bd.pr.changesRequested > 0)
+          rparts.push(`${bd.pr.changesRequested} changes`);
+        if (bd.pr.reviewersPending > 0)
+          rparts.push(`${bd.pr.reviewersPending} pending`);
+        const revCol = bd.pr.changesRequested > 0 ? "#ff6055" : bd.pr.approvals > 0 ? "#3ee089" : "#ffb13d";
+        if (rparts.length)
+          line(rparts.join(" \xB7 "), revCol);
+        else if (bd.pr.review !== "none")
           line(review[bd.pr.review], bd.pr.review === "approved" ? "#3ee089" : bd.pr.review === "changes" ? "#ff6055" : "#ffb13d");
-        }
         if (bd.pr.draft)
           line("draft", "rgba(200,210,216,0.7)");
         py += 1;

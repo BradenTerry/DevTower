@@ -116,35 +116,43 @@ export class ClaudeDiscovery {
       return 0;
     }
 
-    // keep one transcript per live claude process (newest first per cwd);
-    // optionally also show recent-but-closed ones as idle "resumable" rooms.
-    // NB: key liveness by launchCwd (the dir claude started in, which is what
-    // `lsof` reports), NOT the latest cwd — a session that cd'd into a subdir
-    // still belongs to the process counted under its launch directory.
+    // Keep one transcript per live claude process. `found` is newest-first, so
+    // we walk it and CLAIM a live process slot for each kept session — by its
+    // launch dir, or (if renamed/cd'd mid-run) its current dir, whichever still
+    // has an unclaimed running process. Claiming per slot (not per dir) is what
+    // stops a CLOSED session whose dir was later reused/renamed from borrowing a
+    // newer session's live process at the same path (the phantom-agent bug).
     const liveCounts = await this.liveCwdCounts();
-    const usedPerCwd = new Map<string, number>();
     const kept: Found[] = [];
-    for (const f of found) {
-      // found is sorted newest-first, so a cwd's slots fill with its freshest
-      // sessions; the rest are treated as closed.
-      const used = usedPerCwd.get(f.launchCwd) ?? 0;
-      let isLive: boolean;
-      if (liveCounts === null) {
-        // no process info → treat only a single very-fresh session as live
-        isLive = used === 0 && Date.now() - f.mtime < 15 * 60_000;
-      } else {
-        // match by the launch dir, but fall back to the latest cwd — a session
-        // whose directory was renamed mid-run has a stale launchCwd, while lsof
-        // reports the process at its current (renamed) path.
-        const live = Math.max(liveCounts.get(f.launchCwd) ?? 0, liveCounts.get(f.cwd) ?? 0);
-        isLive = used < live;
+    const keptCwd = new Set<string>();
+    if (liveCounts === null) {
+      // no process info → treat only one very-fresh session per launch dir as live
+      for (const f of found) {
+        if (keptCwd.has(f.launchCwd)) continue;
+        if (Date.now() - f.mtime < 15 * 60_000) {
+          keptCwd.add(f.launchCwd);
+          kept.push(f);
+        } else if (showRecent) {
+          keptCwd.add(f.launchCwd);
+          kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
+        }
       }
-      if (isLive) {
-        usedPerCwd.set(f.launchCwd, used + 1);
-        kept.push(f);
-      } else if (showRecent && used === 0) {
-        usedPerCwd.set(f.launchCwd, 1);
-        kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
+    } else {
+      const remaining = new Map(liveCounts);
+      const claim = (cwd: string): boolean => {
+        const n = remaining.get(cwd) ?? 0;
+        if (n <= 0) return false;
+        remaining.set(cwd, n - 1);
+        return true;
+      };
+      for (const f of found) {
+        if (claim(f.launchCwd) || (f.cwd !== f.launchCwd && claim(f.cwd))) {
+          keptCwd.add(f.launchCwd);
+          kept.push(f);
+        } else if (showRecent && !keptCwd.has(f.launchCwd)) {
+          keptCwd.add(f.launchCwd);
+          kept.push({ ...f, state: "idle", task: `(recent) ${f.task}` });
+        }
       }
     }
     found = kept;
@@ -331,7 +339,9 @@ async function readMeta(
     }
     // prefer the most recent cwd record so /cd mid-session relocates the agent
     const cwd = lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g) ?? headCwd;
-    const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g);
+    // newest real model id — synthetic/meta turns carry "model":"<synthetic>",
+    // which must not become the agent's displayed model
+    const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g, (v) => v !== "<synthetic>");
 
     // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
     // Mirrors Claude Code's own `/context`: input + the two cache buckets (all
@@ -409,9 +419,9 @@ function isSyntheticTask(text: string): boolean {
   return false;
 }
 
-function lastMatch(s: string, re: RegExp): string | undefined {
+function lastMatch(s: string, re: RegExp, accept?: (v: string) => boolean): string | undefined {
   let m: RegExpExecArray | null, last: string | undefined;
-  while ((m = re.exec(s))) last = m[1];
+  while ((m = re.exec(s))) if (!accept || accept(m[1])) last = m[1];
   return last;
 }
 

@@ -175,7 +175,8 @@
     "vscode:prepublish": "npm run build",
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
-    "compile": "node esbuild.js"
+    "compile": "node esbuild.js",
+    "typecheck": "tsc --noEmit -p ."
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

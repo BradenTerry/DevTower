@@ -243,6 +243,7 @@ export interface BranchSummary {
   stagedDel: number; // lines removed across staged changes
   committedAdd: number; // lines added across commits ahead of base
   committedDel: number; // lines removed across commits ahead of base
+  base: string; // friendly name of the base branch (e.g. "main"); "" if unknown
   ahead: number; // commits ahead of upstream/base
   commits: string[]; // recent commit subjects (newest first)
 }
@@ -271,15 +272,22 @@ async function numstatTotals(cwd: string, args: string[]): Promise<{ add: number
 export async function branchSummary(cwd: string): Promise<BranchSummary | null> {
   const st = await status(cwd).catch(() => null);
   if (!st) return null;
+  // Count commits against the BASE branch a PR would target (the remote default
+  // branch), not the branch's own upstream — once the feature branch is pushed,
+  // `@{upstream}..HEAD` is 0 even though the PR still has commits. origin/HEAD is
+  // the remote default (usually origin/main); fall back to common names, then to
+  // the upstream/local default as a last resort.
   let ahead = 0;
   let baseRef = ""; // the base the ahead/committed churn is measured against
-  for (const base of ["@{upstream}", "origin/HEAD"]) {
+  for (const base of ["origin/HEAD", "origin/main", "origin/master", "@{upstream}", "main", "master"]) {
     try {
-      ahead = parseInt((await runGit(cwd, ["rev-list", "--count", `${base}..HEAD`])).trim(), 10) || 0;
+      const n = parseInt((await runGit(cwd, ["rev-list", "--count", `${base}..HEAD`])).trim(), 10);
+      if (Number.isNaN(n)) continue;
+      ahead = n;
       baseRef = base;
       break;
     } catch {
-      /* no upstream / base — try the next */
+      /* ref doesn't exist here — try the next */
     }
   }
   let commits: string[] = [];
@@ -298,6 +306,14 @@ export async function branchSummary(cwd: string): Promise<BranchSummary | null> 
   const committed = baseRef
     ? await numstatTotals(cwd, ["diff", "--numstat", `${baseRef}..HEAD`])
     : { add: 0, del: 0 };
+  // friendly base branch name for the board header (what this branch targets)
+  let base = baseRef;
+  if (baseRef === "origin/HEAD") {
+    base = (await runGit(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).catch(() => "")).trim() || baseRef;
+  } else if (baseRef === "@{upstream}") {
+    base = (await runGit(cwd, ["rev-parse", "--abbrev-ref", "@{upstream}"]).catch(() => "")).trim() || baseRef;
+  }
+  base = base.replace(/^origin\//, "");
   return {
     modified: st.unstaged.length,
     staged: st.staged.length,
@@ -309,6 +325,7 @@ export async function branchSummary(cwd: string): Promise<BranchSummary | null> 
     stagedDel: stagedLines.del,
     committedAdd: committed.add,
     committedDel: committed.del,
+    base,
     ahead,
     commits,
   };

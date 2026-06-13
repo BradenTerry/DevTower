@@ -87,6 +87,9 @@ const DEPTH_Y = 22; // far-wall floor sits this far above the near floor
 // render-only: a dev's true baseline (tn.base) never moves, so floor-detection
 // and the fire-escape exit math stay correct.
 const ROWS_OF_DESKS = 2;
+// devs fill the front line first (close to the viewer, clear of the back-wall
+// board); only once the front row holds this many do they wrap to the back row
+const FRONT_CAP = 6;
 const ROW_DY = DEPTH_Y; // back row stands on the far-wall floor line
 // back-row desks are staggered toward room center by half the column pitch
 // (see PixelCrew.seatX); the pitch is per-room so it scales with desk count
@@ -190,6 +193,7 @@ interface BoardData {
   stagedDel: number;
   committedAdd: number;
   committedDel: number;
+  base: string;
   ahead: number;
   commits: string[];
   missing?: boolean;
@@ -199,7 +203,12 @@ interface BoardData {
     url: string;
     draft: boolean;
     checks: "pass" | "fail" | "pending" | "none";
+    checksPass: number;
+    checksTotal: number;
     review: "approved" | "changes" | "required" | "none";
+    approvals: number;
+    changesRequested: number;
+    reviewersPending: number;
   };
 }
 
@@ -537,10 +546,15 @@ class PixelCrew {
     let startCol = 0;
     let mainTaken = false; // at most one block is the "main" worktree
     for (const [key, ags] of entries) {
-      const cols = Math.max(1, Math.ceil(ags.length / ROWS_OF_DESKS));
+      // fill the front line left-to-right first, then wrap to the back row;
+      // the last row absorbs any overflow beyond the available rows
       ags.forEach((a, i) => {
-        seats.set(a.id, { col: startCol + Math.floor(i / ROWS_OF_DESKS), row: i % ROWS_OF_DESKS });
+        let row = Math.floor(i / FRONT_CAP);
+        let col = i % FRONT_CAP;
+        if (row > ROWS_OF_DESKS - 1) { row = ROWS_OF_DESKS - 1; col = i - row * FRONT_CAP; }
+        seats.set(a.id, { col: startCol + col, row });
       });
+      const cols = Math.max(1, Math.min(ags.length, FRONT_CAP));
       const main = !mainTaken && isMain(key, ags);
       if (main) mainTaken = true;
       groups.push({
@@ -1876,12 +1890,23 @@ class PixelCrew {
     ctx.textBaseline = "alphabetic";
     ctx.textAlign = "left";
     const branch = r.branch && r.branch !== "—" ? r.branch : r.isMain ? "main" : "—";
+    // " → base" suffix tells you what this branch targets / is based off of
+    const baseName = r.board?.base || "";
+    const suffix = baseName && baseName !== branch ? `→ ${baseName}` : "";
+    ctx.font = "4px 'IBM Plex Mono', monospace";
+    const suffixW = suffix ? ctx.measureText(suffix).width + 3 : 0;
     ctx.font = "bold 5px 'Martian Mono', monospace";
     ctx.fillStyle = r.isMain ? "hsl(150 60% 80%)" : `hsl(${r.hue} 65% 82%)`;
     let bt = `⌥ ${branch}`;
-    while (ctx.measureText(bt).width > b.w - 12 && bt.length > 6) bt = bt.slice(0, -2);
+    while (ctx.measureText(bt).width > b.w - 12 - suffixW && bt.length > 6) bt = bt.slice(0, -2);
     if (bt !== `⌥ ${branch}`) bt += "…";
     ctx.fillText(bt, b.x + pad, b.y + 7);
+    if (suffix) {
+      const branchW = ctx.measureText(bt).width;
+      ctx.font = "4px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "rgba(150,170,190,0.6)";
+      ctx.fillText(suffix, b.x + pad + branchW + 3, b.y + 7);
+    }
     ctx.fillStyle = glow > 0.02 ? `rgba(62,224,137,${0.35 + glow * 0.65})` : "rgba(90,100,108,0.5)";
     ctx.fillRect(b.x + b.w - pad - 3, b.y + 3, 3, 3);
     // header divider
@@ -1993,12 +2018,22 @@ class PixelCrew {
         ctx.fillText(fit(text, prW), px, py);
         py += 4.6;
       };
-      if (bd.pr.checks !== "none") {
-        line(checkTxt[bd.pr.checks], bd.pr.checks === "pass" ? "#3ee089" : bd.pr.checks === "fail" ? "#ff6055" : "#ffb13d");
+      // GH Actions tally: "checks 5/5 ✓" (green pass / red fail / amber running)
+      const checkCol = bd.pr.checks === "pass" ? "#3ee089" : bd.pr.checks === "fail" ? "#ff6055" : "#ffb13d";
+      if (bd.pr.checksTotal > 0) {
+        const icon = bd.pr.checks === "pass" ? "✓" : bd.pr.checks === "fail" ? "✗" : "…";
+        line(`checks ${bd.pr.checksPass}/${bd.pr.checksTotal} ${icon}`, checkCol);
+      } else if (bd.pr.checks !== "none") {
+        line(checkTxt[bd.pr.checks], checkCol);
       }
-      if (bd.pr.review !== "none") {
-        line(review[bd.pr.review], bd.pr.review === "approved" ? "#3ee089" : bd.pr.review === "changes" ? "#ff6055" : "#ffb13d");
-      }
+      // reviewers: approvals / changes / still-pending, e.g. "2 approved · 1 pending"
+      const rparts: string[] = [];
+      if (bd.pr.approvals > 0) rparts.push(`${bd.pr.approvals} approved`);
+      if (bd.pr.changesRequested > 0) rparts.push(`${bd.pr.changesRequested} changes`);
+      if (bd.pr.reviewersPending > 0) rparts.push(`${bd.pr.reviewersPending} pending`);
+      const revCol = bd.pr.changesRequested > 0 ? "#ff6055" : bd.pr.approvals > 0 ? "#3ee089" : "#ffb13d";
+      if (rparts.length) line(rparts.join(" · "), revCol);
+      else if (bd.pr.review !== "none") line(review[bd.pr.review], bd.pr.review === "approved" ? "#3ee089" : bd.pr.review === "changes" ? "#ff6055" : "#ffb13d");
       if (bd.pr.draft) line("draft", "rgba(200,210,216,0.7)");
       py += 1;
       ctx.fillStyle = "rgba(120,150,170,0.16)";
