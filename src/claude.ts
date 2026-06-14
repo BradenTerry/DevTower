@@ -90,6 +90,15 @@ export class ClaudeDiscovery {
   // until it ages out (or its process genuinely returns as a live argv id).
   private retiredSessions = new Map<string, number>();
   private static readonly RETIRED_MAX_AGE_MS = 60 * 60_000;
+  // Fires when a watched session just ran `gh pr create` (seen in its transcript)
+  // so the PR poller can fetch right away. `knownSessions` gates first-sight
+  // seeding (a PR that predates discovery must NOT trigger on startup);
+  // `prCreatedSeen` records the last create time per session so each new create
+  // fires exactly once.
+  private _onPrCreated = new vscode.EventEmitter<void>();
+  readonly onPrCreated = this._onPrCreated.event;
+  private knownSessions = new Set<string>();
+  private prCreatedSeen = new Map<string, number>();
 
   constructor(
     private store: DevTowerStore,
@@ -135,6 +144,7 @@ export class ClaudeDiscovery {
 
   dispose(): void {
     if (this.timer) clearInterval(this.timer);
+    this._onPrCreated.dispose();
   }
 
   /**
@@ -763,6 +773,25 @@ export class ClaudeDiscovery {
       }
     }
     });
+    // A session that just ran `gh pr create` should surface its PR immediately,
+    // not on the PR poller's lazy ~60s tick. Fire once per new create. A session
+    // seen for the FIRST time only seeds its timestamp (a pre-existing PR must not
+    // trigger a fetch on startup); a create that advances the stamp on an already
+    // known session fires the event.
+    let prJustCreated = false;
+    for (const f of found) {
+      const known = this.knownSessions.has(f.sessionId);
+      this.knownSessions.add(f.sessionId);
+      if (!f.prCreatedAt) continue;
+      if (f.prCreatedAt > (this.prCreatedSeen.get(f.sessionId) ?? 0)) {
+        this.prCreatedSeen.set(f.sessionId, f.prCreatedAt);
+        if (known) prJustCreated = true;
+      }
+    }
+    if (prJustCreated) {
+      dlog("discovery.prCreated", {});
+      this._onPrCreated.fire();
+    }
     // Per-agent binding snapshot: exactly which claude session each agent is tied
     // to this poll, how it got bound, whether it's owned or external, and the
     // terminal PID (the stable owned-dev tie). This is the trail for diagnosing a
@@ -867,6 +896,7 @@ export class ClaudeDiscovery {
           skills: meta.skills,
           subagents: meta.subagents,
           tasks,
+          prCreatedAt: meta.prCreatedAt,
         });
       }
     }
@@ -890,6 +920,7 @@ interface Found {
   skills?: string[];
   subagents?: number;
   tasks?: { done: number; total: number };
+  prCreatedAt?: number; // ms time of this session's most recent `gh pr create`
 }
 
 /** Count an agent's task list from `~/.claude/tasks/<sessionId>/*.json` — the
@@ -940,7 +971,7 @@ export async function newestSubMtime(projectDir: string, sessionId: string): Pro
 export async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; prCreatedAt?: number }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -1013,6 +1044,12 @@ export async function readMeta(
     const fgPending = new Set<string>(); // foreground tool_use ids, still open
     const bgPendingTool = new Set<string>(); // background tool ids awaiting their ack
     const bgPendingId = new Set<string>(); // background agentIds, still running
+    // `gh pr create` Bash tool_use ids awaiting their result. When the result
+    // lands the PR exists, so we stamp `prCreatedAt` with that turn's time — the
+    // discovery loop uses it to kick an immediate PR fetch instead of letting the
+    // new PR wait out the poller's lazy ~60s tick.
+    const prCreateTools = new Set<string>();
+    let prCreatedAt = 0;
     const reNote = /<task-id>\s*([A-Za-z0-9_-]+)\s*<\/task-id>[\s\S]*?<status>\s*(?:completed|failed|cancelled|canceled|killed|error|stopped)\s*<\/status>/g;
     for (const raw of full.split("\n")) {
       const t = raw.trim();
@@ -1026,7 +1063,15 @@ export async function readMeta(
           if (b.type === "tool_use" && (b.name === "Task" || b.name === "Agent")) {
             if (b.input && b.input.run_in_background) bgPendingTool.add(b.id);
             else fgPending.add(b.id);
+          } else if (b.type === "tool_use" && b.name === "Bash" &&
+                     typeof b.input?.command === "string" && /\bgh\s+pr\s+(?:create|new)\b/.test(b.input.command)) {
+            prCreateTools.add(b.id);
           } else if (b.type === "tool_result" && b.tool_use_id) {
+            if (prCreateTools.has(b.tool_use_id)) {
+              prCreateTools.delete(b.tool_use_id);
+              const ts = Date.parse(rec.timestamp ?? "");
+              if (Number.isFinite(ts)) prCreatedAt = Math.max(prCreatedAt, ts);
+            }
             const txt = typeof b.content === "string" ? b.content : flatten(b.content);
             const ack = /agentId:\s*([A-Za-z0-9_-]+)/.exec(txt);
             if (bgPendingTool.has(b.tool_use_id) && ack) {
@@ -1107,7 +1152,7 @@ export async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents, prCreatedAt: prCreatedAt || undefined };
   } finally {
     await fh.close();
   }
