@@ -339,8 +339,23 @@
       : String(n);
   const modelLabel = (m) => (m || "—").replace(/^claude-/, "").replace(/-/g, " ");
 
+  // coalesce bursty state updates (git/PR/usage polls all repost state) into one
+  // repaint per frame, and skip the repaint entirely when nothing visible moved -
+  // that, not the FLIP, is what made the open board churn on every poll
+  let lbRaf = 0;
+  let lbSig = "";
+  function scheduleLeaderboard() {
+    if (lbRaf || !leaderboardOpen()) return;
+    lbRaf = requestAnimationFrame(() => { lbRaf = 0; syncLeaderboard(); });
+  }
+
   function leaderboardOpen() { return !$("#leaderboard").hidden; }
-  function closeLeaderboard() { const s = $("#leaderboard"); s.hidden = true; s.innerHTML = ""; }
+  function closeLeaderboard() {
+    const s = $("#leaderboard");
+    s.hidden = true; s.innerHTML = "";
+    if (lbRaf) { cancelAnimationFrame(lbRaf); lbRaf = 0; }
+    lbSig = "";
+  }
   function openLeaderboard() {
     const s = $("#leaderboard");
     s.hidden = false;
@@ -402,14 +417,29 @@
     if (!list) return;
     // every agent, biggest context first (zero-token devs sink to the bottom)
     const ranked = agents.slice().sort((x, y) => (y.contextTokens ?? 0) - (x.contextTokens ?? 0));
-    if (!ranked.length) { list.innerHTML = `<div class="lb-empty">No agents yet.</div>`; return; }
+
+    // bail when nothing the board shows actually changed. Most state posts are
+    // unrelated polls (git stats, PRs, usage) carrying identical token data;
+    // repainting every row + remeasuring layout on those is what flashed.
+    const sig = ranked
+      .map((a) => `${a.id}:${a.contextTokens ?? 0}:${a.model || ""}:${a.name || ""}:${a.repo || ""}:${a.id === selectedId ? 1 : 0}`)
+      .join("|");
+    if (sig === lbSig) return;
+    lbSig = sig;
+
+    if (!ranked.length) {
+      if (!list.querySelector(".lb-empty")) list.innerHTML = `<div class="lb-empty">No agents yet.</div>`;
+      return;
+    }
     const empty = list.querySelector(".lb-empty");
     if (empty) empty.remove();
 
     // index the rows that already exist, keyed by agent id
     const existing = new Map();
     list.querySelectorAll(".lb-row").forEach((el) => existing.set(el.dataset.id, el));
-    // FLIP step 1: record each surviving row's current y BEFORE we reorder
+    // FLIP "first": each surviving row's CURRENT on-screen y (a row still sliding
+    // from a prior update reports its mid-animation position here, so an
+    // interrupted slide continues from where it is instead of snapping/jittering)
     const firstTop = new Map();
     existing.forEach((el, id) => firstTop.set(id, el.getBoundingClientRect().top));
 
@@ -428,18 +458,22 @@
     // drop rows for agents that are gone
     existing.forEach((el, id) => { if (!seen.has(id)) el.remove(); });
 
-    // FLIP step 2: invert (jump each moved row back to where it was) then release,
-    // so a rank change slides smoothly instead of snapping
-    list.querySelectorAll(".lb-row").forEach((el) => {
-      const prev = firstTop.get(el.dataset.id);
-      if (prev == null) return; // brand-new row: it just fades in (no slide)
-      const dy = prev - el.getBoundingClientRect().top;
+    // FLIP "last": freeze every row to its settled layout (kill any in-flight
+    // transform) before measuring, so the target y is the true final position
+    const survivors = ranked.map((a) => existing.get(a.id)).filter(Boolean);
+    survivors.forEach((el) => { el.style.transition = "none"; el.style.transform = "none"; });
+    const lastTop = new Map();
+    survivors.forEach((el) => lastTop.set(el.dataset.id, el.getBoundingClientRect().top));
+
+    // invert (jump each moved row back to where it visually was) then release, so
+    // a rank change slides smoothly even mid-flight from the previous update
+    survivors.forEach((el) => {
+      const dy = firstTop.get(el.dataset.id) - lastTop.get(el.dataset.id);
       if (!dy) return;
-      el.style.transition = "none";
       el.style.transform = `translateY(${dy}px)`;
       el.getBoundingClientRect(); // force reflow so the jump is applied first
       el.style.transition = "transform .34s cubic-bezier(.2,.8,.3,1)";
-      el.style.transform = "";
+      el.style.transform = "none";
     });
   }
 
@@ -805,7 +839,7 @@
       }
       pushCrew();
       renderPanel();
-      if (leaderboardOpen()) syncLeaderboard(); // patch the open board live (no flicker)
+      scheduleLeaderboard(); // patch the open board live, coalesced to one repaint/frame
     } else if (m.type === "prs") {
       prs = { crew: m.crew || [], review: m.review || [] };
       renderPrBadge();

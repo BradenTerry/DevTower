@@ -234,6 +234,56 @@ describe("ClaudeDiscovery binding", () => {
     expect(store.list()).toHaveLength(1); // just the one dev, no twin
   });
 
+  it("a placeholder /clear'd before its first prompt adopts the successor, no ghost (/clear-before-first-prompt)", async () => {
+    // The reported bug: spawn a dev (`claude --session-id <launch>`) and /clear it
+    // before ever prompting. The pinned launch session never writes a transcript;
+    // its successor C is minted with a fresh uuid and a succession marker carrying
+    // the launch id. case-1 only matched the pinned uuid exactly, so the placeholder
+    // waited forever and C surfaced as an external ghost. It must instead recognize
+    // C as the placeholder's session via the launch id the marker carries.
+    const store = newStore();
+    const launch = randomUUID(); // the terminal's --session-id (stays in argv across /clear)
+    const succ = randomUUID(); // the uuid /clear minted; the launch session wrote nothing
+    const sid = (u: string) => "cc-" + u.slice(0, 8);
+    // one live process in the cwd; argv reports the launch id, never the pinned
+    // transcript (it never existed)
+    const liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 1]]), sessionIds: new Set([launch]) };
+    const disc = new ClaudeDiscovery(store, {
+      projectsRoot: root, waitingDir, successionDir: succDir, resumeDir, endedDir,
+      liveCounts: async () => liveSnapshot,
+    });
+    placeholder(store, "isle-a1", wt);
+    disc.expectSession("isle-a1", launch); // launched `claude --session-id <launch>`
+
+    // /clear before the first prompt: only the successor C is on disk, with a
+    // succession marker tying it back to the launch id. The launch transcript
+    // never appears.
+    writeSuccession(succ, wt, launch);
+    writeSession(wt, 0, succ);
+    await disc.refresh();
+
+    // the placeholder adopts C in place: owned, no external twin, no ghost
+    expect(store.list()).toHaveLength(1);
+    const a = store.get("isle-a1")!;
+    expect(a.transcriptPath).toBe(path.join(proj, `${succ}.jsonl`));
+    expect(a.external).toBeFalsy();
+    expect(a.name).toBe("isle-a1");
+    expect(store.get(sid(succ))).toBeUndefined(); // C never surfaced as a stranger
+    // marker consumed, expectation cleared
+    await new Promise((r) => setTimeout(r, 10)); // unlink is fire-and-forget
+    expect(fs.existsSync(path.join(succDir, `${succ}.json`))).toBe(false);
+
+    // a SECOND /clear now flows through the normal succession path (the dev has a
+    // launch id), staying in place — no regression
+    const succ2 = randomUUID();
+    writeSuccession(succ2, wt, launch);
+    writeSession(wt, 0, succ2);
+    await disc.refresh();
+    expect(store.list()).toHaveLength(1);
+    expect(store.get("isle-a1")!.transcriptPath).toBe(path.join(proj, `${succ2}.jsonl`));
+    expect(store.get("isle-a1")!.external).toBeFalsy();
+  });
+
   it("keeps live sessions by --session-id, so exiting one drops THAT one (not the oldest by mtime)", async () => {
     // three sessions share one worktree. The naive "keep N newest by mtime" rule
     // breaks when the newest one exits: its final write leaves it freshest, so an

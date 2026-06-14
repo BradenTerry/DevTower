@@ -586,15 +586,33 @@ export class ClaudeDiscovery {
       // with --session-id, so it belongs to exactly that placeholder regardless
       // of cwd, mtime, or how many placeholders share the worktree. This is what
       // lets the operator spin up several devs in one room and prompt each one.
+      // Normally the pinned uuid IS the transcript uuid. But a session /clear'd
+      // BEFORE its first prompt never writes the pinned transcript (a brand-new
+      // session writes nothing until prompted) — its successor carries the pinned
+      // id only as a LAUNCH id in the succession marker. Match that too, so the
+      // placeholder adopts its real (cleared) session instead of waiting forever
+      // while the successor surfaces as an external ghost (the /clear-before-first-
+      // prompt ghost). successorLaunch maps successor uuid → launch id.
       if (!targetId && !this.mine.has(f.id)) {
-        const want = this.expecting.get(f.sessionId);
+        const lc = f.sessionId.toLowerCase();
+        const viaLaunch = this.expecting.has(f.sessionId) ? undefined : successorLaunch.get(lc);
+        const key = this.expecting.has(f.sessionId) ? f.sessionId : viaLaunch;
+        const want = key ? this.expecting.get(key) : undefined;
         if (want && this.store.get(want) && !this.store.get(want)!.transcriptPath) {
           targetId = want;
           this.adopted.set(f.id, want);
-          this.expecting.delete(f.sessionId);
+          this.expecting.delete(key!);
           this.launchPending.delete(want);
-          bindReason.set(want, "launch-id");
-          dlog("discovery.bind.session", { sessionId: f.sessionId, placeholder: want, cwd: f.cwd });
+          bindReason.set(want, viaLaunch ? "launch-id-cleared" : "launch-id");
+          // consume the succession marker that linked this successor: the
+          // placeholder now owns the live session, so a later poll must not treat
+          // the marker as a /clear still in flight (which would park the dev) or
+          // rebind the successor a second time.
+          if (succession.has(f.sessionId)) {
+            succession.delete(f.sessionId);
+            clearSuccessionMarker(f.sessionId, this.deps.successionDir);
+          }
+          dlog("discovery.bind.session", { sessionId: f.sessionId, placeholder: want, cwd: f.cwd, viaLaunch: viaLaunch ?? undefined });
         }
       }
       // (2) HEURISTIC bind (no pinned id — custom launchCommand, or a session
