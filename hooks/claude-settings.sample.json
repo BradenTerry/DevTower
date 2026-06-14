@@ -1,20 +1,20 @@
 {
-  "//": "Copy these hooks into your project's .claude/settings.json (or merge with existing hooks). Replace the absolute path if you move the repo. One emitter handles every event; it switches on hook_event_name.",
+  "//": "Copy these hooks into your project's .claude/settings.json (or merge with existing hooks). Replace /path/to/DevTower with the absolute path where you cloned this repo. One emitter handles every event; it switches on hook_event_name.",
   "hooks": {
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "node /Users/braden/Projects/agent-cockpit/hooks/devtower-emit.mjs" }] }
+      { "hooks": [{ "type": "command", "command": "node /path/to/DevTower/hooks/devtower-emit.mjs" }] }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /Users/braden/Projects/agent-cockpit/hooks/devtower-emit.mjs" }] }
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /path/to/DevTower/hooks/devtower-emit.mjs" }] }
     ],
     "Notification": [
-      { "hooks": [{ "type": "command", "command": "node /Users/braden/Projects/agent-cockpit/hooks/devtower-emit.mjs" }] }
+      { "hooks": [{ "type": "command", "command": "node /path/to/DevTower/hooks/devtower-emit.mjs" }] }
     ],
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "node /Users/braden/Projects/agent-cockpit/hooks/devtower-emit.mjs" }] }
+      { "hooks": [{ "type": "command", "command": "node /path/to/DevTower/hooks/devtower-emit.mjs" }] }
     ],
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "node /Users/braden/Projects/agent-cockpit/hooks/devtower-emit.mjs" }] }
+      { "hooks": [{ "type": "command", "command": "node /path/to/DevTower/hooks/devtower-emit.mjs" }] }
     ]
   }
 }

@@ -436,6 +436,9 @@ export class ConsolePanel {
       crew: this.prs.getCrew(),
       review: this.prs.getReview(),
       connected: this.prs.isConnected(),
+      // first GitHub poll still in flight → the webview shows a spinner instead of
+      // a premature "not connected" (isConnected() reads false until that completes)
+      loading: !this.prs.hasFetched(),
     });
   }
 

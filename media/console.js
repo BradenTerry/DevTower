@@ -608,6 +608,7 @@
       // tell the tower which branches have an open PR (shown on each board)
       if (window.DevTowerCrew) {
         window.DevTowerCrew.setGithubConnected(m.connected); // drives the disconnected placeholder
+        if (window.DevTowerCrew.setPrLoading) window.DevTowerCrew.setPrLoading(!!m.loading); // first poll → spinner
         const branches = [...prs.crew, ...prs.review].map((p) => p.branch).filter(Boolean);
         window.DevTowerCrew.setPrBranches(branches);
         // feed the central billboard the PRs waiting on the operator's review
