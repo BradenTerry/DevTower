@@ -358,6 +358,7 @@ export class ConsolePanel {
           if (dir) {
             this.usedDirRoom = m.room;
             void this.saveSelectedDir(m.room); // remember it across restarts
+            this.store.setSelectedDir(dir); // sticky mount for the directory view
             this.store.setFocusedWorktree(dir);
             this.postState(); // re-render so the room's button reads "SELECTED DIR"
             void vscode.commands.executeCommand("devtower.directory.focus");
@@ -651,6 +652,7 @@ export class ConsolePanel {
       return;
     }
     this.usedDirRoom = room;
+    this.store.setSelectedDir(dir); // sticky mount for the directory view
     this.store.setFocusedWorktree(dir); // directory view lists it (no focus steal)
     this.postState(); // scene marks the room "SELECTED DIR"
   }
@@ -722,6 +724,7 @@ export class ConsolePanel {
     // drop the persisted "USE DIR" selection if it pointed at this directory
     if (reserved && this.usedDirRoom === reserved.path) {
       this.usedDirRoom = undefined;
+      this.store.setSelectedDir(undefined);
       await this.saveSelectedDir(undefined);
     }
     this.postState();
@@ -778,6 +781,7 @@ export class ConsolePanel {
     // drop the persisted "USE DIR" selection if it pointed at this worktree
     if (this.usedDirRoom === worktree) {
       this.usedDirRoom = undefined;
+      this.store.setSelectedDir(undefined);
       await this.saveSelectedDir(undefined);
     }
     this.postState();

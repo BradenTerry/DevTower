@@ -95,18 +95,20 @@ export class DirectoryProvider
     private context: vscode.ExtensionContext
   ) {
     // Only the explicit "USE DIR" button changes which directory we show, so the
-    // tree stays put while you click around rooms and agents.
-    store.onDidChangeFocusWorktree(() => this.refresh());
+    // tree stays put while you click around rooms and agents. We listen to the
+    // dedicated sticky selectedDir, NOT focusedWorktree — the latter is cleared
+    // on agent-select for Source Control, which would silently empty this tree.
+    store.onDidChangeSelectedDir(() => this.refresh());
   }
 
   /** The worktree to list: whichever room's "USE DIR" was last pressed. Selecting
    *  an agent or clicking a room no longer changes it (it would shift constantly). */
   private cwd(): string | undefined {
-    return resolveDir(this.store.getFocusedWorktree());
+    return resolveDir(this.store.getSelectedDir());
   }
 
   refresh(): void {
-    const raw = this.store.getFocusedWorktree();
+    const raw = this.store.getSelectedDir();
     const cwd = this.cwd();
     // Trace why the Selected Directory view does / doesn't populate: the raw
     // focused worktree, what it resolved to, and whether the TreeView exists yet.
@@ -133,7 +135,7 @@ export class DirectoryProvider
     if (!dir) {
       // root query with no resolved directory: the view is empty because nothing
       // is selected (or the selection no longer resolves) — record which.
-      if (!node) dlog("directory.getChildren.empty", { reason: "no-cwd", raw: this.store.getFocusedWorktree() });
+      if (!node) dlog("directory.getChildren.empty", { reason: "no-cwd", raw: this.store.getSelectedDir() });
       return [];
     }
     let entries: fs.Dirent[];
