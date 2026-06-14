@@ -7,6 +7,35 @@ are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-13
+
+### Added
+
+- **Selected Directory view.** A file tree in the DevTower activity-bar container that browses the
+  selected room's entire worktree, not just changed files. Clicking a file opens it in a normal,
+  editable editor (preview tab, so paging through files reuses one tab like the built-in Explorer).
+
+### Changed
+
+- **Changes tree follows the focused worktree.** The Changes view now tracks the focused room's
+  worktree (or the selected agent as a fallback). Rapid agent-state events are debounced so the tree
+  no longer freezes on a spinner during a busy session.
+- **`USE DIR`** loads the room's worktree into the DevTower tab (Selected Directory + Changes) and
+  reveals it, instead of mirroring it into the Source Control panel.
+- Diffs open as preview tabs in the active group, so switching files replaces the tab instead of
+  stacking new ones.
+
+### Removed
+
+- **Source Control mirror.** The `devtower` SCM provider and its stage/unstage/refresh commands are
+  gone, replaced by the Selected Directory view.
+
+### Fixed
+
+- `openSettings` on a freshly created console panel is deferred until the webview is ready, so the
+  request is no longer dropped.
+- The General settings pane no longer flickers when caps update (only the GitHub pane re-renders).
+
 ## [0.4.0] - 2026-06-13
 
 ### Added
