@@ -81,6 +81,41 @@ export function initDebugLog(context: vscode.ExtensionContext): void {
   );
 }
 
+/** Deterministic path of the verbose debug log, whether or not it exists yet
+ *  (mirrors the resolution in initDebugLog so callers agree on the location). */
+export function debugLogPath(): string | undefined {
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
+  return path.join(root, ".devtower", "debug.log");
+}
+
+/** True when a non-empty verbose debug log is on disk (so the UI can offer to
+ *  view/clear it even after the trace has been turned off). */
+export function debugLogExists(): boolean {
+  const p = debugLogPath();
+  try {
+    return !!p && fs.statSync(p).size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Reveal the live "DevTower Debug" output channel. */
+export function showDebugChannel(): void {
+  channel?.show(true);
+}
+
+/** Empty the verbose log: clear the output channel and truncate the file. The
+ *  always-on errors.log is left untouched. */
+export function clearDebugLog(): void {
+  channel?.clear();
+  const p = debugLogPath();
+  try {
+    if (p && fs.existsSync(p)) fs.truncateSync(p, 0);
+  } catch {
+    /* a transient FS error must never break the app */
+  }
+}
+
 /** Append one structured event. No-op unless the log is enabled. */
 export function dlog(event: string, data?: Record<string, unknown>): void {
   if (!enabled) return;

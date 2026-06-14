@@ -78,6 +78,10 @@ export class ClaudeDiscovery {
   // A genuinely exited session's transcript freezes, so it stops qualifying and
   // still drops promptly — the --session-id exit contract is preserved.
   private keptMtime = new Map<string, number>();
+  // agent id → the session uuid it was tied to last poll, so a change (the tie
+  // drifting onto a different session — the duplicate-ghost bug) logs a timeline
+  // event rather than hiding inside the periodic snapshot.
+  private lastTie = new Map<string, string>();
 
   // session uuid (lc) → when the SessionEnd hook reported it exited. Its dead
   // transcript lingers on disk (freshest by mtime, thanks to /exit's final
@@ -93,6 +97,7 @@ export class ClaudeDiscovery {
     // extension both default to the real home dir + `ps`/`lsof`.
     private deps: {
       projectsRoot?: string;
+      tasksRoot?: string;
       liveCounts?: () => Promise<LiveCounts>;
       waitingDir?: string;
       successionDir?: string;
@@ -272,9 +277,30 @@ export class ClaudeDiscovery {
       const c = newestSucc.get(m.launchId);
       if (!c || m.ts > c.ts) newestSucc.set(m.launchId, { succ: succ.toLowerCase(), ts: m.ts });
     }
-    // transcript ids PASS 1 pins as live (launch ids remapped to their successor)
+    // The /clear remap above lives only as long as its succession MARKER, which is
+    // consumed on the poll it binds. On every later poll the marker is gone, so a
+    // stale launch transcript (still live by argv) would re-steal the cwd slot from
+    // the real current session and resurface as a ghost. Reconstruct the tie from
+    // already-bound agents — each keeps its launchId and points transcriptPath at
+    // its CURRENT session — so the remap survives the marker. (the ghost-after-/clear
+    // bug: argv 13b7…→4f70… is known from the agent even once the marker is gone.)
+    const foundIdsLc = new Set(found.map((f) => f.sessionId.toLowerCase()));
+    const launchToCurrent = new Map<string, string>(); // launch id (lc) → current session uuid (lc)
+    const staleLaunch = new Set<string>(); // dead launch transcripts whose successor is on disk
+    for (const a of this.store.list()) {
+      if (!a.launchId || !a.transcriptPath) continue;
+      const launch = a.launchId.toLowerCase();
+      const cur = path.basename(a.transcriptPath, ".jsonl").toLowerCase();
+      if (cur === launch) continue; // un-cleared: launch transcript IS the current one
+      launchToCurrent.set(launch, cur);
+      // only retire the old launch transcript once its successor is actually on
+      // disk, so we never suppress it before its replacement exists (orphaning the dev)
+      if (foundIdsLc.has(cur)) staleLaunch.add(launch);
+    }
+    // transcript ids PASS 1 pins as live (launch ids remapped to their successor,
+    // from the live marker first, else the persisted agent tie)
     const livePins = new Set<string>();
-    for (const id of argvIds) livePins.add(newestSucc.get(id)?.succ ?? id);
+    for (const id of argvIds) livePins.add(newestSucc.get(id)?.succ ?? launchToCurrent.get(id) ?? id);
     // Session ids the SessionEnd hook reported as exited. Defensively drop (and
     // clear) any marker whose session is still a LIVE process — a stale or racing
     // marker must never retire a running dev; the marker is authoritative only
@@ -301,7 +327,7 @@ export class ClaudeDiscovery {
     // below. Done here (not after) so a dead transcript can't claim a per-cwd slot
     // by its (freshest, post-/exit) mtime and starve the live sibling that should
     // have kept it — the retire must free the budget for who's actually running.
-    const suppress = new Set([...endedIds, ...this.retiredSessions.keys()]);
+    const suppress = new Set([...endedIds, ...this.retiredSessions.keys(), ...staleLaunch]);
     if (suppress.size) found = found.filter((f) => !suppress.has(f.sessionId.toLowerCase()));
     const kept: Found[] = [];
     const keptCwd = new Set<string>();
@@ -449,6 +475,10 @@ export class ClaudeDiscovery {
     // can flag the agent (→ the scene sends the dev on its shredder trip) and
     // keep an external dev external rather than re-flagging it as owned.
     const succeeded = new Map<string, string>(); // agent id → new session id
+    // why each agent ended up tied to its session THIS poll (launch-id /
+    // worktree / succession / discovered / prior-adopt). Surfaced in the binding
+    // snapshot so a drifting tie (the duplicate-ghost bug) can be traced.
+    const bindReason = new Map<string, string>(); // agent id → reason
 
     const seenSessions = new Set<string>();
     const claimedPlaceholders = new Set<string>();
@@ -526,6 +556,13 @@ export class ClaudeDiscovery {
         dlog("discovery.resume.redirect", { resumed: y, launchId: mark.launchId, placeholder: ph });
       }
     }
+    // placeholders still waiting on a pinned --session-id (launched by DevTower
+    // with `claude --session-id`, transcript not yet on disk). Such a placeholder
+    // must bind ONLY by that exact id (case 1) — never let the worktree heuristic
+    // adopt a stranger session that merely shares the cwd, which strands the real
+    // launched session as a ghost. expecting is pruned each poll, so this holds
+    // only genuinely-pending pins.
+    const awaitingPinned = new Set(this.expecting.values());
     for (const f of found) {
       seenSessions.add(f.id);
       // which store agent this session drives: a prior adoption, a fresh adopt
@@ -546,6 +583,7 @@ export class ClaudeDiscovery {
           this.adopted.set(f.id, want);
           this.expecting.delete(f.sessionId);
           this.launchPending.delete(want);
+          bindReason.set(want, "launch-id");
           dlog("discovery.bind.session", { sessionId: f.sessionId, placeholder: want, cwd: f.cwd });
         }
       }
@@ -560,10 +598,16 @@ export class ClaudeDiscovery {
         // waits for its real session instead of binding to the old one
         const launchedAt = cand ? this.launchPending.get(cand) : undefined;
         const fresh = launchedAt === undefined || f.mtime >= launchedAt - ClaudeDiscovery.ADOPT_SLACK_MS;
-        if (cand && !claimedPlaceholders.has(cand) && fresh) {
+        // a placeholder awaiting its pinned --session-id must NOT adopt a stranger
+        // here; it waits for case 1 to bind its exact session (the ghost-on-spawn
+        // bug: the heuristic grabbing an ambient session before the real one lands)
+        if (cand && awaitingPinned.has(cand)) {
+          dlog("discovery.heuristic.hold", { sessionId: f.sessionId, placeholder: cand, cwd: f.cwd });
+        } else if (cand && !claimedPlaceholders.has(cand) && fresh) {
           targetId = cand;
           this.adopted.set(f.id, cand);
           this.launchPending.delete(cand);
+          bindReason.set(cand, "worktree");
           dlog("discovery.bind.worktree", { sessionId: f.sessionId, placeholder: cand, cwd: f.cwd });
         }
       }
@@ -579,11 +623,15 @@ export class ClaudeDiscovery {
           succeeded.set(predecessor, f.sessionId);
           succession.delete(f.sessionId);
           clearSuccessionMarker(f.sessionId, this.deps.successionDir);
+          bindReason.set(predecessor, "succession");
           dlog("discovery.bind.succession", { sessionId: f.sessionId, dev: predecessor });
         }
       }
       const id = targetId ?? f.id;
       const isAdopted = id !== f.id;
+      // the three deterministic binds above set their own reason; anything else is
+      // either a re-bind to a prior adoption or a plain external discovery
+      if (!bindReason.has(id)) bindReason.set(id, isAdopted ? "prior-adopt" : "discovered");
       // A session APPEARING FOR THE FIRST TIME in a worktree where the user just
       // spawned a dev, but older than that launch, is the stale predecessor of
       // the session the placeholder is about to adopt (a brand-new session writes
@@ -647,6 +695,7 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
           skills: f.skills,
           subagents: f.subagents,
+          tasks: f.tasks,
           external: cleared ? !!this.store.get(id)?.external : false,
           launchId,
           clearedSession: cleared,
@@ -670,6 +719,7 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
           skills: f.skills,
           subagents: f.subagents,
+          tasks: f.tasks,
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
           external: cleared ? !!this.store.get(id)?.external : !isAdopted,
@@ -713,11 +763,38 @@ export class ClaudeDiscovery {
       }
     }
     });
+    // Per-agent binding snapshot: exactly which claude session each agent is tied
+    // to this poll, how it got bound, whether it's owned or external, and the
+    // terminal PID (the stable owned-dev tie). This is the trail for diagnosing a
+    // dev that drifts onto the wrong session or splits into an owned + ghost twin.
+    const bindings = this.store.list().map((a) => ({
+      id: a.id,
+      name: a.name,
+      session: a.transcriptPath ? path.basename(a.transcriptPath, ".jsonl") : undefined,
+      launchId: a.launchId,
+      terminalPid: a.terminalPid,
+      external: !!a.external,
+      reason: bindReason.get(a.id),
+    }));
+    // Tie-drift timeline: log the instant an agent's bound session changes, with
+    // the old → new uuids and why, so a /clear rebind vs an unexpected swap is
+    // distinguishable after the fact.
+    const tie = new Map<string, string>();
+    for (const b of bindings) {
+      if (!b.session) continue;
+      tie.set(b.id, b.session);
+      const prev = this.lastTie.get(b.id);
+      if (prev && prev !== b.session) {
+        dlog("discovery.tie.change", { id: b.id, from: prev, to: b.session, reason: b.reason, external: b.external });
+      }
+    }
+    this.lastTie = tie;
     dlog("discovery.refresh", {
       found: found.length,
       present: [...present],
       external: this.store.list().filter((a) => a.external).map((a) => a.id),
       placeholders: this.store.list().filter((a) => !a.transcriptPath).map((a) => a.id),
+      bindings,
     });
     return found.length;
   }
@@ -732,6 +809,8 @@ export class ClaudeDiscovery {
     // when a session is parked on a permission/input prompt. A marker newer than
     // the transcript mtime means the session hasn't moved since → still waiting.
     const markers = await readWaitingMarkers(this.deps.waitingDir);
+    // the Task tool's per-session store lives beside `projects/` under `tasks/`
+    const tasksRoot = this.deps.tasksRoot ?? path.join(root, "..", "tasks");
 
     const projDirs = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
     for (const d of projDirs) {
@@ -745,13 +824,23 @@ export class ClaudeDiscovery {
         if (!st || now - st.mtimeMs > maxAge || st.size === 0) continue;
         const meta = await readMeta(file, st.size);
         if (!meta.cwd) continue;
-        const age = now - st.mtimeMs;
         const sessionId = fn.slice(0, -6); // strip ".jsonl"
+        // A foreground sub-agent BLOCKS the parent's main thread, so the parent
+        // transcript falls silent for the whole spawn while the sub-agent writes
+        // its OWN file under <sessionId>/subagents/. Fold that activity in as the
+        // session's real last-active time. Without it a session running a spawn
+        // looks idle, and — the bug this fixes — an already-answered permission
+        // marker keeps the hand up: marker.ts stays ahead of the frozen parent
+        // mtime until the sub-agent returns. A genuinely blocked sub-agent isn't
+        // writing, so its mtime stays behind the marker and the hand holds.
+        const tasks = await readTasks(tasksRoot, sessionId);
+        const activityMtime = Math.max(st.mtimeMs, await newestSubMtime(pdir, sessionId));
+        const age = now - activityMtime;
         // a fresh Notification marker overrides everything: the harness told us
-        // this session is parked. Once it resumes, the transcript advances past
-        // the marker's ts — drop the now-stale marker so the hand falls.
+        // this session is parked. Once it resumes, activity advances past the
+        // marker's ts — drop the now-stale marker so the hand falls.
         const marker = markers.get(sessionId);
-        const waitingByHook = !!marker && marker.ts > st.mtimeMs;
+        const waitingByHook = !!marker && marker.ts > activityMtime;
         if (marker && !waitingByHook) clearMarker(sessionId, this.deps.waitingDir);
         // otherwise: waiting ONLY when the assistant actually asked something; a
         // turn that ends in a statement is just done → idle (off the clock)
@@ -777,6 +866,7 @@ export class ClaudeDiscovery {
           contextTokens: meta.contextTokens,
           skills: meta.skills,
           subagents: meta.subagents,
+          tasks,
         });
       }
     }
@@ -799,6 +889,51 @@ interface Found {
   contextTokens?: number;
   skills?: string[];
   subagents?: number;
+  tasks?: { done: number; total: number };
+}
+
+/** Count an agent's task list from `~/.claude/tasks/<sessionId>/*.json` — the
+ *  Task tool's per-session store, one JSON file per task carrying a `status` of
+ *  pending|in_progress|completed. Returns done/total only for a list of 2+ tasks
+ *  (a single task isn't worth deploying the desk TV). Undefined when none. */
+export async function readTasks(
+  tasksRoot: string,
+  sessionId: string
+): Promise<{ done: number; total: number } | undefined> {
+  const dir = path.join(tasksRoot, sessionId);
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  let done = 0;
+  let total = 0;
+  for (const fn of files) {
+    if (!fn.endsWith(".json")) continue;
+    const raw = await fs.promises.readFile(path.join(dir, fn), "utf8").catch(() => "");
+    if (!raw) continue;
+    try {
+      const t = JSON.parse(raw) as { status?: string };
+      if (typeof t.status !== "string") continue;
+      total++;
+      if (t.status === "completed") done++;
+    } catch {
+      // a half-written task file mid-poll — skip it
+    }
+  }
+  return total >= 2 ? { done, total } : undefined;
+}
+
+/** Newest mtime among a session's sub-agent transcripts. They live in a sibling
+ *  `<sessionId>/subagents/agent-*.jsonl` dir, NOT in the parent .jsonl, so the
+ *  parent's mtime stays frozen while a foreground spawn runs. Returns 0 when the
+ *  session has spawned none (the common case). */
+export async function newestSubMtime(projectDir: string, sessionId: string): Promise<number> {
+  const dir = path.join(projectDir, sessionId, "subagents");
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  let newest = 0;
+  for (const fn of files) {
+    if (!fn.endsWith(".jsonl")) continue;
+    const st = await fs.promises.stat(path.join(dir, fn)).catch(() => null);
+    if (st && st.mtimeMs > newest) newest = st.mtimeMs;
+  }
+  return newest;
 }
 
 /** Read head (for cwd) + tail (for last role / prompt / model) of a transcript. */

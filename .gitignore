@@ -13,4 +13,5 @@ media/crew.js.map
 # screenshot harness (throwaway captures)
 screenshots/out/
 screenshots/.harness.html
+screenshots/.harness.leave.html
 test-results/

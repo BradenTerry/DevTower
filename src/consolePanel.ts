@@ -10,7 +10,7 @@ import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
-import { dlog, elog } from "./debugLog";
+import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
 
@@ -290,6 +290,53 @@ export class ConsolePanel {
           .getConfiguration("devtower")
           .update("efficiencyMode", !!m.on, vscode.ConfigurationTarget.Global);
         break;
+      case "setDebug": {
+        // operator toggled debug logging from the Settings > Debug tab. Persisting
+        // it fires the devtower.debugLog config listener, which re-posts config so
+        // the toggle's authoritative state echoes back to the webview.
+        const on = !!m.on;
+        await vscode.workspace
+          .getConfiguration("devtower")
+          .update("debugLog", on, vscode.ConfigurationTarget.Global);
+        // Turning OFF with a captured log present: offer to clear it (the logs
+        // stay viewable if the operator declines).
+        if (!on && debugLogExists()) {
+          const pick = await vscode.window.showWarningMessage(
+            "Clear the DevTower debug log?",
+            { modal: true, detail: "Debug logging is now off. Clear the captured log, or keep it to review." },
+            "Clear log",
+            "Keep"
+          );
+          if (pick === "Clear log") {
+            clearDebugLog();
+            this.postConfig();
+          }
+        }
+        break;
+      }
+      case "viewDebugLog": {
+        // reveal the live output channel AND open the on-disk log (the full
+        // history, greppable), whichever exists
+        showDebugChannel();
+        const p = debugLogPath();
+        if (p && fs.existsSync(p)) {
+          const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(p));
+          await vscode.window.showTextDocument(doc, { preview: false });
+        }
+        break;
+      }
+      case "clearDebugLog": {
+        const pick = await vscode.window.showWarningMessage(
+          "Clear the DevTower debug log?",
+          { modal: true, detail: "This permanently deletes the captured debug log." },
+          "Clear log"
+        );
+        if (pick === "Clear log") {
+          clearDebugLog();
+          this.postConfig();
+        }
+        break;
+      }
       case "select":
         if (id) {
           this.store.setSelected(id);
@@ -446,6 +493,7 @@ export class ConsolePanel {
       type: "config",
       eco: cfg.get<boolean>("efficiencyMode", false),
       debug: cfg.get<boolean>("debugLog", false),
+      debugLogExists: debugLogExists(),
       reviewSkills: cfg.get<string[]>("reviewSkills", []),
       reviewDefaults: cfg.get<object>("reviewDefaults", {}),
       reviewAgents: this.discoverReviewAgents(),
@@ -1417,6 +1465,7 @@ export class ConsolePanel {
       <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
     </div>
     <div class="spacer"></div>
+    <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
     <button class="iconbtn" id="prbtn" title="Pull requests">⇄<span class="nbadge" id="pr-badge" hidden>0</span></button>
     <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">⚡</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
@@ -1431,6 +1480,9 @@ export class ConsolePanel {
       <span class="ulbl">WK</span><span class="ubar"><i></i></span><b class="upct">–</b><small class="ureset"></small>
     </span>
   </div>
+
+  <!-- token leaderboard overlay (all agents ranked by context usage) -->
+  <div class="lb-scrim" id="leaderboard" hidden></div>
 
   <!-- settings overlay (GitHub token + capabilities) -->
   <div class="settings-scrim" id="settings" hidden></div>

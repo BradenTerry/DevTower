@@ -164,13 +164,14 @@ export const SCENARIOS: Scenario[] = [
     prs: { crew: [], review: [] },
   },
   {
-    // agent side-panel open on an active agent (checks the ✕ close vs the
-    // ACTIVE status badge, and the panel header layout)
+    // agent side-panel open on a waiting agent (checks the ✕ close vs the
+    // long "AWAITING INPUT" status badge, which is the worst case for the
+    // header layout, plus the question callout)
     name: "agent-panel",
     focusAgent: "a1",
     state: {
       agents: [
-        { id: "a1", name: "Atlas", state: "active", repo: "DevTower", model: "claude-opus-4-8", worktree: "/repo", branch: "main", skills: ["code-review", "verify"], contextTokens: 84_000, elapsed: "12m" },
+        { id: "a1", name: "Atlas", state: "waiting", repo: "DevTower", model: "claude-opus-4-8", worktree: "/repo", branch: "main", skills: ["code-review", "verify"], contextTokens: 84_000, elapsed: "12m", question: "Run the destructive migration?" },
       ],
       rooms: [{ name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] }],
       boards: { "/repo": board({ branch: "main", modified: 2 }) },

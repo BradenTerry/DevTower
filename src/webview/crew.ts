@@ -23,8 +23,12 @@ interface CrewAgent {
   branch?: string; // branch name, shown on the cluster sign
   skills?: string[]; // skills this session has used (accumulated, first-use order)
   subagents?: number; // in-flight sub-agents (Task/Agent tool calls not yet returned)
+  tasks?: { done: number; total: number }; // Task-tool checklist progress (2+ tasks); drives the desk TV
   contextTokens?: number; // tokens occupying the session's context window (for the token board)
   external?: boolean; // a live session running OUTSIDE DevTower (not one we launched)
+  session?: string; // the claude session uuid this dev is currently tied to (debug tie-label)
+  launchId?: string; // the terminal's stable --session-id (debug tie-label)
+  terminalPid?: number; // PID of the VS Code terminal shell DevTower opened (debug tie-label)
   clearedSession?: string; // session id of the dev's latest /clear; a change sends it to the shredder
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
   reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
@@ -111,7 +115,7 @@ const ROOM_H = 84; // taller walls leave a mid-band for the per-room task board
 const SLAB = 8; // concrete between floors
 const FLOOR_STEP = ROOM_H + SLAB;
 const WB_W = 42; // left inset before the first desk
-const DESK_W = 26;
+const DESK_W = 32; // column pitch (desk-to-desk spacing); furniture itself is ~22px, so the rest is gap
 const DOOR_W = 18;
 // Bookshelf under the left window: a dev walks here to pick up a "skill" book
 // (one per skill it uses) and carries it back to stack on its desk.
@@ -346,6 +350,13 @@ interface Toon {
   // records the frame so the APPROVED/CHANGES stamp can "thud" in over ~1s.
   lastVerdict?: string;
   stampAt?: number;
+  // desk TV that tracks this session's Task-tool checklist. `tvShow` is the
+  // deploy/retract scale (0 hidden, 1 fully raised on its stand); `taskDone` is
+  // the last completed-count seen, so a rise kicks `tapAt` — the frame the dev
+  // slapped the desk button, which flashes the screen and rolls the count up.
+  tvShow: number;
+  taskDone?: number;
+  tapAt?: number;
   ph: number;
 }
 
@@ -440,6 +451,11 @@ class PixelCrew {
   }[] = [];
   private colRange = new Map<number, { min: number; max: number }>();
   private bounds = { minX: -120, maxX: 120, topY: -120, botY: 40, minFloor: 0 };
+  // Sticky desk slots: worktree key -> (agent id -> slot index within its block).
+  // A seated dev keeps its slot for life, so when a neighbour leaves the others
+  // stay put and only the departed desk vanishes; a new dev fills the lowest free
+  // slot (reusing a gap) rather than shoving everyone over.
+  private seatSlots = new Map<string, Map<string, number>>();
 
   private focusRoom_: string | null = null;
   private focusAgentId: string | null = null; // when set, the camera tracks this dev (not the room)
@@ -813,8 +829,15 @@ class PixelCrew {
         // swap desks with the new dev.
         if (seen.has(id) || tn.leaving || tn.entering || tn.agent.external) continue;
         const key = tn.agent.worktree?.trim();
-        const next = key ? arriving.get(key)?.shift() : undefined;
-        if (!next) continue;
+        // a /clear-restart of an OWNED dev mints another OWNED session in the same
+        // DevTower terminal. An EXTERNAL arrival is a different outside session, not
+        // this dev continuing — re-keying onto it would drag the owned dev through
+        // the shred trip and leave it rendered as a ghost. Match only an owned
+        // arrival; leave any external one to enter as its own toon below.
+        const pool = key ? arriving.get(key) : undefined;
+        const ni = pool ? pool.findIndex((a) => !a.external) : -1;
+        if (ni < 0) continue;
+        const next = pool!.splice(ni, 1)[0];
         // re-key the toon to the new session, keeping its persona/seat/position so
         // it reads as the SAME dev continuing after wiping its context.
         this.dbg("shred.swap", { from: id, to: next.id, worktree: key, wasExternal: !!tn.agent.external, nowExternal: !!next.external });
@@ -874,6 +897,8 @@ class PixelCrew {
           // it appeared isn't replayed as a shred trip on first sight — only a
           // change while the toon is on screen animates.
           clearedSession: a.clearedSession,
+          tvShow: 0,
+          taskDone: a.tasks?.done,
           ph: (hash(a.id) % 628) / 100,
         };
         this.toons.set(a.id, tn);
@@ -901,6 +926,14 @@ class PixelCrew {
         this.invalidate(); // wake the loop so the walk plays now, not at the next event
       }
       tn.clearedSession = nextClear;
+      // a task ticking over to completed: the dev slaps the desk button to bump
+      // its TV. Seed taskDone on first sight so a pre-existing count never replays.
+      const nextDone = a.tasks?.done ?? 0;
+      if (tn.taskDone !== undefined && nextDone > tn.taskDone) {
+        tn.tapAt = this.frame;
+        this.invalidate(); // wake the loop so the tap + count roll play now
+      }
+      tn.taskDone = nextDone;
       tn.agent = a;
       // accumulate newly-used skills; the tick walks the dev to the shelf to
       // fetch a book for each one beyond what's already on its desk
@@ -933,20 +966,42 @@ class PixelCrew {
       if (am !== bm) return am - bm;
       return treeName(a[0]) < treeName(b[0]) ? -1 : 1;
     });
+    // forget slot maps for worktrees that no longer have any agents
+    for (const k of [...this.seatSlots.keys()]) if (!byTree.has(k)) this.seatSlots.delete(k);
     const seats = new Map<string, { col: number; row: number }>();
     const groups: DeskGroup[] = [];
     let startCol = 0;
     let mainTaken = false; // at most one block is the "main" worktree
     for (const [key, ags] of entries) {
-      // fill the front line left-to-right first, then wrap to the back row;
-      // the last row absorbs any overflow beyond the available rows
-      ags.forEach((a, i) => {
+      // Each dev holds a sticky slot index within its worktree block. Keep the
+      // slots of devs still present, release a departed dev's slot, and hand any
+      // brand-new dev the lowest free slot — so a leaver's desk just disappears
+      // and the rest stay seated instead of all sliding left.
+      let slots = this.seatSlots.get(key);
+      if (!slots) { slots = new Map(); this.seatSlots.set(key, slots); }
+      const present = new Set(ags.map((a) => a.id));
+      for (const id of [...slots.keys()]) if (!present.has(id)) slots.delete(id);
+      const taken = new Set(slots.values());
+      let maxSlot = -1;
+      for (const a of ags) {
+        let i = slots.get(a.id);
+        if (i === undefined) {
+          i = 0;
+          while (taken.has(i)) i++;
+          slots.set(a.id, i);
+          taken.add(i);
+        }
+        maxSlot = Math.max(maxSlot, i);
+        // fill the front line left-to-right first, then wrap to the back row;
+        // the last row absorbs any overflow beyond the available rows
         let row = Math.floor(i / FRONT_CAP);
         let col = i % FRONT_CAP;
         if (row > ROWS_OF_DESKS - 1) { row = ROWS_OF_DESKS - 1; col = i - row * FRONT_CAP; }
         seats.set(a.id, { col: startCol + col, row });
-      });
-      const cols = Math.max(1, Math.min(ags.length, FRONT_CAP));
+      }
+      // reserve the block's width up to the furthest occupied slot so the gap a
+      // departed dev left stays empty instead of collapsing the neighbours in
+      const cols = Math.max(1, Math.min(maxSlot + 1, FRONT_CAP));
       const main = !mainTaken && isMain(key, ags);
       if (main) mainTaken = true;
       groups.push({
@@ -1737,6 +1792,9 @@ class PixelCrew {
       // loop alive through it even though the dev's state is idle and it hasn't
       // started moving yet (tick sets its targetX on the next frame).
       if (tn.shred || tn.errand) return false;
+      // the desk TV mid-deploy, or a just-pressed completion button, both animate
+      if (tn.tvShow > 0.02 && tn.tvShow < 0.98) return false;
+      if (tn.tapAt !== undefined && this.frame - tn.tapAt < 8) return false;
       const s = tn.agent.state;
       if (s === "active" || s === "waiting") return false;
     }
@@ -1954,6 +2012,15 @@ class PixelCrew {
         tn.booksShown = tn.skills.length;
         tn.booksInHand = 0;
       }
+    }
+    // raise/retract each dev's desk TV: it rises on its stand once the dev is
+    // seated and the session has a 2+ task list, and folds back down when the
+    // list goes away or the dev leaves the desk (errand/shred/walk).
+    for (const tn of this.toons.values()) {
+      const tv = tn.agent.tasks;
+      const want = !!tv && tv.total >= 2 && tn.sitting && !tn.errand && !tn.shred ? 1 : 0;
+      tn.tvShow += (want - tn.tvShow) * Math.min(1, dt * 8);
+      if (Math.abs(want - tn.tvShow) < 0.01) tn.tvShow = want;
     }
     for (let i = this.leaving.length - 1; i >= 0; i--) {
       const tn = this.leaving[i];
@@ -2497,6 +2564,21 @@ class PixelCrew {
           ctx.restore();
         }
       }
+      if (this.debugOn) {
+        // Tie tracker (debugLog only): which claude session this dev is bound to,
+        // owned vs external, the launch id when it differs from the live session
+        // (a /clear-drifted tie), and the terminal PID — the stable owned tie.
+        const a = tn.agent;
+        const sid = a.session ? a.session.slice(0, 4) : "----";
+        const lid = a.launchId ? a.launchId.slice(0, 4) : null;
+        const tag = `${sid}${a.external ? "·ext" : "·own"}${lid && lid !== sid ? "←" + lid : ""}${a.terminalPid ? "·t" + a.terminalPid : ""}`;
+        ctx.save();
+        ctx.font = "7px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillStyle = a.external ? "rgba(150,162,170,0.9)" : "rgba(120,200,255,0.95)";
+        ctx.fillText(tag, s.x, s.y + 7);
+        ctx.restore();
+      }
       const glyph = st === "waiting" ? "?" : st === "complete" ? "✓" : st === "error" ? "✗" : "";
       if (glyph) {
         const wait = st === "waiting";
@@ -2919,34 +3001,8 @@ class PixelCrew {
       const yB = base + (byB - base) * t;
       return { x: xL, y: yT + (yB - yT) * f };
     };
-    // right-wall mapper (mirror of onWall): the token board hangs flat here, above
-    // the lift door, so it shares the door's exact perspective slant.
-    const onWallR = (t: number, f: number) => {
-      const xR = x + w + (bw.x1 - (x + w)) * t;
-      const yT = topY + (byT - topY) * t;
-      const yB = base + (byB - base) * t;
-      return { x: xR, y: yT + (yB - yT) * f };
-    };
-    // the token leaderboard, hung on the right wall above the door (it replaced
-    // the old night window). Ranks the tower's agents by context tokens.
-    //
-    // It is deliberately TILTED to read as "facing into the room" at the door's
-    // angle: the FAR (back, screen-left) edge rides high, the NEAR (front,
-    // screen-right) edge drops low. A flat plaque this high on the wall would
-    // naturally slant the other way, so the near corners use a larger f (lower on
-    // the wall) than the far corners. The near edge sits at t≈0.04 — in FRONT of
-    // the door (t 0.18–0.5) — so it can drop low without colliding with the door.
-    // Corners are ordered so local +x runs far→near (screen-rightward) → text
-    // reads left-to-right, not mirrored.
-    const bTF = 0.85, bTN = 0.04; // far / near depth
-    this.drawTokenBoard(
-      ctx, r,
-      onWallR(bTF, 0.04), // TL: far-top  (rides high)
-      onWallR(bTN, 0.22), // TR: near-top (dropped low → inward tilt)
-      onWallR(bTF, 0.55), // BL: far-bottom (back wall is clear of the door, so it
-                          //     can run lower here to fit the whole leaderboard)
-      underground
-    );
+    // (the wall above the lift door is intentionally left blank: the token
+    // leaderboard that used to hang here moved into the HUD leaderboard modal)
 
     // the skills library: a long bookshelf running the full left wall, slanted
     // to the wall's perspective, just below the window
@@ -3496,134 +3552,6 @@ class PixelCrew {
     // border pulse anymore, so it's clear which stat changed)
   }
 
-  /** Token leaderboard hung flat on the room's right wall, above the lift door
-   *  (it replaced the old night window). Ranks the whole tower's agents by the
-   *  tokens occupying their context window, biggest first. The caller passes three
-   *  wall corners — TL (origin), TR (+x edge), BL (+y edge) — and they're baked
-   *  into an affine transform so the panel AND its text shear with the wall's
-   *  perspective instead of facing the camera. Order the corners so TR is the NEAR
-   *  jamb side, keeping local +x screen-rightward (text reads forwards). */
-  private drawTokenBoard(
-    ctx: CanvasRenderingContext2D,
-    r: Room,
-    TL: { x: number; y: number },
-    TR: { x: number; y: number },
-    BL: { x: number; y: number },
-    underground: boolean
-  ) {
-    const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
-    if (eFurn <= 0) return;
-    const ux = TR.x - TL.x, uy = TR.y - TL.y; // wall "right" (toward near jamb)
-    const vx = BL.x - TL.x, vy = BL.y - TL.y; // wall "down"
-    const W = Math.hypot(ux, uy), H = Math.hypot(vx, vy);
-    if (W < 11 || H < 14) return; // too small / far to be worth drawing
-
-    ctx.save();
-    ctx.globalAlpha = eFurn;
-    // map local pixels (0..W, 0..H) onto the wall parallelogram so text drawn
-    // normally leans with the wall. transform() POST-multiplies the camera, so
-    // pan/zoom are preserved; everything below is in LOCAL wall pixels.
-    ctx.transform(ux / W, uy / W, vx / H, vy / H, TL.x, TL.y);
-
-    // a thin dark reveal just outside the frame so the wall clearly outlines the
-    // plaque (the "small border" framing it)
-    ctx.fillStyle = "rgba(3,5,8,0.55)";
-    ctx.fillRect(-0.8, -0.8, W + 1.6, H + 1.6);
-    // frame + recessed screen
-    const bz = 1.3; // bezel
-    ctx.fillStyle = "#05080b";
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = "#1a232b"; // top/left bevel so it reads as mounted, not painted
-    ctx.fillRect(0, 0, W, 0.8);
-    ctx.fillRect(0, 0, 0.8, H);
-    const scr = ctx.createLinearGradient(0, 0, 0, H);
-    scr.addColorStop(0, underground ? "#15110a" : "#0f1a26");
-    scr.addColorStop(1, underground ? "#0c0a06" : "#0a1017");
-    ctx.fillStyle = scr;
-    ctx.fillRect(bz, bz, W - bz * 2, H - bz * 2);
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(bz, bz, W - bz * 2, H - bz * 2);
-    ctx.clip();
-    ctx.fillStyle = "rgba(120,200,255,0.04)"; // faint scanlines
-    for (let yy = bz + 1; yy < H - bz; yy += 2) ctx.fillRect(bz, yy, W, 0.6);
-
-    const padX = bz + 0.8;
-    const innerL = padX, innerR = W - padX, innerW = innerR - innerL;
-    const fit = (s: string, maxW: number) => {
-      if (ctx.measureText(s).width <= maxW) return s;
-      let t = s;
-      while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
-      return t + "…";
-    };
-    // header
-    ctx.textBaseline = "alphabetic";
-    ctx.textAlign = "left";
-    ctx.font = "bold 3.4px 'Martian Mono', monospace";
-    ctx.fillStyle = "hsl(48 85% 70%)";
-    ctx.fillText(fit("TOKENS", innerW), innerL, bz + 4.2);
-    ctx.fillStyle = "rgba(120,150,170,0.22)";
-    ctx.fillRect(innerL, bz + 5.4, innerW, 0.7);
-
-    // every tower agent that has burned context, biggest first
-    const ranked = this.agents
-      .map((a) => ({ a, tok: a.contextTokens ?? 0 }))
-      .filter((e) => e.tok > 0)
-      .sort((x, y) => y.tok - x.tok);
-    const bodyTop = bz + 6.4;
-    const rowH = 4.1;
-    const maxRows = Math.max(1, Math.floor((H - bz - 1 - bodyTop) / rowH));
-    if (!ranked.length) {
-      ctx.fillStyle = "rgba(205,220,232,0.45)";
-      ctx.font = "3.4px 'IBM Plex Mono', monospace";
-      ctx.fillText("no tokens yet", innerL, bodyTop + 4);
-      ctx.restore();
-      ctx.restore();
-      return;
-    }
-    const fmt = (n: number) =>
-      n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
-    const MEDAL = ["#ffd24a", "#cdd6e0", "#d9a066"]; // gold / silver / bronze
-    const top = ranked.slice(0, maxRows);
-    const maxTok = top[0].tok;
-    top.forEach((e, i) => {
-      const ry = bodyTop + i * rowH;
-      const shirt = `hsl(${hash(e.a.id) % 360} 45% 52%)`; // matches the toon's shirt
-      // row track + relative-usage fill (leader = full width)
-      ctx.fillStyle = "rgba(120,150,170,0.1)";
-      ctx.fillRect(innerL, ry + 0.4, innerW, rowH - 1.4);
-      ctx.globalAlpha = eFurn * 0.3;
-      ctx.fillStyle = shirt;
-      ctx.fillRect(innerL, ry + 0.4, Math.max(1, (innerW * e.tok) / maxTok), rowH - 1.4);
-      ctx.globalAlpha = eFurn;
-      // identity dot (podium gets a medal tint)
-      ctx.fillStyle = i < 3 ? MEDAL[i] : shirt;
-      ctx.fillRect(innerL + 0.5, ry + 0.9, 1.7, 1.7);
-      // token count, right-aligned (the headline number)
-      ctx.font = "bold 3px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = "rgba(228,236,242,0.95)";
-      ctx.textAlign = "right";
-      const tokStr = fmt(e.tok);
-      ctx.fillText(tokStr, innerR, ry + 3.2);
-      const tokW = ctx.measureText(tokStr).width;
-      // name, left-aligned, filling the gap up to the count — but only when there
-      // is a real slot for it, so it never collides with the token on a narrow
-      // plaque (there the dot/medal carries identity instead)
-      const nameL = innerL + 3.4;
-      const nameW = innerR - tokW - 1.5 - nameL;
-      if (nameW >= 4) {
-        ctx.textAlign = "left";
-        ctx.font = "3px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = "rgba(208,222,234,0.92)";
-        ctx.fillText(fit(e.a.name || "agent", nameW), nameL, ry + 3.2);
-      }
-    });
-
-    ctx.restore(); // clip
-    ctx.restore(); // transform + alpha
-  }
-
   /** The skills library: a long, low bookshelf that runs the full left wall,
    *  drawn slanted in the wall's one-point perspective just below the window.
    *  A dev walks to it when it uses a skill and carries a book back to its desk
@@ -3861,8 +3789,84 @@ class PixelCrew {
         ctx.fillStyle = `hsl(${hue} 45% 55%)`;
         ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 0.4); // top-edge highlight
       }
+      // the task TV the dev raises on the desk's left to track its checklist
+      if (tn && tn.tvShow > 0.02) this.drawDeskTV(ctx, tn, dx, db);
     }
     ctx.globalAlpha = 1;
+  }
+
+  /** The status TV a dev deploys on the left of its desk to track its Task-tool
+   *  checklist: a small screen on a stand showing `done/total` over a progress
+   *  bar. It rises/folds via `tn.tvShow`, and flashes when the dev slaps the desk
+   *  button on a completion (`tn.tapAt`). Sits left of the monitor, clear of the
+   *  dev (seated to the right) so it never occludes them. */
+  private drawDeskTV(ctx: CanvasRenderingContext2D, tn: Toon, dx: number, db: number) {
+    const tv = tn.agent.tasks;
+    if (!tv || tv.total < 2) return;
+    const sc = clamp(tn.tvShow, 0, 1);
+    const done = Math.min(tv.done, tv.total);
+    const allDone = done >= tv.total;
+    const accent = allDone ? "#3ee089" : "#56c7ff";
+    const tp = tn.tapAt !== undefined ? this.frame - tn.tapAt : 99; // frames since tap
+    const tapping = tp >= 0 && tp < 6;
+
+    // completion button on the desk, left of the stand — lit green on a press
+    const lit = tapping ? 1 - tp / 6 : 0;
+    ctx.fillStyle = "#1a1014";
+    ctx.fillRect(dx + 1.2, db - 11.6, 3, 0.8); // button base shadow on the desk
+    ctx.fillStyle = lit > 0 ? "#3ee089" : "#7a2c28";
+    ctx.fillRect(dx + 1.6, db - 12.2 + lit * 0.4, 2.2, 1.4); // the button cap (sinks when pressed)
+    ctx.fillStyle = lit > 0 ? "#bff7d6" : "#9c3a34";
+    ctx.fillRect(dx + 1.6, db - 12.2 + lit * 0.4, 2.2, 0.4); // top highlight
+
+    // stand: a foot on the desk and a thin pole up to the screen
+    const poleTop = db - 14;
+    ctx.fillStyle = "#171c22";
+    ctx.fillRect(dx + 2.4, db - 11.4, 3, 0.8); // foot
+    ctx.fillRect(dx + 3.4, poleTop, 1, db - 11 - poleTop); // pole
+
+    // screen body unfolds upward from the top of the pole as tvShow rises
+    const fullH = 8;
+    const w = 7;
+    const h = fullH * sc;
+    const top = poleTop - h;
+    const left = dx + 0.4;
+    ctx.fillStyle = "#0c0f13";
+    ctx.fillRect(left, top, w, h); // bezel
+    if (sc < 0.55) return; // still folding out — no readable content yet
+    const ca = ctx.globalAlpha;
+    const fade = clamp((sc - 0.55) / 0.45, 0, 1);
+    const sx = left + 0.9;
+    const sy = top + 0.9;
+    const sw = w - 1.8;
+    const sh = h - 1.8;
+    ctx.globalAlpha = ca * fade;
+    ctx.fillStyle = "#10151b"; // dark screen
+    ctx.fillRect(sx, sy, sw, sh);
+    // power LED in the corner
+    ctx.fillStyle = accent;
+    ctx.fillRect(left + w - 1.5, top + 0.6, 0.7, 0.7);
+    // done/total count
+    ctx.fillStyle = "#dfe7ef";
+    ctx.font = "3.4px 'Martian Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(`${done}/${tv.total}`, sx + sw / 2, sy + 3.2);
+    // progress bar
+    const barY = sy + sh - 1.8;
+    const barW = sw - 1;
+    const barX = sx + 0.5;
+    ctx.fillStyle = "#1f2730";
+    ctx.fillRect(barX, barY, barW, 1.2);
+    ctx.fillStyle = accent;
+    ctx.fillRect(barX, barY, barW * (done / tv.total), 1.2);
+    // a press flashes the whole screen white briefly
+    if (tapping) {
+      ctx.fillStyle = `rgba(255,255,255,${0.55 * (1 - tp / 6)})`;
+      ctx.fillRect(sx, sy, sw, sh);
+    }
+    ctx.globalAlpha = ca;
+    ctx.textAlign = "left";
   }
 
   private drawToon(ctx: CanvasRenderingContext2D, tn: Toon) {
@@ -3980,12 +3984,22 @@ class PixelCrew {
       ctx.fillRect(x - 4.2 + lean, ty - 5.4 + ease, 1.6, 1.6);
       ctx.fillRect(x + 2.6 + lean, ty - 5.4 - ease, 1.6, 1.6);
     } else if (sitting) {
-      // typing toward the keyboard/monitor on the left
-      const tap = f % 2 === 0 ? 0 : 0.8;
-      ctx.fillRect(x - 6, ty + 2.2, 3.4, 1.4);
-      ctx.fillStyle = handC;
-      ctx.fillRect(x - 7, ty + 2 + tap, 1.4, 1.4);
-      ctx.fillRect(x - 7, ty + 3.6 - tap, 1.4, 1.4);
+      // typing toward the keyboard/monitor on the left — but on a task completion
+      // the near hand darts further down-left to slap the desk's done button
+      const press = tn.tapAt !== undefined && this.frame - tn.tapAt < 6;
+      if (press) {
+        ctx.fillRect(x - 9.4, ty + 2.4, 4, 1.4); // forearm stretched to the button
+        ctx.fillStyle = handC;
+        ctx.fillRect(x - 10.5, ty + 2.9, 1.6, 1.6); // hand pressing down on it
+        ctx.fillStyle = p.shirt;
+        ctx.fillRect(x + 2.8, ty + 1.6, 1.4, 3.8); // far arm rests on the desk
+      } else {
+        const tap = f % 2 === 0 ? 0 : 0.8;
+        ctx.fillRect(x - 6, ty + 2.2, 3.4, 1.4);
+        ctx.fillStyle = handC;
+        ctx.fillRect(x - 7, ty + 2 + tap, 1.4, 1.4);
+        ctx.fillRect(x - 7, ty + 3.6 - tap, 1.4, 1.4);
+      }
     } else if (st === "waiting" && !walking) {
       // asking a question: hand up and WAVING, other hand cupped to mouth
       const wave = Math.sin(f * 0.9 + tn.ph) * 1.1;

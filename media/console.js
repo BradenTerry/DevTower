@@ -57,7 +57,7 @@
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, contextTokens: a.contextTokens, external: a.external, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, tasks: a.tasks, contextTokens: a.contextTokens, external: a.external, session: a.transcriptPath ? a.transcriptPath.replace(/\\/g, "/").split("/").pop().replace(/\.jsonl$/, "") : undefined, launchId: a.launchId, terminalPid: a.terminalPid, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 
@@ -318,6 +318,7 @@
     { id: "general", label: "General" },
     { id: "hooks", label: "Hooks" },
     { id: "github", label: "GitHub" },
+    { id: "debug", label: "Debug" },
   ];
   function settingsOpen() { return !$("#settings").hidden; }
   function closeSettings() { const s = $("#settings"); s.hidden = true; s.innerHTML = ""; }
@@ -327,6 +328,121 @@
     renderSettings(); // render immediately (cached), then refresh from the host
     vscode.postMessage({ type: "getSettings" });
     vscode.postMessage({ type: "getHooks" });
+  }
+
+  /* ---------- token leaderboard modal ---------- */
+  // a readable, full board of every agent ranked by context-window usage. It
+  // replaced the cramped plaque that used to hang on the room wall. Clicking a
+  // row zooms the camera onto that dev (and opens its stats panel).
+  const fmtTokens = (n) =>
+    !n ? "0"
+      : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M"
+      : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + "k"
+      : String(n);
+  const modelLabel = (m) => (m || "—").replace(/^claude-/, "").replace(/-/g, " ");
+
+  function leaderboardOpen() { return !$("#leaderboard").hidden; }
+  function closeLeaderboard() { const s = $("#leaderboard"); s.hidden = true; s.innerHTML = ""; }
+  function openLeaderboard() {
+    const s = $("#leaderboard");
+    s.hidden = false;
+    // build the chrome ONCE; the row list is patched in place on every poll so it
+    // never flickers (rebuilding innerHTML each update tore down and re-created
+    // every node, which flashed even when nothing actually moved)
+    s.innerHTML = `
+      <div class="lb-card">
+        <button class="lb-close" id="lb-close" title="Close (Esc)">✕</button>
+        <h2>Token leaderboard</h2>
+        <div class="lb-sub">All crew ranked by context-window usage. Click an agent to zoom to them.</div>
+        <div class="lb-head">
+          <span class="lb-rank">#</span><span class="lb-dot"></span>
+          <span class="lb-id">Agent</span><span class="lb-model">Model</span>
+          <span class="lb-bar">Context</span><span class="lb-pct"></span><span class="lb-tok">Tokens</span>
+        </div>
+        <div class="lb-list"></div>
+      </div>`;
+    $("#lb-close", s).onclick = closeLeaderboard;
+    s.onclick = (e) => { if (e.target === s) closeLeaderboard(); }; // backdrop closes
+    syncLeaderboard();
+  }
+
+  function makeLbRow(id) {
+    const el = document.createElement("button");
+    el.className = "lb-row";
+    el.dataset.id = id;
+    el.innerHTML =
+      `<span class="lb-rank"></span><span class="lb-dot"></span>` +
+      `<span class="lb-id"><b></b><small></small></span><span class="lb-model"></span>` +
+      `<span class="lb-bar"><i></i></span><span class="lb-pct"></span><span class="lb-tok"></span>`;
+    el.onclick = () => { selectAgent(id, true); closeLeaderboard(); }; // zoom + open panel
+    return el;
+  }
+
+  // patch a row's cells in place (no teardown) so live token updates don't flash
+  function paintLbRow(el, a, i) {
+    const pct = contextOf(a); // 0..100, or null when no tokens yet
+    const rank = el.querySelector(".lb-rank");
+    rank.textContent = i + 1;
+    rank.className = "lb-rank" + (i < 3 ? " m" + i : "");
+    el.querySelector(".lb-dot").style.background = `hsl(${hueOf(a.id)} 45% 52%)`;
+    el.querySelector(".lb-id b").textContent = a.name || "agent";
+    el.querySelector(".lb-id small").textContent = a.repo || "";
+    el.querySelector(".lb-model").textContent = modelLabel(a.model);
+    const bar = el.querySelector(".lb-bar");
+    bar.className = "lb-bar" + (pct == null ? "" : pct >= 80 ? " hot" : pct >= 60 ? " warm" : "");
+    bar.querySelector("i").style.width = (pct == null ? 0 : pct) + "%";
+    el.querySelector(".lb-pct").textContent = pct == null ? "—" : pct + "%";
+    el.querySelector(".lb-tok").textContent = fmtTokens(a.contextTokens ?? 0);
+    el.classList.toggle("sel", a.id === selectedId);
+    el.title = "Zoom to " + (a.name || "agent");
+  }
+
+  function syncLeaderboard() {
+    const s = $("#leaderboard");
+    if (s.hidden) return;
+    const list = $(".lb-list", s);
+    if (!list) return;
+    // every agent, biggest context first (zero-token devs sink to the bottom)
+    const ranked = agents.slice().sort((x, y) => (y.contextTokens ?? 0) - (x.contextTokens ?? 0));
+    if (!ranked.length) { list.innerHTML = `<div class="lb-empty">No agents yet.</div>`; return; }
+    const empty = list.querySelector(".lb-empty");
+    if (empty) empty.remove();
+
+    // index the rows that already exist, keyed by agent id
+    const existing = new Map();
+    list.querySelectorAll(".lb-row").forEach((el) => existing.set(el.dataset.id, el));
+    // FLIP step 1: record each surviving row's current y BEFORE we reorder
+    const firstTop = new Map();
+    existing.forEach((el, id) => firstTop.set(id, el.getBoundingClientRect().top));
+
+    // update + reappend in rank order (appendChild moves an existing node, so the
+    // list ends up in the new order without ever being emptied)
+    const seen = new Set();
+    ranked.forEach((a, i) => {
+      let el = existing.get(a.id);
+      const isNew = !el;
+      if (isNew) el = makeLbRow(a.id);
+      paintLbRow(el, a, i);
+      list.appendChild(el);
+      if (isNew) el.classList.add("lb-enter"); // fade the freshly added row in
+      seen.add(a.id);
+    });
+    // drop rows for agents that are gone
+    existing.forEach((el, id) => { if (!seen.has(id)) el.remove(); });
+
+    // FLIP step 2: invert (jump each moved row back to where it was) then release,
+    // so a rank change slides smoothly instead of snapping
+    list.querySelectorAll(".lb-row").forEach((el) => {
+      const prev = firstTop.get(el.dataset.id);
+      if (prev == null) return; // brand-new row: it just fades in (no slide)
+      const dy = prev - el.getBoundingClientRect().top;
+      if (!dy) return;
+      el.style.transition = "none";
+      el.style.transform = `translateY(${dy}px)`;
+      el.getBoundingClientRect(); // force reflow so the jump is applied first
+      el.style.transition = "transform .34s cubic-bezier(.2,.8,.3,1)";
+      el.style.transform = "";
+    });
   }
 
   // ---- GitHub tab ----
@@ -408,6 +524,31 @@
       </div>`;
   }
 
+  // ---- Debug tab ----
+  function debugPaneHTML() {
+    return `
+      <h3>Debug logging</h3>
+      <p class="s-desc">Writes a verbose, structured trace of agent discovery, session binding, and the
+        scene (shred / swap / spawn) to the <b>DevTower Debug</b> output channel and
+        <code>.devtower/debug.log</code>, and shows a per-dev tie-label in the tower (the claude session
+        id, owned vs external, and the terminal PID). Use it to diagnose a dev that drifts onto the wrong
+        session or splits into a duplicate. Leave off for normal use.</p>
+      <div class="s-row">
+        <div class="s-row-t">
+          <div class="s-row-name">Debug logging</div>
+          <div class="s-row-sub">Verbose trace + on-canvas tie labels. Off by default.</div>
+        </div>
+        <button class="s-toggle ${debug ? "on" : ""}" id="s-debug" role="switch" aria-checked="${debug}"><span class="knob"></span></button>
+      </div>
+      ${dbgLogExists ? `
+      <div class="s-hookbar">
+        <button class="s-actbtn" id="s-debug-view">View log</button>
+        <button class="s-actbtn" id="s-debug-clear">Clear log</button>
+      </div>
+      <div class="s-note">A captured log is on disk. It stays available to view even with logging off.</div>`
+      : `<p class="s-note">No log captured yet. Turn logging on to start recording.</p>`}`;
+  }
+
   // ---- Hooks tab ----
   function hooksPaneHTML() {
     const list = hooks || [];
@@ -441,6 +582,7 @@
       `<button class="s-tab ${settingsTab === t.id ? "on" : ""}" data-tab="${t.id}">${t.label}</button>`).join("");
     const pane = settingsTab === "general" ? generalPaneHTML()
       : settingsTab === "hooks" ? hooksPaneHTML()
+      : settingsTab === "debug" ? debugPaneHTML()
       : githubPaneHTML();
 
     s.innerHTML = `
@@ -479,6 +621,22 @@
     // General-tab wiring
     const ecoT = $("#s-eco", s);
     if (ecoT) ecoT.onclick = () => { applyEco(!eco); vscode.postMessage({ type: "setEco", on: eco }); renderSettings(); };
+
+    // Debug-tab wiring: flip locally for an instant response, mirror into the
+    // scene, and persist to devtower.debugLog (the host echoes it back via config)
+    const dbgT = $("#s-debug", s);
+    if (dbgT) dbgT.onclick = () => {
+      debug = !debug;
+      if (window.DevTowerCrew && DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug);
+      vscode.postMessage({ type: "setDebug", on: debug });
+      renderSettings();
+    };
+    // View / Clear act on the host (the clear runs a native "are you sure" modal);
+    // the host echoes the new on-disk state back via the config message.
+    const dbgView = $("#s-debug-view", s);
+    if (dbgView) dbgView.onclick = () => vscode.postMessage({ type: "viewDebugLog" });
+    const dbgClear = $("#s-debug-clear", s);
+    if (dbgClear) dbgClear.onclick = () => vscode.postMessage({ type: "clearDebugLog" });
 
     // Hooks-tab wiring: optimistically flip local state so the toggle responds
     // instantly, then let the host echo the authoritative state back.
@@ -611,6 +769,8 @@
   // defaults off; the saved setting arrives via the "config" message, and each
   // click persists the new choice back to settings
   let eco = false;
+  let debug = false; // devtower.debugLog; arrives via the "config" message
+  let dbgLogExists = false; // whether a captured log is on disk (config message)
   function applyEco(on) {
     eco = !!on;
     if (window.DevTowerCrew) window.DevTowerCrew.setEco(eco);
@@ -633,10 +793,12 @@
     if (window.DevTowerCrew) window.DevTowerCrew.focusReviewBoard();
   };
   $("#settingsbtn").onclick = openSettings;
+  $("#lbbtn").onclick = () => (leaderboardOpen() ? closeLeaderboard() : openLeaderboard());
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
-      if (settingsOpen()) closeSettings();
+      if (leaderboardOpen()) closeLeaderboard();
+      else if (settingsOpen()) closeSettings();
       else if (reviewDispatchOpen()) closeReviewDispatch();
       else if (panelOpen) closePanel();
     }
@@ -656,6 +818,7 @@
       }
       pushCrew();
       renderPanel();
+      if (leaderboardOpen()) syncLeaderboard(); // patch the open board live (no flicker)
     } else if (m.type === "prs") {
       prs = { crew: m.crew || [], review: m.review || [] };
       renderPrBadge();
@@ -675,7 +838,10 @@
       renderUsage(m.usage);
     } else if (m.type === "config") {
       applyEco(!!m.eco); // saved efficiency-mode preference (default off)
-      if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(!!m.debug); // mirror devtower.debugLog into the scene
+      debug = !!m.debug; // authoritative devtower.debugLog state from the host
+      dbgLogExists = !!m.debugLogExists; // a captured log is on disk
+      if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug); // mirror into the scene
+      if (settingsOpen()) renderSettings(); // reflect an external toggle live
       if (Array.isArray(m.reviewSkills) && m.reviewSkills.length) reviewSkills = m.reviewSkills;
       if (m.reviewDefaults && typeof m.reviewDefaults === "object") reviewDefaults = m.reviewDefaults;
       if (Array.isArray(m.reviewAgents)) reviewAgents = m.reviewAgents;
