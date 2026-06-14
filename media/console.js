@@ -57,7 +57,7 @@
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, external: a.external, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, contextTokens: a.contextTokens, external: a.external, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 

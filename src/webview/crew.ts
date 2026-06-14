@@ -23,6 +23,7 @@ interface CrewAgent {
   branch?: string; // branch name, shown on the cluster sign
   skills?: string[]; // skills this session has used (accumulated, first-use order)
   subagents?: number; // in-flight sub-agents (Task/Agent tool calls not yet returned)
+  contextTokens?: number; // tokens occupying the session's context window (for the token board)
   external?: boolean; // a live session running OUTSIDE DevTower (not one we launched)
   clearedSession?: string; // session id of the dev's latest /clear; a change sends it to the shredder
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
@@ -2910,82 +2911,42 @@ class PixelCrew {
     // the island/repo name lives on the platform signpost below
     this.drawBoard(ctx, r, base);
 
-    // window on the LEFT side wall, drawn in perspective (rock face underground)
+    // left-wall mapper: t 0 near opening → 1 far wall; f 0 ceiling → 1 floor at
+    // that depth. The bookshelf + shredder slant along it.
     const onWall = (t: number, f: number) => {
-      // t: 0 near opening → 1 far wall; f: 0 ceiling → 1 floor at that depth
       const xL = x + (bw.x0 - x) * t;
       const yT = topY + (byT - topY) * t;
       const yB = base + (byB - base) * t;
       return { x: xL, y: yT + (yB - yT) * f };
     };
-    // window edges run along constant-f wall lines (same as the bookshelf below),
-    // so both slant with the wall's perspective and line up
-    const winT0 = 0.3, winT1 = 0.64, winFTop = 0.28, winFBot = 0.66;
-    const wp = [onWall(winT0, winFTop), onWall(winT1, winFTop), onWall(winT1, winFBot), onWall(winT0, winFBot)];
-    const quad = (pts: { x: number; y: number }[], fill: string | CanvasGradient) => {
-      ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-      ctx.closePath();
-      ctx.fillStyle = fill;
-      ctx.fill();
+    // right-wall mapper (mirror of onWall): the token board hangs flat here, above
+    // the lift door, so it shares the door's exact perspective slant.
+    const onWallR = (t: number, f: number) => {
+      const xR = x + w + (bw.x1 - (x + w)) * t;
+      const yT = topY + (byT - topY) * t;
+      const yB = base + (byB - base) * t;
+      return { x: xR, y: yT + (yB - yT) * f };
     };
-    const mid = (a: { x: number; y: number }, c: { x: number; y: number }) => ({ x: (a.x + c.x) / 2, y: (a.y + c.y) / 2 });
-    // frame
-    ctx.strokeStyle = "#0c1116";
-    ctx.lineWidth = 3;
-    ctx.lineJoin = "miter";
-    ctx.beginPath();
-    ctx.moveTo(wp[0].x, wp[0].y);
-    for (let i = 1; i < 4; i++) ctx.lineTo(wp[i].x, wp[i].y);
-    ctx.closePath();
-    ctx.stroke();
-    const ys = Math.min(...wp.map((p) => p.y)), yb = Math.max(...wp.map((p) => p.y));
-    if (underground) {
-      quad(wp, "#241a12");
-    } else {
-      // night sky: a dark navy gradient (so it reads as night, matching the dark
-      // outside) with a glowing moon and a scatter of stars, not a sunset
-      const sky = ctx.createLinearGradient(0, ys, 0, yb);
-      sky.addColorStop(0, "#080f24");
-      sky.addColorStop(1, "#16233f");
-      quad(wp, sky);
-      ctx.save();
-      ctx.beginPath();
-      ctx.moveTo(wp[0].x, wp[0].y);
-      for (let i = 1; i < 4; i++) ctx.lineTo(wp[i].x, wp[i].y);
-      ctx.closePath();
-      ctx.clip(); // keep the moon / stars / glow inside the panes
-      // a point inside the window quad (u across 0..1, v down 0..1)
-      const lerpP = (a: { x: number; y: number }, b: { x: number; y: number }, t: number) =>
-        ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-      const winPt = (u: number, v: number) =>
-        lerpP(lerpP(wp[0], wp[1], u), lerpP(wp[3], wp[2], u), v);
-      ctx.fillStyle = "rgba(220,230,245,0.9)"; // stars
-      for (const [u, v, s] of [[0.18, 0.24, 0.5], [0.4, 0.58, 0.4], [0.3, 0.8, 0.35], [0.55, 0.22, 0.35], [0.86, 0.62, 0.45]] as const) {
-        const p = winPt(u, v);
-        ctx.fillRect(p.x - s / 2, p.y - s / 2, s, s);
-      }
-      const m = winPt(0.74, 0.3); // moon, upper-right of the window
-      const g = ctx.createRadialGradient(m.x, m.y, 0, m.x, m.y, 3.6);
-      g.addColorStop(0, "rgba(226,233,247,0.45)");
-      g.addColorStop(1, "rgba(226,233,247,0)");
-      ctx.fillStyle = g; // soft halo
-      ctx.beginPath(); ctx.arc(m.x, m.y, 3.6, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "#e7edf6"; // moon disc
-      ctx.beginPath(); ctx.arc(m.x, m.y, 1.6, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "rgba(178,193,220,0.5)"; // a couple of faint craters
-      ctx.beginPath(); ctx.arc(m.x - 0.5, m.y - 0.4, 0.5, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(m.x + 0.6, m.y + 0.5, 0.35, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-    }
-    // muntins
-    ctx.strokeStyle = "#0c1116";
-    ctx.lineWidth = 0.8;
-    const mt = mid(wp[0], wp[1]), mb = mid(wp[3], wp[2]);
-    ctx.beginPath(); ctx.moveTo(mt.x, mt.y); ctx.lineTo(mb.x, mb.y); ctx.stroke();
-    const ml = mid(wp[0], wp[3]), mr = mid(wp[1], wp[2]);
-    ctx.beginPath(); ctx.moveTo(ml.x, ml.y); ctx.lineTo(mr.x, mr.y); ctx.stroke();
+    // the token leaderboard, hung on the right wall above the door (it replaced
+    // the old night window). Ranks the tower's agents by context tokens.
+    //
+    // It is deliberately TILTED to read as "facing into the room" at the door's
+    // angle: the FAR (back, screen-left) edge rides high, the NEAR (front,
+    // screen-right) edge drops low. A flat plaque this high on the wall would
+    // naturally slant the other way, so the near corners use a larger f (lower on
+    // the wall) than the far corners. The near edge sits at t≈0.04 — in FRONT of
+    // the door (t 0.18–0.5) — so it can drop low without colliding with the door.
+    // Corners are ordered so local +x runs far→near (screen-rightward) → text
+    // reads left-to-right, not mirrored.
+    const bTF = 0.85, bTN = 0.04; // far / near depth
+    this.drawTokenBoard(
+      ctx, r,
+      onWallR(bTF, 0.04), // TL: far-top  (rides high)
+      onWallR(bTN, 0.22), // TR: near-top (dropped low → inward tilt)
+      onWallR(bTF, 0.55), // BL: far-bottom (back wall is clear of the door, so it
+                          //     can run lower here to fit the whole leaderboard)
+      underground
+    );
 
     // the skills library: a long bookshelf running the full left wall, slanted
     // to the wall's perspective, just below the window
@@ -3533,6 +3494,134 @@ class PixelCrew {
     ctx.restore();
     // (column-level flashes are drawn per cell above via cellGlow; no full-board
     // border pulse anymore, so it's clear which stat changed)
+  }
+
+  /** Token leaderboard hung flat on the room's right wall, above the lift door
+   *  (it replaced the old night window). Ranks the whole tower's agents by the
+   *  tokens occupying their context window, biggest first. The caller passes three
+   *  wall corners — TL (origin), TR (+x edge), BL (+y edge) — and they're baked
+   *  into an affine transform so the panel AND its text shear with the wall's
+   *  perspective instead of facing the camera. Order the corners so TR is the NEAR
+   *  jamb side, keeping local +x screen-rightward (text reads forwards). */
+  private drawTokenBoard(
+    ctx: CanvasRenderingContext2D,
+    r: Room,
+    TL: { x: number; y: number },
+    TR: { x: number; y: number },
+    BL: { x: number; y: number },
+    underground: boolean
+  ) {
+    const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
+    if (eFurn <= 0) return;
+    const ux = TR.x - TL.x, uy = TR.y - TL.y; // wall "right" (toward near jamb)
+    const vx = BL.x - TL.x, vy = BL.y - TL.y; // wall "down"
+    const W = Math.hypot(ux, uy), H = Math.hypot(vx, vy);
+    if (W < 11 || H < 14) return; // too small / far to be worth drawing
+
+    ctx.save();
+    ctx.globalAlpha = eFurn;
+    // map local pixels (0..W, 0..H) onto the wall parallelogram so text drawn
+    // normally leans with the wall. transform() POST-multiplies the camera, so
+    // pan/zoom are preserved; everything below is in LOCAL wall pixels.
+    ctx.transform(ux / W, uy / W, vx / H, vy / H, TL.x, TL.y);
+
+    // a thin dark reveal just outside the frame so the wall clearly outlines the
+    // plaque (the "small border" framing it)
+    ctx.fillStyle = "rgba(3,5,8,0.55)";
+    ctx.fillRect(-0.8, -0.8, W + 1.6, H + 1.6);
+    // frame + recessed screen
+    const bz = 1.3; // bezel
+    ctx.fillStyle = "#05080b";
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#1a232b"; // top/left bevel so it reads as mounted, not painted
+    ctx.fillRect(0, 0, W, 0.8);
+    ctx.fillRect(0, 0, 0.8, H);
+    const scr = ctx.createLinearGradient(0, 0, 0, H);
+    scr.addColorStop(0, underground ? "#15110a" : "#0f1a26");
+    scr.addColorStop(1, underground ? "#0c0a06" : "#0a1017");
+    ctx.fillStyle = scr;
+    ctx.fillRect(bz, bz, W - bz * 2, H - bz * 2);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(bz, bz, W - bz * 2, H - bz * 2);
+    ctx.clip();
+    ctx.fillStyle = "rgba(120,200,255,0.04)"; // faint scanlines
+    for (let yy = bz + 1; yy < H - bz; yy += 2) ctx.fillRect(bz, yy, W, 0.6);
+
+    const padX = bz + 0.8;
+    const innerL = padX, innerR = W - padX, innerW = innerR - innerL;
+    const fit = (s: string, maxW: number) => {
+      if (ctx.measureText(s).width <= maxW) return s;
+      let t = s;
+      while (t.length > 1 && ctx.measureText(t + "…").width > maxW) t = t.slice(0, -1);
+      return t + "…";
+    };
+    // header
+    ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "left";
+    ctx.font = "bold 3.4px 'Martian Mono', monospace";
+    ctx.fillStyle = "hsl(48 85% 70%)";
+    ctx.fillText(fit("TOKENS", innerW), innerL, bz + 4.2);
+    ctx.fillStyle = "rgba(120,150,170,0.22)";
+    ctx.fillRect(innerL, bz + 5.4, innerW, 0.7);
+
+    // every tower agent that has burned context, biggest first
+    const ranked = this.agents
+      .map((a) => ({ a, tok: a.contextTokens ?? 0 }))
+      .filter((e) => e.tok > 0)
+      .sort((x, y) => y.tok - x.tok);
+    const bodyTop = bz + 6.4;
+    const rowH = 4.1;
+    const maxRows = Math.max(1, Math.floor((H - bz - 1 - bodyTop) / rowH));
+    if (!ranked.length) {
+      ctx.fillStyle = "rgba(205,220,232,0.45)";
+      ctx.font = "3.4px 'IBM Plex Mono', monospace";
+      ctx.fillText("no tokens yet", innerL, bodyTop + 4);
+      ctx.restore();
+      ctx.restore();
+      return;
+    }
+    const fmt = (n: number) =>
+      n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
+    const MEDAL = ["#ffd24a", "#cdd6e0", "#d9a066"]; // gold / silver / bronze
+    const top = ranked.slice(0, maxRows);
+    const maxTok = top[0].tok;
+    top.forEach((e, i) => {
+      const ry = bodyTop + i * rowH;
+      const shirt = `hsl(${hash(e.a.id) % 360} 45% 52%)`; // matches the toon's shirt
+      // row track + relative-usage fill (leader = full width)
+      ctx.fillStyle = "rgba(120,150,170,0.1)";
+      ctx.fillRect(innerL, ry + 0.4, innerW, rowH - 1.4);
+      ctx.globalAlpha = eFurn * 0.3;
+      ctx.fillStyle = shirt;
+      ctx.fillRect(innerL, ry + 0.4, Math.max(1, (innerW * e.tok) / maxTok), rowH - 1.4);
+      ctx.globalAlpha = eFurn;
+      // identity dot (podium gets a medal tint)
+      ctx.fillStyle = i < 3 ? MEDAL[i] : shirt;
+      ctx.fillRect(innerL + 0.5, ry + 0.9, 1.7, 1.7);
+      // token count, right-aligned (the headline number)
+      ctx.font = "bold 3px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "rgba(228,236,242,0.95)";
+      ctx.textAlign = "right";
+      const tokStr = fmt(e.tok);
+      ctx.fillText(tokStr, innerR, ry + 3.2);
+      const tokW = ctx.measureText(tokStr).width;
+      // name, left-aligned, filling the gap up to the count — but only when there
+      // is a real slot for it, so it never collides with the token on a narrow
+      // plaque (there the dot/medal carries identity instead)
+      const nameL = innerL + 3.4;
+      const nameW = innerR - tokW - 1.5 - nameL;
+      if (nameW >= 4) {
+        ctx.textAlign = "left";
+        ctx.font = "3px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(208,222,234,0.92)";
+        ctx.fillText(fit(e.a.name || "agent", nameW), nameL, ry + 3.2);
+      }
+    });
+
+    ctx.restore(); // clip
+    ctx.restore(); // transform + alpha
   }
 
   /** The skills library: a long, low bookshelf that runs the full left wall,
