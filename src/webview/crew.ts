@@ -1210,6 +1210,12 @@ class PixelCrew {
       if (!agentsByKey.has(key)) agentsByKey.set(key, []);
       agentsByKey.get(key)!.push(a);
     }
+    // Sort agents within each worktree by ID so desk assignment stays consistent
+    // even if the order they appear in this.agents changes (e.g., when a worktree
+    // is added or removed).
+    for (const agents of agentsByKey.values()) {
+      agents.sort((a, b) => a.id.localeCompare(b.id));
+    }
 
     // island order: reserved islands by their stored col/floor hint (left→right)
     const reservedByName = new Map(this.reserved.map((r) => [r.name, r] as const));

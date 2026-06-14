@@ -4,6 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { DevTowerStore } from "./store";
 import { resolveDir } from "./git";
+import { dlog, elog } from "./debugLog";
 
 const DRAG_MIME = "application/vnd.devtower.fsnode";
 
@@ -105,7 +106,11 @@ export class DirectoryProvider
   }
 
   refresh(): void {
+    const raw = this.store.getFocusedWorktree();
     const cwd = this.cwd();
+    // Trace why the Selected Directory view does / doesn't populate: the raw
+    // focused worktree, what it resolved to, and whether the TreeView exists yet.
+    dlog("directory.refresh", { raw, cwd, hasView: !!this.view, visible: this.view?.visible });
     if (this.view) {
       // Show the selected directory's own name as the view title (instead of the
       // static "Selected Directory") with its containing path dimmed beside it,
@@ -125,15 +130,30 @@ export class DirectoryProvider
 
   async getChildren(node?: FsNode): Promise<FsNode[]> {
     const dir = node ? node.fsPath : this.cwd();
-    if (!dir) return [];
+    if (!dir) {
+      // root query with no resolved directory: the view is empty because nothing
+      // is selected (or the selection no longer resolves) — record which.
+      if (!node) dlog("directory.getChildren.empty", { reason: "no-cwd", raw: this.store.getFocusedWorktree() });
+      return [];
+    }
     let entries: fs.Dirent[];
     try {
       // async readdir: never block the extension host (a sync read on a large
       // dir, or a disk a busy agent is hammering, freezes the whole window)
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    } catch {
+    } catch (err: unknown) {
+      // A populated, selected directory listing as empty is the file-explorer
+      // bug we're chasing — surface the cause via the always-on error sink so it
+      // lands even when verbose debug logging is off.
+      elog("directory.readdir", {
+        dir,
+        root: !node,
+        message: err instanceof Error ? err.message : String(err),
+        code: (err as NodeJS.ErrnoException)?.code,
+      });
       return [];
     }
+    dlog("directory.getChildren", { dir, root: !node, count: entries.length });
     return entries
       .filter((e) => e.name !== ".git")
       .sort((a, b) => {

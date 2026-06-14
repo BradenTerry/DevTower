@@ -286,18 +286,14 @@ export class ConsolePanel {
         break;
       case "setEco":
         // operator toggled efficiency mode → persist their choice
-        await vscode.workspace
-          .getConfiguration("devtower")
-          .update("efficiencyMode", !!m.on, vscode.ConfigurationTarget.Global);
+        await this.persistToggle("efficiencyMode", !!m.on);
         break;
       case "setDebug": {
         // operator toggled debug logging from the Settings > Debug tab. Persisting
         // it fires the devtower.debugLog config listener, which re-posts config so
         // the toggle's authoritative state echoes back to the webview.
         const on = !!m.on;
-        await vscode.workspace
-          .getConfiguration("devtower")
-          .update("debugLog", on, vscode.ConfigurationTarget.Global);
+        await this.persistToggle("debugLog", on);
         // Turning OFF with a captured log present: offer to clear it (the logs
         // stay viewable if the operator declines).
         if (!on && debugLogExists()) {
@@ -484,6 +480,23 @@ export class ConsolePanel {
     }
   }
 
+  /** Persist a devtower boolean toggle so the EFFECTIVE value becomes `on`, even
+   *  when a higher-precedence scope overrides Global. A workspace
+   *  `.vscode/settings.json` (e.g. `devtower.debugLog: true`) wins over the Global
+   *  value, so writing only Global left the effective value unchanged: the config
+   *  echo then read the still-true effective value and bounced the toggle back on
+   *  while logging kept running. Mirror the new value into every scope that
+   *  currently defines the key so the override can't keep the old state. */
+  private async persistToggle(key: string, on: boolean): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration("devtower");
+    const info = cfg.inspect<boolean>(key);
+    await cfg.update(key, on, vscode.ConfigurationTarget.Global);
+    if (info?.workspaceValue !== undefined)
+      await cfg.update(key, on, vscode.ConfigurationTarget.Workspace);
+    if (info?.workspaceFolderValue !== undefined)
+      await cfg.update(key, on, vscode.ConfigurationTarget.WorkspaceFolder);
+  }
+
   /** Push the persisted efficiency-mode + debug-log prefs and review-dispatch
    *  options to the webview. Sent on ready and re-sent when debugLog toggles so
    *  the scene's debug emission tracks the setting without a reopen. */
@@ -620,9 +633,19 @@ export class ConsolePanel {
    *  was saved or its directory no longer resolves (a removed/renamed worktree). */
   private async restoreSelectedDir(): Promise<void> {
     const map = this.context.globalState.get<Record<string, string>>("devtower.selectedDirByWorkspace", {});
-    const room = map[this.workspaceKey()];
-    if (!room) return;
-    const dir = resolveDir(this.roomGitPaths.get(room) ?? room);
+    const key = this.workspaceKey();
+    const room = map[key];
+    if (!room) {
+      dlog("restoreSelectedDir.none", { key, saved: Object.keys(map) });
+      return;
+    }
+    const mapped = this.roomGitPaths.get(room);
+    const dir = resolveDir(mapped ?? room);
+    // Trace the restore: the workspace key it looked up, the saved room, what the
+    // room mapped to in roomGitPaths, and whether it resolved to a real dir. A
+    // room "marked selected" but with empty files shows up here as dir != null
+    // yet the directory view's getChildren still empty (see directory.* events).
+    dlog("restoreSelectedDir", { key, room, mapped, dir, knownRooms: this.roomGitPaths.size });
     if (!dir) {
       await this.saveSelectedDir(undefined); // stale entry — its directory is gone
       return;
