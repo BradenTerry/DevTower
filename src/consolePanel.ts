@@ -1194,10 +1194,6 @@ export class ConsolePanel {
       case "terminal":
         this.terminals.reveal(id);
         break;
-      case "createPr":
-        // runs in the agent's worktree terminal; --web hands off to the browser
-        this.terminals.send(id, "gh pr create --web");
-        break;
       case "diff":
         await this.openDiffFor(id);
         break;

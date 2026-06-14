@@ -709,6 +709,17 @@ export async function readMeta(
       await fh.read(tailBuf, 0, CHUNK, size - CHUNK);
       tail = tailBuf.toString("utf8");
     }
+    // Sub-agent accounting needs the WHOLE transcript, not the head/tail window:
+    // a spawn can sit anywhere, and a background spawn acks its launch right
+    // away, so a fixed window misses both. Read the file in full when it is a
+    // sane size; very large transcripts fall back to the tail window.
+    const SUB_MAX = 8 * 1024 * 1024;
+    let full = tail;
+    if (size > CHUNK && size <= SUB_MAX) {
+      const fullBuf = Buffer.alloc(size);
+      await fh.read(fullBuf, 0, size, 0);
+      full = fullBuf.toString("utf8");
+    }
     // prefer the most recent cwd record so /cd mid-session relocates the agent
     const cwd = jsonUnescape(lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g)) ?? headCwd;
     // newest real model id — synthetic/meta turns carry "model":"<synthetic>",
@@ -739,20 +750,51 @@ export async function readMeta(
     }
 
     // in-flight sub-agents: Task/Agent tool calls the session spawned that have
-    // not returned yet. Each spawn is an assistant tool_use block
-    // ("id":"toolu_…","name":"Task"); its completion is a later tool_result with
-    // a matching tool_use_id. The count is spawned-minus-resolved within the
-    // read window, so it rises on fan-out and falls back to 0 once work settles.
-    // (Spawns that scrolled out of the tail are simply not counted.)
-    const spawned = new Set<string>();
-    const reSpawn = /"type"\s*:\s*"tool_use"\s*,\s*"id"\s*:\s*"([^"]+)"\s*,\s*"name"\s*:\s*"(?:Task|Agent)"/g;
-    let sm: RegExpExecArray | null;
-    while ((sm = reSpawn.exec(tail))) spawned.add(sm[1]);
-    let resolved = 0;
-    const reDone = /"tool_use_id"\s*:\s*"([^"]+)"/g;
-    let dm: RegExpExecArray | null;
-    while ((dm = reDone.exec(tail))) if (spawned.has(dm[1])) resolved++;
-    const subagents = Math.max(0, spawned.size - resolved);
+    // not returned yet. Two kinds, tracked differently because they close at
+    // different times:
+    //   - foreground: an assistant tool_use block (name Task/Agent) stays open
+    //     until its matching tool_result lands.
+    //   - background (run_in_background): the tool_result ARRIVES IMMEDIATELY as
+    //     a launch ack ("agentId: <id>"), so it can't mark the work done. It is
+    //     instead tracked by that agentId and closed when a <task-notification>
+    //     reports it completed/failed.
+    // The count rises on fan-out and falls back to 0 once everything settles.
+    const fgPending = new Set<string>(); // foreground tool_use ids, still open
+    const bgPendingTool = new Set<string>(); // background tool ids awaiting their ack
+    const bgPendingId = new Set<string>(); // background agentIds, still running
+    const reNote = /<task-id>\s*([A-Za-z0-9_-]+)\s*<\/task-id>[\s\S]*?<status>\s*(?:completed|failed|cancelled|canceled|killed|error|stopped)\s*<\/status>/g;
+    for (const raw of full.split("\n")) {
+      const t = raw.trim();
+      if (!t.startsWith("{")) continue;
+      let rec: any;
+      try { rec = JSON.parse(t); } catch { continue; }
+      const content = rec.message?.content ?? rec.content;
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (!b || typeof b !== "object") continue;
+          if (b.type === "tool_use" && (b.name === "Task" || b.name === "Agent")) {
+            if (b.input && b.input.run_in_background) bgPendingTool.add(b.id);
+            else fgPending.add(b.id);
+          } else if (b.type === "tool_result" && b.tool_use_id) {
+            const txt = typeof b.content === "string" ? b.content : flatten(b.content);
+            const ack = /agentId:\s*([A-Za-z0-9_-]+)/.exec(txt);
+            if (bgPendingTool.has(b.tool_use_id) && ack) {
+              bgPendingTool.delete(b.tool_use_id);
+              bgPendingId.add(ack[1]);
+            } else {
+              fgPending.delete(b.tool_use_id); // foreground subagent returned
+            }
+          }
+        }
+      }
+      // a finished background agent posts a <task-notification> as an injected turn
+      if (t.includes("task-notification")) {
+        reNote.lastIndex = 0;
+        let nm: RegExpExecArray | null;
+        while ((nm = reNote.exec(t))) bgPendingId.delete(nm[1]);
+      }
+    }
+    const subagents = fgPending.size + bgPendingTool.size + bgPendingId.size;
 
     // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
     // Mirrors Claude Code's own `/context`: input + the two cache buckets (all

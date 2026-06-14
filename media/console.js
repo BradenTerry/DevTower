@@ -590,7 +590,7 @@
         ${a.external
           ? `<div class="pa ext-note" title="This session runs outside DevTower — manage it in its own terminal">⌗ Runs in its own session</div>`
           : `<button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>`}
-        <button class="pa" data-tool="pr">⇄ ${prFor(a.id) ? "PR" : "Create PR"}</button>
+        ${prFor(a.id) ? `<button class="pa" data-tool="pr">⇄ PR</button>` : ""}
       </div>`;
 
     // wiring
@@ -601,7 +601,6 @@
       if (t.dataset.tool === "pr") {
         const p = prFor(a.id);
         if (p) vscode.postMessage({ type: "action", act: "openPr", url: p.url });
-        else vscode.postMessage({ type: "action", id: a.id, act: "createPr" });
         return;
       }
       vscode.postMessage({ type: "action", id: a.id, act: t.dataset.tool });

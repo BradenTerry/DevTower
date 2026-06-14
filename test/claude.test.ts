@@ -168,6 +168,41 @@ describe("readMeta", () => {
     expect(meta.subagents).toBe(2);
   });
 
+  it("keeps a background sub-agent counted after its immediate launch ack", async () => {
+    // a run_in_background Agent acks its launch right away ("agentId: …"); that
+    // ack must NOT close the work — the agent is still running.
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "spawn in background" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_bg", name: "Agent", input: { run_in_background: true } }],
+        },
+      },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Async agent launched successfully.\nagentId: bg123abc" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.subagents).toBe(1);
+  });
+
+  it("drops a background sub-agent once its task-notification reports completion", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "spawn in background" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_bg", name: "Agent", input: { run_in_background: true } }],
+        },
+      },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bg", content: "Async agent launched successfully.\nagentId: bg123abc" }] } },
+      { type: "user", message: { role: "user", content: "<task-notification>\n<task-id>bg123abc</task-id>\n<status>completed</status>\n</task-notification>" } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.subagents).toBe(0);
+  });
+
   it("reports 0 sub-agents when none were spawned", async () => {
     const { file, size } = write([
       { type: "user", cwd: dir, message: { role: "user", content: "hi" } },

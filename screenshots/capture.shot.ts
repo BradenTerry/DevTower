@@ -44,6 +44,11 @@ for (const sc of SCENARIOS) {
       await page.waitForTimeout(200);
     }
 
+    // optionally frame an island's whole tower (all stacked rooms in view)
+    if ((sc as any).focusIsland) {
+      await page.evaluate((name) => (window as any).DevTowerCrew.focusIsland(name), (sc as any).focusIsland);
+    }
+
     // optionally open the settings overlay seeded with mock capabilities
     if ((sc as any).settings) {
       await page.evaluate((st) => {
@@ -52,9 +57,30 @@ for (const sc of SCENARIOS) {
       }, (sc as any).settings);
     }
 
-    // let fonts load and the canvas paint a settled frame
+    // Wait for the scene to actually settle before the shot: every dev has
+    // walked in and seated at its desk (no mid-arrival sprites in half-empty
+    // rooms), and the camera has stopped zooming. A fixed timeout caught devs
+    // mid-walk; this polls the real toon + camera state like subagents.shot.ts.
+    const expected = (sc.state.agents || []).length;
     await page.evaluate(() => (document as any).fonts?.ready);
-    await page.waitForTimeout(1200);
+    await page.waitForFunction((exp) => {
+      const c = (window as any).DevTowerCrew?._instance;
+      if (!c) return false;
+      const ts = [...c.toons.values()] as any[];
+      if (ts.length < exp) return false; // not all devs have spawned yet
+      const seated = ts.every((t) => !t.entering && Math.abs(t.targetX - t.x) <= 1);
+      (window as any).__z = c.cam.z;
+      return seated;
+    }, expected, { timeout: 20000 }).catch(() => {});
+    await page.waitForFunction(() => {
+      const c = (window as any).DevTowerCrew?._instance;
+      if (!c) return true;
+      const z = c.cam.z;
+      const prev = (window as any).__z;
+      (window as any).__z = z;
+      return Math.abs(z - prev) < 0.002;
+    }, { timeout: 8000, polling: 250 }).catch(() => {});
+    await page.waitForTimeout(400);
 
     await page.screenshot({ path: path.join(OUT, `${sc.name}.png`) });
     const hud = page.locator(".hud-top");

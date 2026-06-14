@@ -1540,22 +1540,29 @@ class PixelCrew {
   }
 
   /** Screen-space rects for a room's top-row HUD controls (✕, + DEV, USE DIR).
-   *  The GROUP is pinned to the room's top-right corner (so it pans/zooms with
-   *  the room), but each control has a FIXED screen-pixel size and gap. That way
-   *  the text stays a single legible size instead of shrinking inside a box that
-   *  keeps growing as you zoom in. Shared by the hit-test (pick) and the renderer
-   *  so they never diverge. */
+   *  The controls live in WORLD space: every size (and the font, see the render
+   *  pass) scales with the live zoom (cam.z), so the chips keep a constant
+   *  proportion to the room's console at every zoom — zoom in close and they grow
+   *  with it instead of staying a fixed pixel size and looking tiny against the
+   *  enlarged console. Box and font scale by the same factor so the text always
+   *  fills the chip. Shared by the hit-test (pick) and the renderer so they never
+   *  diverge. */
   private topRects(r: Room): {
     close: { x: number; y: number; w: number; h: number };
     dev: { x: number; y: number; w: number; h: number };
     useDir: { x: number; y: number; w: number; h: number; selected: boolean };
   } {
-    const top = r.baseY - ROOM_H + 2;
-    const a = this.screenOf(r.x0 + ROOM_W - 2, top); // room top-right corner
+    const s = this.cam.z;
     const selected = !!this.usedDirRoom && r.name === this.usedDirRoom;
-    // static screen-pixel sizes, laid out right-to-left from the corner
-    const h = 18, gap = 6;
-    const closeW = 18, devW = 54, useW = selected ? 104 : 60;
+    // world-unit sizes laid out right-to-left from the room's top-right corner
+    const h = 12 * s, gap = 4 * s;
+    const closeW = 12 * s, devW = 36 * s, useW = (selected ? 70 : 40) * s;
+    // sit the chips in the dark band ABOVE the board, hugging the room's
+    // top-right corner, so they never overlap the TV screen below. The board top
+    // is backWall.yTop + 3 = baseY - ROOM_H + 13; lift the chip (12u tall) plus a
+    // 4u gap above it, and push the anchor out to the room's right edge.
+    const top = r.baseY - ROOM_H + 13 - 4 - 12;
+    const a = this.screenOf(r.x0 + ROOM_W + 4, top); // room top-right corner
     const closeX = a.x - closeW;
     const devX = closeX - gap - devW;
     const useX = devX - gap - useW;
@@ -2388,14 +2395,16 @@ class PixelCrew {
     /* ---- screen-space pass ---- */
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = "center";
+    const hs = this.cam.z; // controls scale with zoom; font tracks the box
     for (const r of this.rooms.values()) {
       if (r.built < 0.95) continue;
-      // top-row controls are pinned to the room corner at a fixed screen size
+      // top-row controls live in world space: sized and lettered against the
+      // live zoom so they keep their proportion to the console (see topRects)
       const tr = this.topRects(r);
       // "+ DEV" on every room — drop an agent into this room's worktree
       const devHov = this.hov("addDev:" + r.name);
       this.drawRoomButton(ctx, tr.dev.x, tr.dev.y, tr.dev.w, tr.dev.h, "+ DEV",
-        devHov ? "#aef5cf" : "#3ee089", `600 11px 'Martian Mono', monospace`, devHov);
+        devHov ? "#aef5cf" : "#3ee089", `600 ${(7.2 * hs).toFixed(1)}px 'Martian Mono', monospace`, devHov);
       // "USE DIR" just left of + DEV — mount this room's worktree in the Selected
       // Directory view. The room already mounted reads "SELECTED DIR" (green).
       const useHov = this.hov("useDir:" + r.name);
@@ -2405,12 +2414,12 @@ class PixelCrew {
         ? "#6a7570"
         : (useHov ? "#cfe6ff" : "#5bb8ff");
       this.drawRoomButton(ctx, tr.useDir.x, tr.useDir.y, tr.useDir.w, tr.useDir.h, useLabel,
-        useColor, `600 10px 'Martian Mono', monospace`,
+        useColor, `600 ${(6.6 * hs).toFixed(1)}px 'Martian Mono', monospace`,
         tr.useDir.selected ? false : useHov);
       // ✕ — main nukes the whole directory, a worktree removes just itself
       const xHov = this.hov("remove:" + (r.isMain ? r.island : r.name));
       this.drawRoomButton(ctx, tr.close.x, tr.close.y, tr.close.w, tr.close.h, "✕",
-        xHov ? "#ffd2ce" : "#ff6055", `bold 12px monospace`, xHov);
+        xHov ? "#ffd2ce" : "#ff6055", `bold ${(8 * hs).toFixed(1)}px monospace`, xHov);
     }
     // ghost labels: +building (create a worktree room) vs +island (reserve a dir)
     for (const g of this.ghosts) {
