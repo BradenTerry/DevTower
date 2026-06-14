@@ -192,8 +192,6 @@
   }
 
   /* ---------- PR board ---------- */
-  const CHECK_LABEL = { pass: "checks ✓", fail: "checks ✗", pending: "checks running", none: "" };
-  const REVIEW_LABEL = { approved: "approved", changes: "changes requested", required: "review needed", none: "" };
 
   function prFor(agentId) {
     return prs.crew.find((p) => p.agentId === agentId);
@@ -661,14 +659,6 @@
     };
   }
 
-  function prChipHTML(a) {
-    const p = prFor(a.id);
-    if (!p) return "";
-    const checks = p.checks !== "none" ? `<span class="pr-stat ${p.checks}"><span class="pdot"></span>${CHECK_LABEL[p.checks]}</span>` : "";
-    const review = p.review !== "none" ? `<span class="pr-stat ${p.review}"><span class="pdot"></span>${REVIEW_LABEL[p.review]}</span>` : "";
-    return `<div class="prchip" data-url="${esc(p.url)}"><span class="pic">⇄</span><b>#${p.number}</b> ${esc(p.title)}<span class="spacer"></span>${checks}${review}</div>`;
-  }
-
   /* ---------- agent stats card ---------- */
   function contextOf(a) {
     if (!a.contextTokens) return null;
@@ -720,7 +710,6 @@
           </div>
           <span class="statebadge" data-state="${a.state}"><i></i>${STATE_LABEL[a.state]}</span>
         </div>
-        ${prChipHTML(a)}
       </div>
 
       <div class="stats">
@@ -753,8 +742,6 @@
 
     // wiring
     $("#p-close", panel).onclick = closePanel;
-    const chip = $(".prchip", panel);
-    if (chip) chip.onclick = () => vscode.postMessage({ type: "action", act: "openPr", url: chip.dataset.url });
     $$("[data-tool]", panel).forEach((t) => (t.onclick = () => {
       if (t.dataset.tool === "pr") {
         const p = prFor(a.id);

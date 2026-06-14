@@ -3789,17 +3789,18 @@ class PixelCrew {
         ctx.fillStyle = `hsl(${hue} 45% 55%)`;
         ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 0.4); // top-edge highlight
       }
-      // the task TV the dev raises on the desk's left to track its checklist
+      // the task TV the dev raises on the floor at the desk's left leg to track its checklist
       if (tn && tn.tvShow > 0.02) this.drawDeskTV(ctx, tn, dx, db);
     }
     ctx.globalAlpha = 1;
   }
 
-  /** The status TV a dev deploys on the left of its desk to track its Task-tool
-   *  checklist: a small screen on a stand showing `done/total` over a progress
-   *  bar. It rises/folds via `tn.tvShow`, and flashes when the dev slaps the desk
-   *  button on a completion (`tn.tapAt`). Sits left of the monitor, clear of the
-   *  dev (seated to the right) so it never occludes them. */
+  /** The status TV a dev deploys on the floor below its desk to track its
+   *  Task-tool checklist: a small screen on a low floor base showing `done/total`
+   *  over a progress bar, tucked into the under-desk gap. It rises/folds via
+   *  `tn.tvShow`, and flashes when the dev slaps the desk button on a completion
+   *  (`tn.tapAt`). Sits at the desk's left leg, clear of the dev (seated to the
+   *  right) so it never occludes them. */
   private drawDeskTV(ctx: CanvasRenderingContext2D, tn: Toon, dx: number, db: number) {
     const tv = tn.agent.tasks;
     if (!tv || tv.total < 2) return;
@@ -3819,18 +3820,19 @@ class PixelCrew {
     ctx.fillStyle = lit > 0 ? "#bff7d6" : "#9c3a34";
     ctx.fillRect(dx + 1.6, db - 12.2 + lit * 0.4, 2.2, 0.4); // top highlight
 
-    // stand: a foot on the desk and a thin pole up to the screen
-    const poleTop = db - 14;
-    ctx.fillStyle = "#171c22";
-    ctx.fillRect(dx + 2.4, db - 11.4, 3, 0.8); // foot
-    ctx.fillRect(dx + 3.4, poleTop, 1, db - 11 - poleTop); // pole
-
-    // screen body unfolds upward from the top of the pole as tvShow rises
+    // a low floor unit at the desk's left leg (dx+3), the display tucked below the
+    // desktop: a base on the floor with the screen rising into the under-desk gap
+    const cx = dx + 3.5; // centered on the left leg
     const fullH = 8;
     const w = 7;
+    const baseY = db - 0.8; // top of the floor base
+    ctx.fillStyle = "#171c22";
+    ctx.fillRect(cx - w / 2 - 0.3, baseY, w + 0.6, 0.8); // base on the floor
+
+    // screen body unfolds upward from the base as tvShow rises — stays below the desk
     const h = fullH * sc;
-    const top = poleTop - h;
-    const left = dx + 0.4;
+    const top = baseY - h;
+    const left = cx - w / 2;
     ctx.fillStyle = "#0c0f13";
     ctx.fillRect(left, top, w, h); // bezel
     if (sc < 0.55) return; // still folding out — no readable content yet
