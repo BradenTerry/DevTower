@@ -26,17 +26,23 @@ export type MoveResult =
   | { ok: false; reason: string };
 
 export function resolveMoveTarget(srcPath: string, destDir: string): MoveResult {
-  const srcParent = path.dirname(srcPath);
-  const dest = path.join(destDir, path.basename(srcPath));
+  // Normalize to forward slashes and use path.posix so behavior is identical
+  // on POSIX and Windows. Node's path.* is platform-specific (path.sep is "\\"
+  // on Windows), which would mangle the dest and break the descendant check
+  // for the "/"-style paths callers and tests use. Windows fs accepts "/".
+  const src = srcPath.replace(/\\/g, "/");
+  const dst = destDir.replace(/\\/g, "/");
+  const srcParent = path.posix.dirname(src);
+  const dest = path.posix.join(dst, path.posix.basename(src));
 
   // no-op: source is already directly inside the destination directory
-  if (srcParent === destDir) {
+  if (srcParent === dst) {
     return { ok: false, reason: "no-op: source is already in that directory" };
   }
 
   // guard: moving a directory into itself or one of its own descendants
-  const srcNorm = srcPath.endsWith(path.sep) ? srcPath : srcPath + path.sep;
-  const destNorm = destDir.endsWith(path.sep) ? destDir : destDir + path.sep;
+  const srcNorm = src.endsWith("/") ? src : src + "/";
+  const destNorm = dst.endsWith("/") ? dst : dst + "/";
   if (destNorm === srcNorm || destNorm.startsWith(srcNorm)) {
     return { ok: false, reason: "cannot move a directory into itself or a descendant" };
   }
