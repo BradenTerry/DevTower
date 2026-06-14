@@ -15,6 +15,9 @@ media/icon.svg
 media/banner.svg
 **/*.ts
 **/*.map
+**/*.mov
+**/*.mp4
+**/*.webm
 .gitignore
 .vscodeignore
 .DS_Store
