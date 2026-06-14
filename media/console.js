@@ -622,7 +622,9 @@
       if (Array.isArray(m.reviewAgents)) reviewAgents = m.reviewAgents;
     } else if (m.type === "settings") {
       settings = { caps: m.caps, scopeHelp: m.scopeHelp };
-      renderSettings(); // refresh the overlay if it is open
+      // Only the GitHub pane consumes caps; re-rendering the General pane here
+      // just rebuilds identical DOM and flickers, so skip it.
+      if (settingsTab === "github") renderSettings();
     } else if (m.type === "openSettings") {
       openSettings();
     } else if (m.type === "focusAgent" && m.id) {

@@ -3,7 +3,6 @@ import { DevTowerStore, Agent, SessionMessage } from "./store";
 import { TerminalManager } from "./terminals";
 import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
-import { mountRoomFolder } from "./scmMirror";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
@@ -100,6 +99,13 @@ export class ConsolePanel {
   /** room key → absolute git path, so a sync request can run git in the right dir. */
   private roomGitPaths = new Map<string, string>();
   private fetchTimer?: ReturnType<typeof setInterval>;
+  /** True once the webview has sent `ready` (its message listener is wired). A
+   *  message posted before this is dropped by VS Code, so openSettings sent on a
+   *  freshly created panel is deferred until ready instead of lost. */
+  private webviewReady = false;
+  /** A pending "open settings" request that arrived before the webview was ready,
+   *  flushed from the `ready` handler. */
+  private pendingOpenSettings = false;
 
   static createOrShow(
     context: vscode.ExtensionContext,
@@ -257,12 +263,17 @@ export class ConsolePanel {
     const id: string | undefined = m.id;
     switch (m.type) {
       case "ready":
+        this.webviewReady = true;
         this.postState();
         this.postUsage();
         // push the persisted efficiency-mode setting (defaults off) plus the
         // review-dispatch options (selectable skills + saved defaults)
         this.postConfig();
         void this.refreshState(); // fill in each island's worktree rooms
+        if (this.pendingOpenSettings) {
+          this.pendingOpenSettings = false;
+          this.panel.webview.postMessage({ type: "openSettings" });
+        }
         break;
       case "setEco":
         // operator toggled efficiency mode → persist their choice
@@ -282,13 +293,13 @@ export class ConsolePanel {
         }
         break;
       case "useDir":
-        // the room's "USE DIR" button → show its diffs AND point this window's
-        // Explorer at the worktree (no reload), so its whole tree is browsable
+        // the room's "USE DIR" button → load this worktree into the DevTower tab
+        // (Selected Directory + Changes) and reveal it
         if (typeof m.room === "string") {
           const dir = resolveDir(this.roomGitPaths.get(m.room) ?? m.room);
           if (dir) {
             this.store.setFocusedWorktree(dir);
-            mountRoomFolder(dir);
+            void vscode.commands.executeCommand("devtower.directory.focus");
           }
         }
         break;
@@ -426,7 +437,10 @@ export class ConsolePanel {
   /** Reveal the tower and open the settings overlay (from the nudge / command). */
   openSettings(): void {
     this.panel.reveal();
-    this.panel.webview.postMessage({ type: "openSettings" });
+    // On a freshly created panel the webview's message listener isn't wired yet,
+    // so this post would be dropped — defer it until the webview reports `ready`.
+    if (this.webviewReady) this.panel.webview.postMessage({ type: "openSettings" });
+    else this.pendingOpenSettings = true;
   }
 
   /* ============ ROOMS (tower floors) ============ */

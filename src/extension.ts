@@ -3,7 +3,7 @@ import { DevTowerStore } from "./store";
 import { TerminalManager } from "./terminals";
 import { DiffProvider, GIT_SCHEME, MOCK_SCHEME } from "./diffProvider";
 import { registerChanges } from "./changesView";
-import { registerScmMirror } from "./scmMirror";
+import { registerDirectory } from "./directoryView";
 import { ConsolePanel } from "./consolePanel";
 import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
@@ -47,10 +47,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ensureHooks(context).catch((e) => dlog("hooks.ensure.fail", { err: String(e) }));
   }
 
-  // Native Changes tree (staged/unstaged, stage/unstage, open diff to the right).
+  // DevTower tab: a file browser for the selected room's worktree, plus the
+  // Changes tree (staged/unstaged, stage/unstage, open diff to the right).
+  registerDirectory(context, store);
   registerChanges(context, store);
-  // Mirror the selected room's worktree into VS Code's Source Control panel.
-  registerScmMirror(context, store);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("devtower.refresh", () => store.watchStateFile()),
