@@ -21,6 +21,7 @@ describe("ClaudeDiscovery binding", () => {
   let wt: string; // a worktree the placeholders live in
   let waitingDir: string; // fake ~/.claude/devtower/waiting
   let succDir: string; // fake ~/.claude/devtower/succession
+  let endedDir: string; // fake ~/.claude/devtower/ended
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-disc-"));
@@ -29,12 +30,14 @@ describe("ClaudeDiscovery binding", () => {
     wt = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-wt-"));
     waitingDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-wait-"));
     succDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-succ-"));
+    endedDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-ended-"));
   });
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(wt, { recursive: true, force: true });
     fs.rmSync(waitingDir, { recursive: true, force: true });
     fs.rmSync(succDir, { recursive: true, force: true });
+    fs.rmSync(endedDir, { recursive: true, force: true });
   });
 
   /** Drop a SessionStart(clear) succession marker for the new session uuid,
@@ -43,6 +46,13 @@ describe("ClaudeDiscovery binding", () => {
     fs.writeFileSync(
       path.join(succDir, `${uuid}.json`),
       JSON.stringify({ cwd, source: "clear", ts: Date.now(), ...(launchId ? { launchId } : {}) })
+    );
+
+  /** Drop a SessionEnd-hook marker for a session that genuinely exited. */
+  const writeEnded = (uuid: string, cwd = wt, reason = "prompt_input_exit", launchId?: string) =>
+    fs.writeFileSync(
+      path.join(endedDir, `${uuid}.json`),
+      JSON.stringify({ cwd, reason, ts: Date.now(), ...(launchId ? { launchId } : {}) })
     );
 
   /** Drop a Notification-hook marker for a session, `tsOffsetSec` relative to now. */
@@ -83,6 +93,7 @@ describe("ClaudeDiscovery binding", () => {
       liveCounts: live(counts, sessionIds),
       waitingDir,
       successionDir: succDir,
+      endedDir,
     });
 
   /** Create a panel placeholder exactly as addDev does (no transcript yet). */
@@ -161,6 +172,79 @@ describe("ClaudeDiscovery binding", () => {
     const remaining = new Set(store.list().map((a) => a.id));
     expect(remaining).toEqual(new Set([sid(u1), sid(u2)]));
     expect(remaining.has(sid(u3))).toBe(false);
+  });
+
+  it("retires exactly the /exit'd dev via the SessionEnd marker, even where mtime would keep it", async () => {
+    // The trap the hook fixes: two sessions share a worktree and liveness gives
+    // only a COUNT (no --session-id pinning, e.g. argv unreadable). When the
+    // NEWEST exits, its final /exit write leaves its transcript freshest, so the
+    // count/mtime passes keep the dead one and evict the live sibling. The
+    // SessionEnd marker names the exited uuid exactly → that dev leaves, the live
+    // one stays.
+    const store = newStore();
+    const u1 = randomUUID(), u2 = randomUUID();
+    writeSession(wt, 20, u1); // older, still live
+    writeSession(wt, 0, u2);  // newest — the one we /exit
+    const sid = (u: string) => "cc-" + u.slice(0, 8);
+
+    let liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 2]]) };
+    const disc = new ClaudeDiscovery(store, {
+      projectsRoot: root, waitingDir, successionDir: succDir, endedDir, liveCounts: async () => liveSnapshot,
+    });
+
+    await disc.refresh();
+    expect(new Set(store.list().map((a) => a.id))).toEqual(new Set([sid(u1), sid(u2)]));
+
+    // u2 exits: one process remains (u1), but u2's transcript is freshest by mtime.
+    liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 1]]) };
+    writeEnded(u2);
+    await disc.refresh();
+
+    expect(new Set(store.list().map((a) => a.id))).toEqual(new Set([sid(u1)]));
+    // marker consumed once acted on
+    expect(fs.existsSync(path.join(endedDir, `${u2}.json`))).toBe(false);
+
+    // and u2's lingering (freshest) transcript must not re-evict the live u1 on a
+    // later poll, after the marker is gone — the retire is remembered.
+    await disc.refresh();
+    expect(new Set(store.list().map((a) => a.id))).toEqual(new Set([sid(u1)]));
+  });
+
+  it("retires a placeholder that /exits before its first prompt (no transcript written yet)", async () => {
+    // A brand-new session writes no transcript until prompted, so a placeholder
+    // /exit'd before its first prompt has no transcriptPath/launchId to match.
+    // DevTower knows which placeholder it launched the --session-id into, so the
+    // SessionEnd marker still sends it home. (Quitting the terminal already drops
+    // it via terminal-close; /exit leaves the shell open, so this path is needed.)
+    const store = newStore();
+    const disc = discovery(store, {}); // nothing live
+    placeholder(store, "isle-a1", wt);
+    const uuid = randomUUID();
+    disc.expectSession("isle-a1", uuid); // launched `claude --session-id <uuid>`
+    writeEnded(uuid); // user typed /exit before prompting
+
+    await disc.refresh();
+
+    expect(store.list()).toHaveLength(0); // the dev left
+    expect(fs.existsSync(path.join(endedDir, `${uuid}.json`))).toBe(false); // swept
+  });
+
+  it("ignores a SessionEnd marker whose session is still a live process (stale/racing marker)", async () => {
+    // a marker must never cull a running dev: if the named uuid is still in the
+    // live --session-id set, the exit hasn't really happened — drop the marker.
+    const store = newStore();
+    const u1 = randomUUID();
+    writeSession(wt, 0, u1);
+    const sid = (u: string) => "cc-" + u.slice(0, 8);
+    const disc = discovery(store, { [wt]: 1 }, [u1]);
+
+    await disc.refresh();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u1)]);
+
+    writeEnded(u1); // stale: u1 is still live
+    await disc.refresh();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u1)]); // still here
+    expect(fs.existsSync(path.join(endedDir, `${u1}.json`))).toBe(false); // swept
   });
 
   it("does not surface a stale prior transcript while a placeholder waits for its real session", async () => {

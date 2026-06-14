@@ -24,12 +24,17 @@ import { dlog } from "./debugLog";
 
 export const WAITING_DIR = path.join(os.homedir(), ".claude", "devtower", "waiting");
 export const SUCCESSION_DIR = path.join(os.homedir(), ".claude", "devtower", "succession");
+export const ENDED_DIR = path.join(os.homedir(), ".claude", "devtower", "ended");
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 const MARKER_MAX_AGE = 24 * 3_600_000; // prune markers for sessions long gone
 // a /clear's successor session surfaces within a poll or two; if it never does
 // (terminal closed right after) forget the marker so it can't later hijack an
 // unrelated session that happens to start in the same worktree.
 const SUCCESSION_MAX_AGE = 10 * 60_000;
+// an exit retires its dev on the very next poll; the marker is cleared then. The
+// age cap only guards against a marker whose poll never ran (extension asleep) —
+// keep it short so a stale one can't retire a same-uuid session resumed later.
+const ENDED_MAX_AGE = 10 * 60_000;
 
 export interface WaitMarker {
   message: string;
@@ -83,6 +88,14 @@ const HOOKS: HookSpec[] = [
     label: "Keep dev on /clear",
     description:
       "Keeps a dev in its place when you /clear its session. Without it the cleared session looks gone and a new stranger appears in the tower.",
+  },
+  {
+    id: "sessionEnd",
+    event: "SessionEnd",
+    script: "devtower-session-end.js",
+    label: "Leave on /exit",
+    description:
+      "Sends a dev home the instant you /exit its session. Without it the exit is guessed from running-process counts, so with several sessions in one folder the wrong dev (or none) leaves.",
   },
 ];
 
@@ -161,6 +174,57 @@ export async function readSuccessionMarkers(dir = SUCCESSION_DIR): Promise<Map<s
 export function clearSuccessionMarker(sessionId: string, dir = SUCCESSION_DIR): void {
   if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return;
   fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
+}
+
+/** A genuine session exit (not /clear or resume) drops one of these keyed by the
+ *  exiting session's uuid (see media/devtower-session-end.js), so discovery can
+ *  retire the dev bound to that exact transcript instead of inferring the exit
+ *  from running-process counts. */
+export interface EndMarker {
+  cwd: string;
+  reason: string;
+  ts: number;
+  /** the exited terminal's launch id (its --session-id argv) — a secondary match
+   *  for the dev when its bound transcript already moved on via /clear. */
+  launchId?: string;
+}
+
+/** Read the session-end markers, keyed by the exited session id, pruning stale
+ *  ones (a poll that never ran while a marker sat unconsumed). */
+export async function readEndMarkers(dir = ENDED_DIR): Promise<Map<string, EndMarker>> {
+  const out = new Map<string, EndMarker>();
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const now = Date.now();
+  for (const fn of files) {
+    if (!fn.endsWith(".json")) continue;
+    const id = fn.slice(0, -5);
+    const full = path.join(dir, fn);
+    try {
+      const raw = await fs.promises.readFile(full, "utf8");
+      const m = JSON.parse(raw) as EndMarker;
+      if (typeof m?.ts !== "number" || now - m.ts > ENDED_MAX_AGE) {
+        await fs.promises.unlink(full).catch(() => {});
+        continue;
+      }
+      out.set(id, {
+        cwd: String(m.cwd ?? ""),
+        reason: String(m.reason ?? ""),
+        ts: m.ts,
+        launchId: m.launchId ? String(m.launchId).toLowerCase() : undefined,
+      });
+    } catch {
+      /* partial write or garbage — ignore this poll */
+    }
+  }
+  return out;
+}
+
+/** Drop a session-end marker once its dev has been retired. Awaitable so the
+ *  poll can guarantee the marker is gone before it resolves (a still-present
+ *  marker would re-fire the retire). */
+export function clearEndMarker(sessionId: string, dir = ENDED_DIR): Promise<void> {
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return Promise.resolve();
+  return fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
 }
 
 const declinedKey = (spec: HookSpec) => `devtower.hook.${spec.id}.declined`;

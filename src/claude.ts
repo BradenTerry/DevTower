@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readEndMarkers, clearEndMarker } from "./hooks";
 import { dlog, elog } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -79,6 +79,14 @@ export class ClaudeDiscovery {
   // still drops promptly — the --session-id exit contract is preserved.
   private keptMtime = new Map<string, number>();
 
+  // session uuid (lc) → when the SessionEnd hook reported it exited. Its dead
+  // transcript lingers on disk (freshest by mtime, thanks to /exit's final
+  // write), so without this it could re-evict a still-live sibling on a later
+  // poll when no --session-id pins the survivor. We suppress it from rediscovery
+  // until it ages out (or its process genuinely returns as a live argv id).
+  private retiredSessions = new Map<string, number>();
+  private static readonly RETIRED_MAX_AGE_MS = 60 * 60_000;
+
   constructor(
     private store: DevTowerStore,
     // tests inject a fake transcripts root and process-liveness source; in the
@@ -88,6 +96,7 @@ export class ClaudeDiscovery {
       liveCounts?: () => Promise<LiveCounts>;
       waitingDir?: string;
       successionDir?: string;
+      endedDir?: string;
     } = {}
   ) {}
 
@@ -222,6 +231,12 @@ export class ClaudeDiscovery {
     // predecessor rebinds AFTER the live budget below, once we know which
     // transcripts are actually live this poll.
     const succession = await readSuccessionMarkers(this.deps.successionDir);
+    // SessionEnd markers: a dev whose session genuinely exited (not /clear). Each
+    // is keyed by the EXACT transcript that ended, so we retire that one dev with
+    // no guessing — unlike the per-cwd process count, which can't tell which of
+    // several co-located sessions left. Resolved into endedIds (below) once the
+    // live-process set is known, so a racing/stale marker can't cull a live dev.
+    const endMarkers = await readEndMarkers(this.deps.endedDir);
 
     // Keep one transcript per live claude process. `found` is newest-first, so
     // we walk it and CLAIM a live process slot for each kept session — by its
@@ -253,6 +268,34 @@ export class ClaudeDiscovery {
     // transcript ids PASS 1 pins as live (launch ids remapped to their successor)
     const livePins = new Set<string>();
     for (const id of argvIds) livePins.add(newestSucc.get(id)?.succ ?? id);
+    // Session ids the SessionEnd hook reported as exited. Defensively drop (and
+    // clear) any marker whose session is still a LIVE process — a stale or racing
+    // marker must never retire a running dev; the marker is authoritative only
+    // when the process is actually gone.
+    const endedIds = new Set<string>();
+    for (const [sid] of endMarkers) {
+      const lc = sid.toLowerCase();
+      if (argvIds.has(lc) || livePins.has(lc)) {
+        await clearEndMarker(sid, this.deps.endedDir);
+        continue;
+      }
+      endedIds.add(lc);
+      this.retiredSessions.set(lc, Date.now());
+    }
+    // a retired session whose process genuinely came back (its uuid is live again)
+    // is no longer dead — un-suppress it; otherwise age the record out so the map
+    // can't grow without bound.
+    for (const [lc, ts] of [...this.retiredSessions]) {
+      if (argvIds.has(lc) || livePins.has(lc) || Date.now() - ts > ClaudeDiscovery.RETIRED_MAX_AGE_MS) {
+        this.retiredSessions.delete(lc);
+      }
+    }
+    // Strip exited/retired sessions from the candidate pool BEFORE the keep passes
+    // below. Done here (not after) so a dead transcript can't claim a per-cwd slot
+    // by its (freshest, post-/exit) mtime and starve the live sibling that should
+    // have kept it — the retire must free the budget for who's actually running.
+    const suppress = new Set([...endedIds, ...this.retiredSessions.keys()]);
+    if (suppress.size) found = found.filter((f) => !suppress.has(f.sessionId.toLowerCase()));
     const kept: Found[] = [];
     const keptCwd = new Set<string>();
     const asRecent = (f: Found): Found => ({ ...f, state: "idle", task: `(recent) ${f.task}` });
@@ -410,6 +453,40 @@ export class ClaudeDiscovery {
     // the shred trip only fires when the swap arrives as a single atomic
     // snapshot (old gone AND new present together).
     await this.store.batch(async () => {
+    // Retire devs whose session the SessionEnd hook reported as exited. We match
+    // the dev whose CURRENT transcript IS the exited session (this also covers an
+    // adopted placeholder, whose transcriptPath was flowed to the live session),
+    // with the launch id as a fallback. A dev that already moved on via /clear
+    // has a different current transcript, so it is correctly left alone. This is
+    // deterministic where the per-cwd count is not: exactly the dev you /exit'd
+    // leaves, even with several sessions in one folder.
+    if (endedIds.size) {
+      // a placeholder that exited BEFORE its first prompt never wrote a transcript
+      // (a brand-new session writes none until prompted), so it has no
+      // transcriptPath/launchId to match. But DevTower knows which placeholder it
+      // launched each --session-id into (expecting), so retire by that too — this
+      // is the /exit-before-prompting case (quitting the terminal already drops it
+      // via the terminal-close path; /exit leaves the shell open, so it can't).
+      const endedPlaceholders = new Set<string>();
+      for (const e of endedIds) {
+        const p = this.expecting.get(e);
+        if (p) endedPlaceholders.add(p);
+      }
+      for (const a of this.store.list()) {
+        const sid = a.transcriptPath ? path.basename(a.transcriptPath, ".jsonl").toLowerCase() : "";
+        // never retire a dev whose own session is still a live process — the
+        // marker only speaks to the exited uuid, not to this agent if it moved on
+        if (sid && (argvIds.has(sid) || livePins.has(sid))) continue;
+        const byTranscript = sid && endedIds.has(sid);
+        const byLaunch = !!a.launchId && endedIds.has(a.launchId.toLowerCase());
+        const byExpecting = endedPlaceholders.has(a.id);
+        if (!byTranscript && !byLaunch && !byExpecting) continue;
+        dlog("discovery.end.retire", { agent: a.id, session: sid, worktree: a.worktree, viaPlaceholder: byExpecting });
+        this.mine.delete(a.id);
+        this.store.remove(a.id);
+      }
+      await Promise.all([...endedIds].map((sid) => clearEndMarker(sid, this.deps.endedDir)));
+    }
     for (const f of found) {
       seenSessions.add(f.id);
       // which store agent this session drives: a prior adoption, a fresh adopt

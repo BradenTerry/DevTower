@@ -1554,22 +1554,29 @@ class PixelCrew {
   } {
     const s = this.cam.z;
     const selected = !!this.usedDirRoom && r.name === this.usedDirRoom;
-    // world-unit sizes laid out right-to-left from the room's top-right corner
-    const h = 12 * s, gap = 4 * s;
-    const closeW = 12 * s, devW = 36 * s, useW = (selected ? 70 : 40) * s;
-    // sit the chips in the dark band ABOVE the board, hugging the room's
-    // top-right corner, so they never overlap the TV screen below. The board top
-    // is backWall.yTop + 3 = baseY - ROOM_H + 13; lift the chip (12u tall) plus a
-    // 4u gap above it, and push the anchor out to the room's right edge.
-    const top = r.baseY - ROOM_H + 13 - 4 - 12;
-    const a = this.screenOf(r.x0 + ROOM_W + 4, top); // room top-right corner
-    const closeX = a.x - closeW;
-    const devX = closeX - gap - devW;
-    const useX = devX - gap - useW;
+    // The cluster sits in the band to the RIGHT of the rightmost ceiling lamp,
+    // above the board (TV), inside the room — never touching the lamp, the TV or
+    // the right wall. Lamps hang at ROOM_W*(i+1)/4, so the last one is at 3/4 W;
+    // the band runs from just past it to a small inset off the right wall, and
+    // the three chips share that band. All world units (× s), so the whole thing
+    // scales with zoom and keeps its proportion to the room.
+    const lampRight = (ROOM_W * 3) / 4 + 6; // last lamp centre + half + a gap
+    const edge = ROOM_W - 6; // inset from the right wall
+    const band = edge - lampRight; // available world width
+    const gapW = band * 0.045;
+    const inner = band - gapW * 2;
+    const closeW = inner * 0.15 * s, devW = inner * 0.37 * s, useW = inner * 0.48 * s;
+    const hW = 9, gap = gapW * s, h = hW * s;
+    // board top = backWall.yTop + 3 = baseY - ROOM_H + 13; lift the chip + a gap
+    const top = r.baseY - ROOM_H + 13 - 4 - hW;
+    const a = this.screenOf(r.x0 + lampRight, top); // band's top-left, in screen
+    const useX = a.x;
+    const devX = useX + useW + gap;
+    const closeX = devX + devW + gap;
     return {
-      close: { x: closeX, y: a.y, w: closeW, h },
-      dev: { x: devX, y: a.y, w: devW, h },
       useDir: { x: useX, y: a.y, w: useW, h, selected },
+      dev: { x: devX, y: a.y, w: devW, h },
+      close: { x: closeX, y: a.y, w: closeW, h },
     };
   }
 
@@ -2395,7 +2402,10 @@ class PixelCrew {
     /* ---- screen-space pass ---- */
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = "center";
-    const hs = this.cam.z; // controls scale with zoom; font tracks the box
+    // font sized to fill each chip: capped by height, and by width / label length
+    // (monospace ≈ 0.6em per glyph) so even "SELECTED DIR" fits its box
+    const fitPx = (w: number, h: number, len: number) =>
+      Math.max(4, Math.min(h * 0.42, (w * 0.68) / (len * 0.6)));
     for (const r of this.rooms.values()) {
       if (r.built < 0.95) continue;
       // top-row controls live in world space: sized and lettered against the
@@ -2404,7 +2414,8 @@ class PixelCrew {
       // "+ DEV" on every room — drop an agent into this room's worktree
       const devHov = this.hov("addDev:" + r.name);
       this.drawRoomButton(ctx, tr.dev.x, tr.dev.y, tr.dev.w, tr.dev.h, "+ DEV",
-        devHov ? "#aef5cf" : "#3ee089", `600 ${(7.2 * hs).toFixed(1)}px 'Martian Mono', monospace`, devHov);
+        devHov ? "#aef5cf" : "#3ee089",
+        `600 ${fitPx(tr.dev.w, tr.dev.h, 5).toFixed(1)}px 'Martian Mono', monospace`, devHov);
       // "USE DIR" just left of + DEV — mount this room's worktree in the Selected
       // Directory view. The room already mounted reads "SELECTED DIR" (green).
       const useHov = this.hov("useDir:" + r.name);
@@ -2414,12 +2425,12 @@ class PixelCrew {
         ? "#6a7570"
         : (useHov ? "#cfe6ff" : "#5bb8ff");
       this.drawRoomButton(ctx, tr.useDir.x, tr.useDir.y, tr.useDir.w, tr.useDir.h, useLabel,
-        useColor, `600 ${(6.6 * hs).toFixed(1)}px 'Martian Mono', monospace`,
+        useColor, `600 ${fitPx(tr.useDir.w, tr.useDir.h, useLabel.length).toFixed(1)}px 'Martian Mono', monospace`,
         tr.useDir.selected ? false : useHov);
       // ✕ — main nukes the whole directory, a worktree removes just itself
       const xHov = this.hov("remove:" + (r.isMain ? r.island : r.name));
       this.drawRoomButton(ctx, tr.close.x, tr.close.y, tr.close.w, tr.close.h, "✕",
-        xHov ? "#ffd2ce" : "#ff6055", `bold ${(8 * hs).toFixed(1)}px monospace`, xHov);
+        xHov ? "#ffd2ce" : "#ff6055", `bold ${fitPx(tr.close.w, tr.close.h, 1.4).toFixed(1)}px monospace`, xHov);
     }
     // ghost labels: +building (create a worktree room) vs +island (reserve a dir)
     for (const g of this.ghosts) {
