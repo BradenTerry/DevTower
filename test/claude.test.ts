@@ -186,6 +186,36 @@ describe("readMeta", () => {
     expect(meta.subagents).toBe(1);
   });
 
+  it("stamps prCreatedAt when a `gh pr create` command completes", async () => {
+    const ts = "2026-06-14T17:30:00.000Z";
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "open a pr" } },
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_pr", name: "Bash", input: { command: "gh pr create --fill" } }] },
+      },
+      { type: "user", timestamp: ts, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_pr", content: "https://github.com/o/r/pull/42" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.prCreatedAt).toBe(Date.parse(ts));
+  });
+
+  it("leaves prCreatedAt undefined before the create result lands, and for other Bash commands", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "status then maybe a pr" } },
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [
+          { type: "tool_use", id: "toolu_a", name: "Bash", input: { command: "git status" } },
+          { type: "tool_use", id: "toolu_pr", name: "Bash", input: { command: "gh pr create --fill" } }, // emitted, not yet returned
+        ] },
+      },
+      { type: "user", timestamp: "2026-06-14T17:30:00.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_a", content: "clean" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.prCreatedAt).toBeUndefined();
+  });
+
   it("drops a background sub-agent once its task-notification reports completion", async () => {
     const { file, size } = write([
       { type: "user", cwd: dir, message: { role: "user", content: "spawn in background" } },

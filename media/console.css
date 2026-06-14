@@ -98,27 +98,6 @@ button{ font-family:inherit; }
   box-shadow:0 0 10px var(--waiting); font-family:var(--mono);
 }
 
-/* PR status pills — shared by the agent-panel PR chip */
-.pr-stat{ display:inline-flex; align-items:center; gap:5px; }
-.pr-stat.pass{ color:var(--active); } .pr-stat.fail{ color:var(--error); }
-.pr-stat.pending{ color:var(--waiting); } .pr-stat.none{ color:var(--text-faint); }
-.pr-stat.approved{ color:var(--active); } .pr-stat.changes{ color:var(--waiting); }
-.pr-stat.required{ color:var(--text-dim); }
-.pr-stat .pdot{ width:6px; height:6px; border-radius:50%; background:currentColor; }
-.pr-stat.pending .pdot{ animation:livepulse 1.3s infinite; }
-
-/* PR chip in the agent panel header */
-.prchip{
-  display:flex; align-items:center; gap:9px; cursor:pointer;
-  margin-top:8px; padding:8px 12px; border-radius:10px;
-  background:var(--glass-2); border:1px solid var(--edge-soft);
-  font-size:11px; color:var(--text-dim); transition:.15s;
-}
-.prchip:hover{ border-color:var(--edge); }
-.prchip .pic{ color:var(--amber); }
-.prchip b{ color:var(--text); font-weight:500; }
-.prchip .spacer{ flex:1; }
-
 /* ============ REVIEW DISPATCH CARD (modal) ============ */
 .rd-scrim{
   position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center;
@@ -574,7 +553,7 @@ button{ font-family:inherit; }
 }
 .stat-ctx .bar i{ display:block; height:100%; border-radius:5px; transition:width .4s ease; box-shadow:0 0 8px currentColor; }
 .stat-ctx b{ font-size:12px; min-width:46px; text-align:right; }
-.stat-ctx .tk{ color:var(--text-faint); font-weight:400; font-size:10px; }
+.stat-ctx .tk{ color:#ffffff; font-weight:400; font-size:10px; }
 .sl{
   font-family:var(--label); font-size:7.5px; letter-spacing:.16em; text-transform:uppercase;
   color:var(--text-faint); min-width:58px; display:inline-block;
