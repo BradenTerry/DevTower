@@ -43,7 +43,7 @@ See [FEATURES.md](FEATURES.md) for the full capability map and the data-core / p
 
 - The Changes view runs `git status --porcelain` (+ numstat) in the selected agent's resolved worktree; stage/unstage call `git add` / `git reset HEAD`. Diffs read `git show HEAD:<file>` for the left side and the working file for the right.
 - Each agent gets a terminal rooted in its worktree (`cwd`). Set **`devtower.launchCommand`** to run a command on first open (e.g. resume a session) so subsequent sends reach that process. Placeholders: `${worktree}`, `${branch}`, `${id}`.
-- Spawning a dev into a room either creates a git worktree (`git worktree add` + a `fleet/<name>-<n>` branch) or runs in the project base dir, then launches `devtower.claudeCommand` in its terminal.
+- Spawning a dev into a room either creates a git worktree (`git worktree add` + a `devtower/<name>-<n>` branch) or runs in the project base dir, then launches `devtower.claudeCommand` in its terminal.
 - PR features shell out to the GitHub CLI (`gh pr list --head <branch>`, `gh search prs --review-requested=@me`, `gh pr create --web`, `gh pr checkout`).
 
 ## Requirements and what it runs on your machine
@@ -56,7 +56,7 @@ DevTower drives your existing CLIs; it makes no network calls of its own (git/gh
 | **git** | required | Changes view, native diffs, `git worktree add`, per-room push/pull/fetch |
 | **claude** ([Claude Code](https://claude.com/claude-code) CLI) | required for live agents | spawning/resuming sessions in terminals (`devtower.claudeCommand`); session discovery reads `~/.claude/projects` transcripts |
 | **gh** ([GitHub CLI](https://cli.github.com)) | optional | PR board, review-requested billboard, review dispatch, create/view PR. Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
-| **ps** / **lsof** (macOS / Linux) | optional | phantom-session filter - show only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower instead counts running `claude` processes fleet-wide via WMI (`Get-CimInstance Win32_Process`) and caps shown sessions to that many, newest-first; if even that is unavailable it falls back to a 15-min freshness window |
+| **ps** / **lsof** (macOS / Linux) | optional | phantom-session filter - show only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower instead counts running `claude` processes tower-wide via WMI (`Get-CimInstance Win32_Process`) and caps shown sessions to that many, newest-first; if even that is unavailable it falls back to a 15-min freshness window |
 
 What it accesses currently:
 

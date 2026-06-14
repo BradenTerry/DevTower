@@ -48,6 +48,9 @@ export interface Agent {
   /** Skills (slash commands / Skill tool) this session has used, accumulated in
    *  order of first use. Drives the tower's bookshelf trips and the panel list. */
   skills?: string[];
+  /** In-flight sub-agents (Task/Agent tool calls not yet returned) this session
+   *  has spawned. Surfaced as a count badge beside the agent's name. */
+  subagents?: number;
   /** A live session discovered running OUTSIDE DevTower (e.g. an external
    *  terminal). DevTower must not open/resume a terminal for it — it's managed
    *  in its own session. */
@@ -83,6 +86,8 @@ export interface StateEvent {
   contextTokens?: number;
   /** Skills seen in this poll's transcript window; unioned into the agent. */
   skills?: string[];
+  /** In-flight sub-agent count from this poll's transcript window. */
+  subagents?: number;
   external?: boolean;
   reviewOf?: ReviewTarget;
 }
@@ -121,6 +126,11 @@ export class DevTowerStore {
   private _onSelect = new vscode.EventEmitter<string | undefined>();
   readonly onDidChangeSelection = this._onSelect.event;
   private selectedId?: string;
+  // A room/worktree explicitly clicked in the tower (may hold no agent). Drives
+  // the Source Control mirror; takes precedence over the selected agent's cwd.
+  private _onFocusWorktree = new vscode.EventEmitter<string | undefined>();
+  readonly onDidChangeFocusWorktree = this._onFocusWorktree.event;
+  private focusedWorktree?: string;
   private watcher?: vscode.FileSystemWatcher;
   private stateFileAbs?: string;
 
@@ -136,7 +146,19 @@ export class DevTowerStore {
 
   setSelected(id: string | undefined): void {
     this.selectedId = id;
+    // selecting an agent supersedes any room-only focus
+    this.focusedWorktree = undefined;
     this._onSelect.fire(id);
+  }
+
+  getFocusedWorktree(): string | undefined {
+    return this.focusedWorktree;
+  }
+
+  /** Focus a worktree directory directly (e.g. clicking a room with no agent). */
+  setFocusedWorktree(dir: string | undefined): void {
+    this.focusedWorktree = dir;
+    this._onFocusWorktree.fire(dir);
   }
 
   list(): Agent[] {
@@ -207,6 +229,9 @@ export class DevTowerStore {
       // union, preserving first-seen order, so the full per-session set persists
       // even as individual Skill calls scroll out of the transcript tail
       skills: mergeSkills(existing?.skills, ev.skills),
+      // a fresh poll reports the current in-flight count (0 when settled), so
+      // honor it directly; fall back to last-known only when absent this poll
+      subagents: ev.subagents ?? existing?.subagents,
       external: ev.external ?? existing?.external,
       reviewOf: ev.reviewOf ?? existing?.reviewOf,
     };

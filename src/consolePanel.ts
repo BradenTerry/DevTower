@@ -5,11 +5,11 @@ import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { isRepo, resolveCwd, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
+import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { ClaudeDiscovery } from "./claude";
-import { dlog } from "./debugLog";
+import { dlog, elog } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
 
@@ -99,6 +99,13 @@ export class ConsolePanel {
   /** room key → absolute git path, so a sync request can run git in the right dir. */
   private roomGitPaths = new Map<string, string>();
   private fetchTimer?: ReturnType<typeof setInterval>;
+  /** True once the webview has sent `ready` (its message listener is wired). A
+   *  message posted before this is dropped by VS Code, so openSettings sent on a
+   *  freshly created panel is deferred until ready instead of lost. */
+  private webviewReady = false;
+  /** A pending "open settings" request that arrived before the webview was ready,
+   *  flushed from the `ready` handler. */
+  private pendingOpenSettings = false;
 
   static createOrShow(
     context: vscode.ExtensionContext,
@@ -256,12 +263,17 @@ export class ConsolePanel {
     const id: string | undefined = m.id;
     switch (m.type) {
       case "ready":
+        this.webviewReady = true;
         this.postState();
         this.postUsage();
         // push the persisted efficiency-mode setting (defaults off) plus the
         // review-dispatch options (selectable skills + saved defaults)
         this.postConfig();
         void this.refreshState(); // fill in each island's worktree rooms
+        if (this.pendingOpenSettings) {
+          this.pendingOpenSettings = false;
+          this.panel.webview.postMessage({ type: "openSettings" });
+        }
         break;
       case "setEco":
         // operator toggled efficiency mode → persist their choice
@@ -271,6 +283,25 @@ export class ConsolePanel {
         break;
       case "select":
         if (id) this.store.setSelected(id);
+        break;
+      case "pickRoom":
+        // a room/building was clicked (possibly empty) → point the Source
+        // Control mirror at that worktree, independent of any agent
+        if (typeof m.room === "string") {
+          const dir = this.roomGitPaths.get(m.room) ?? m.room;
+          this.store.setFocusedWorktree(resolveDir(dir));
+        }
+        break;
+      case "useDir":
+        // the room's "USE DIR" button → load this worktree into the DevTower tab
+        // (Selected Directory + Changes) and reveal it
+        if (typeof m.room === "string") {
+          const dir = resolveDir(this.roomGitPaths.get(m.room) ?? m.room);
+          if (dir) {
+            this.store.setFocusedWorktree(dir);
+            void vscode.commands.executeCommand("devtower.directory.focus");
+          }
+        }
         break;
       case "requestSession":
         if (id) this.postSession(id);
@@ -357,6 +388,18 @@ export class ConsolePanel {
         // forwarded so the extension + webview share one ordered timeline
         if (typeof m.event === "string") dlog(`scene.${m.event}`, m.data && typeof m.data === "object" ? m.data : undefined);
         break;
+      case "error":
+        // an uncaught error in the webview (scene render crash, etc.) — always
+        // recorded to errors.log so a blank panel can be diagnosed afterward
+        elog("webview", {
+          kind: typeof m.kind === "string" ? m.kind : undefined,
+          message: typeof m.message === "string" ? m.message : "webview error",
+          stack: typeof m.stack === "string" ? m.stack : undefined,
+          source: typeof m.source === "string" ? m.source : undefined,
+          line: typeof m.line === "number" ? m.line : undefined,
+          col: typeof m.col === "number" ? m.col : undefined,
+        });
+        break;
     }
   }
 
@@ -394,7 +437,10 @@ export class ConsolePanel {
   /** Reveal the tower and open the settings overlay (from the nudge / command). */
   openSettings(): void {
     this.panel.reveal();
-    this.panel.webview.postMessage({ type: "openSettings" });
+    // On a freshly created panel the webview's message listener isn't wired yet,
+    // so this post would be dropped — defer it until the webview reports `ready`.
+    if (this.webviewReady) this.panel.webview.postMessage({ type: "openSettings" });
+    else this.pendingOpenSettings = true;
   }
 
   /* ============ ROOMS (tower floors) ============ */
@@ -569,6 +615,19 @@ export class ConsolePanel {
 
   /** + DEV on a room → drop an agent straight into that room's worktree. No
    *  prompt — the room already fixes the directory. */
+  /** A short random suffix (4 hex chars) for a new agent's id/name, not already
+   *  taken by an existing agent. Random instead of an incrementing counter so a
+   *  name stays stable as siblings come and go, and is unique enough to grep
+   *  when reporting a bug against a specific agent. */
+  private uniqueAgentSuffix(island: string): string {
+    const taken = new Set(this.store.list().map((a) => a.id));
+    for (let i = 0; i < 50; i++) {
+      const suffix = randomUUID().replace(/-/g, "").slice(0, 4);
+      if (!taken.has(`${island}-${suffix}`)) return suffix;
+    }
+    return randomUUID().slice(0, 8); // astronomically unlikely fallback
+  }
+
   private async addDev(island: string, worktree: string): Promise<void> {
     const key = `dev::${worktree}`;
     if (this.addingRooms.has(key)) return; // guard a double-click
@@ -578,13 +637,13 @@ export class ConsolePanel {
         vscode.window.showWarningMessage(`DevTower: no directory for "${island}".`);
         return;
       }
-      const n = this.store.list().filter((a) => a.repo === island).length + 1;
+      const suffix = this.uniqueAgentSuffix(island);
       const branch = await currentBranch(worktree);
-      const id = `${island}-a${n}`;
+      const id = `${island}-${suffix}`;
       dlog("panel.addDev", { island, worktree, id });
       this.store.apply({
         id,
-        name: `${island}-${n}`,
+        name: `${island}-${suffix}`,
         model: "—",
         repo: island,
         worktree,
@@ -1269,10 +1328,10 @@ export class ConsolePanel {
   <!-- plan-usage meters (5h / weekly token windows), pinned bottom-right -->
   <div class="usage" id="usage" hidden>
     <span class="umeter" id="u-5h" title="Plan usage — 5-hour window">
-      <span class="ulbl">5H</span><span class="ubar"><i></i></span><b class="upct">–</b>
+      <span class="ulbl">5H</span><span class="ubar"><i></i></span><b class="upct">–</b><small class="ureset"></small>
     </span>
     <span class="umeter" id="u-wk" title="Plan usage — weekly window">
-      <span class="ulbl">WK</span><span class="ubar"><i></i></span><b class="upct">–</b>
+      <span class="ulbl">WK</span><span class="ubar"><i></i></span><b class="upct">–</b><small class="ureset"></small>
     </span>
   </div>
 
@@ -1288,6 +1347,27 @@ export class ConsolePanel {
   <!-- selected-agent panel: chat + changes -->
   <aside class="panel" id="panel" hidden></aside>
 
+  <script nonce="${nonce}">
+    // Capture uncaught errors as early as possible (before the bundles load) so a
+    // crash that blanks the scene is still recorded. Buffer until console.js wires
+    // up the vscode bridge (window.__dtSendError), then flush.
+    (function () {
+      window.__dtErrors = [];
+      var emit = function (rec) {
+        try { (window.__dtSendError || function (r) { window.__dtErrors.push(r); })(rec); } catch (_) {}
+      };
+      window.addEventListener("error", function (e) {
+        emit({ kind: "error", message: (e && e.message) || String((e && e.error) || "error"),
+               stack: e && e.error && e.error.stack ? String(e.error.stack) : undefined,
+               source: e && e.filename, line: e && e.lineno, col: e && e.colno });
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        var r = e && e.reason;
+        emit({ kind: "unhandledrejection", message: r && r.message ? r.message : String(r),
+               stack: r && r.stack ? String(r.stack) : undefined });
+      });
+    })();
+  </script>
   <script nonce="${nonce}" src="${crew}"></script>
   <script nonce="${nonce}" src="${js}"></script>
 </body>

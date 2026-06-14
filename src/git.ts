@@ -97,7 +97,14 @@ export function parseWorktreeList(out: string): { path: string; branch: string }
 
 export function runGit(cwd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+    // GIT_OPTIONAL_LOCKS=0 stops read-only commands (status/diff/rev-list/log)
+    // from rewriting .git/index to refresh the stat cache. Without it, every
+    // refresh's `git status` dirties .git, which our recursive .git fs.watch
+    // sees as a change and schedules another refresh — a self-feeding loop that
+    // turns into a subprocess storm (and a frozen webview) once a second
+    // instance, e.g. the debug Extension Dev Host, watches the same repo too.
+    const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+    execFile("git", args, { cwd, env, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
       // git puts the useful reason ("fatal: ...") on stderr; surface that
       if (err) reject(new Error((String(stderr).trim() || err.message).trim()));
       else resolve(stdout);
@@ -134,15 +141,21 @@ export async function currentBranch(cwd: string): Promise<string> {
  * undefined if that path does not exist (caller then falls back to mock diff),
  * so we never silently operate against the wrong repository.
  */
-export function resolveCwd(agent: Agent): string | undefined {
-  if (!agent.worktree) return undefined;
+/** Resolve a raw path (absolute, or relative to the first workspace folder) to
+ *  an existing directory, or undefined. Shared by agent worktrees and room keys. */
+export function resolveDir(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
   const base = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const abs = path.isAbsolute(agent.worktree)
-    ? agent.worktree
+  const abs = path.isAbsolute(raw)
+    ? raw
     : base
-      ? path.resolve(base, agent.worktree)
-      : path.resolve(agent.worktree);
+      ? path.resolve(base, raw)
+      : path.resolve(raw);
   return fs.existsSync(abs) ? abs : undefined;
+}
+
+export function resolveCwd(agent: Agent): string | undefined {
+  return resolveDir(agent.worktree);
 }
 
 /** Parse `git status --porcelain` into staged / unstaged buckets. */

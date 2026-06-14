@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { DevTowerStore } from "./store";
+import { DevTowerStore, Agent } from "./store";
 import {
   isRepo,
   resolveCwd,
+  resolveDir,
   status,
   stage,
   unstage,
@@ -80,13 +81,40 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
+  private debounce?: ReturnType<typeof setTimeout>;
+
   constructor(private store: DevTowerStore) {
+    // selection / focus are user actions → refresh now. onChange fires on every
+    // agent state event (many per second while a session is busy), so coalesce
+    // it: each getChildren shells out to `git status`, and re-querying the tree
+    // faster than git can answer leaves it stuck on a spinner ("frozen").
     store.onDidChangeSelection(() => this.refresh());
-    store.onChange(() => this.refresh());
+    store.onDidChangeFocusWorktree(() => this.refresh());
+    store.onChange(() => this.refreshSoon());
   }
 
   refresh(): void {
+    if (this.debounce) { clearTimeout(this.debounce); this.debounce = undefined; }
     this._onDidChange.fire();
+  }
+
+  /** Coalesce a burst of change events into a single refresh. */
+  private refreshSoon(): void {
+    if (this.debounce) clearTimeout(this.debounce);
+    this.debounce = setTimeout(() => {
+      this.debounce = undefined;
+      this._onDidChange.fire();
+    }, 300);
+  }
+
+  /** The worktree whose changes to show: a focused room wins, else the agent.
+   *  `agent` is the selected agent (for the mock fallback when no room focus). */
+  currentCwd(): { cwd: string | undefined; label: string; agent?: Agent } {
+    const focused = resolveDir(this.store.getFocusedWorktree());
+    const agent = this.store.getSelected();
+    const cwd = focused ?? (agent ? resolveCwd(agent) : undefined);
+    const label = focused ? path.basename(focused) : agent?.name ?? "room";
+    return { cwd, label, agent: focused ? undefined : agent };
   }
 
   getTreeItem(node: Node): vscode.TreeItem {
@@ -94,10 +122,9 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
   }
 
   async getChildren(node?: Node): Promise<Node[]> {
-    const agent = this.store.getSelected();
-    if (!agent) return [new InfoNode("Select an agent to see its changes", "list-selection")];
+    const { cwd, label, agent } = this.currentCwd();
+    if (!cwd && !agent) return [new InfoNode("Select a room or agent to see its changes", "list-selection")];
 
-    const cwd = resolveCwd(agent);
     const real = cwd ? await isRepo(cwd) : false;
 
     // top level
@@ -110,7 +137,8 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
         if (!groups.length) return [new InfoNode("No changes in this worktree", "pass")];
         return groups;
       }
-      // mock fallback
+      // mock fallback (only for a selected agent with seeded mock data)
+      if (!agent) return [new InfoNode("No changes in this worktree", "circle-slash")];
       if (!agent.files.length) return [new InfoNode("No changes yet", "circle-slash")];
       return [new InfoNode(`${agent.name} — mock changes (read-only)`, "beaker"), ...this.mockFiles(agent.id)];
     }
@@ -121,7 +149,7 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
       const list = node.kind === "staged" ? st.staged : st.unstaged;
       return list
         .sort((a, b) => a.path.localeCompare(b.path))
-        .map((f) => new FileNode(cwd, f, node.kind === "staged", agent.name));
+        .map((f) => new FileNode(cwd, f, node.kind === "staged", label));
     }
     return [];
   }
@@ -160,15 +188,13 @@ export function registerChanges(
     }),
 
     vscode.commands.registerCommand("devtower.stageAll", async () => {
-      const agent = store.getSelected();
-      const cwd = agent && resolveCwd(agent);
+      const { cwd } = provider.currentCwd();
       if (!cwd) return;
       await stageAll(cwd);
       provider.refresh();
     }),
     vscode.commands.registerCommand("devtower.unstageAll", async () => {
-      const agent = store.getSelected();
-      const cwd = agent && resolveCwd(agent);
+      const { cwd } = provider.currentCwd();
       if (!cwd) return;
       await unstageAll(cwd);
       provider.refresh();

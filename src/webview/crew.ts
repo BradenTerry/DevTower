@@ -22,6 +22,7 @@ interface CrewAgent {
   worktree?: string; // git worktree path; groups desks within a room
   branch?: string; // branch name, shown on the cluster sign
   skills?: string[]; // skills this session has used (accumulated, first-use order)
+  subagents?: number; // in-flight sub-agents (Task/Agent tool calls not yet returned)
   external?: boolean; // a live session running OUTSIDE DevTower (not one we launched)
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
   reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
@@ -109,10 +110,10 @@ const DOOR_W = 18;
 // (one per skill it uses) and carries it back to stack on its desk.
 const SHELF_REACH = 16; // world x (from room left) a dev stands at to fetch a book
 const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
-// Paper shredder in the front-left corner, left of the bookshelf: when a session
-// is /cleared the dev carries its stack of context papers here, feeds them in,
-// then walks back. The bookshelf's near end is pulled back to make room for it.
-const SHRED_REACH = 18; // world x (from room left) a dev stands at to shred (just right of the bin)
+// Paper shredder against the left wall, just in front of the bookshelf's near
+// end: when a session is /cleared the dev carries its stack of context papers
+// here, feeds them in, then walks back.
+const SHRED_REACH = 21; // world x (from room left) a dev stands at to shred (just right of the bin)
 const SHRED_FEED = 1.6; // seconds spent feeding the stack into the shredder
 // Room depth: the interior is a shallow one-point-perspective box. The far wall
 // is inset by DEPTH_X on each side and its floor line sits DEPTH_Y above the
@@ -465,12 +466,22 @@ class PixelCrew {
   private dirty = true;
   private eco = false;
   // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
-  // viewport so rooms frame into the visible area and stay clickable
+  // viewport so rooms frame into the visible area and stay clickable.
+  // insetL/insetR are the TARGETs; curInsetL/curInsetR are the animated values
+  // the projection actually uses, so the panel's shift glides in step with the
+  // camera flight instead of snapping the whole scene sideways in one frame.
   private insetL = 0;
   private insetR = 0;
+  private curInsetL = 0;
+  private curInsetR = 0;
 
   private selectedId?: string;
   private onSelectCb: (id: string) => void = () => {};
+  /** fired when a room/building is clicked (even an empty one), so the host can
+   *  point the Source Control panel at that worktree. room = building key. */
+  private onPickRoomCb: (room: string) => void = () => {};
+  /** fired by a room's "USE DIR" button: mount that worktree in the Explorer. */
+  private onUseDirCb: (room: string) => void = () => {};
   private onReserveCb: (floor: number, col: number) => void = () => {};
   private onAddDevCb: (island: string, worktree: string) => void = () => {};
   private onAddWorktreeCb: (island: string) => void = () => {};
@@ -563,7 +574,7 @@ class PixelCrew {
       }
       if (!this.drag.active) {
         const hit = this.pick(e);
-        const clickable = !!(hit.agent || hit.room || hit.ghost || hit.addDev || hit.removeBtn ||
+        const clickable = !!(hit.agent || hit.room || hit.ghost || hit.addDev || hit.useDir || hit.removeBtn ||
           hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom || hit.openPrUrl ||
           hit.billboardRefresh || hit.reviewPr || hit.billboardZoom);
         this.container.style.cursor = clickable ? "pointer" : "default";
@@ -630,6 +641,8 @@ class PixelCrew {
   }
 
   onSelect(cb: (id: string) => void) { this.onSelectCb = cb; }
+  onPickRoom(cb: (room: string) => void) { this.onPickRoomCb = cb; }
+  onUseDir(cb: (room: string) => void) { this.onUseDirCb = cb; }
   onReserve(cb: (floor: number, col: number) => void) { this.onReserveCb = cb; }
   onAddDev(cb: (island: string, worktree: string) => void) { this.onAddDevCb = cb; }
   onAddWorktree(cb: (island: string) => void) { this.onAddWorktreeCb = cb; }
@@ -1432,7 +1445,7 @@ class PixelCrew {
   }
 
   private targetZoom(): number {
-    const cw = Math.max(80, (this.container.clientWidth || 1) - this.insetL - this.insetR);
+    const cw = Math.max(80, (this.container.clientWidth || 1) - this.curInsetL - this.curInsetR);
     const ch = this.container.clientHeight || 1;
     const fitW = (cw * 0.9) / this.focus.spanW;
     const fitH = (ch * 0.86) / this.focus.spanH;
@@ -1460,10 +1473,24 @@ class PixelCrew {
         ticked = true;
       }
 
+      // Glide the HUD inset toward its target so the panel opening shifts the
+      // viewport in step with the camera, not as a separate one-frame snap.
+      const insetMoving =
+        Math.abs(this.curInsetL - this.insetL) > 0.5 ||
+        Math.abs(this.curInsetR - this.insetR) > 0.5;
+      if (insetMoving) {
+        const ki = Math.min(1, (dt / 1000) * 5);
+        this.curInsetL += (this.insetL - this.curInsetL) * ki;
+        this.curInsetR += (this.insetR - this.curInsetR) * ki;
+      } else {
+        this.curInsetL = this.insetL;
+        this.curInsetR = this.insetR;
+      }
       const tz = this.targetZoom();
       const tx = this.focus.x + this.panX;
       const ty = this.focus.y + this.panY;
       const moving =
+        insetMoving ||
         Math.abs(this.cam.x - tx) > 0.05 ||
         Math.abs(this.cam.y - ty) > 0.05 ||
         Math.abs(this.cam.z - tz) > 0.01;
@@ -1805,7 +1832,7 @@ class PixelCrew {
 
   private screenOf(wx: number, wy: number) {
     const cw = this.container.clientWidth, ch = this.container.clientHeight;
-    const cx = this.insetL + (cw - this.insetL - this.insetR) / 2;
+    const cx = this.curInsetL + (cw - this.curInsetL - this.curInsetR) / 2;
     return {
       x: cx + (wx - this.cam.x) * this.cam.z,
       y: ch / 2 + (wy - this.cam.y) * this.cam.z,
@@ -1831,6 +1858,7 @@ class PixelCrew {
     island?: string; // island name (for add/remove/cd)
     ghost?: { floor: number; col: number; kind: "building" | "island"; island?: string };
     addDev?: { island: string; key: string }; // + DEV on a specific room
+    useDir?: string; // building key → point this window's Explorer at the worktree
     removeBtn?: string; // island (nuke)
     removeWtBtn?: string; // building key (worktree path)
     pushRoom?: string; // building key → push local commits
@@ -1866,6 +1894,10 @@ class PixelCrew {
       }
       if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 2, 16, 8)) {
         return { addDev: { island: r.island, key: r.name } };
+      }
+      // "USE DIR" sits just left of "+ DEV": point the Explorer at this worktree
+      if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 46, base - ROOM_H + 2, 28, 8)) {
+        return { useDir: r.name };
       }
       const btns = this.commitButtons(r);
       if (btns.push && this.inRect(mx, my, btns.push.x, btns.push.y, btns.push.w, btns.push.h)) return { pushRoom: r.name };
@@ -1903,6 +1935,7 @@ class PixelCrew {
     if (h.billboardRefresh) return "bbRefresh";
     if (h.openPrUrl) return "openpr:" + h.openPrUrl;
     if (h.addDev) return "addDev:" + h.addDev.key;
+    if (h.useDir) return "useDir:" + h.useDir;
     if (h.removeBtn) return "remove:" + h.removeBtn;
     if (h.removeWtBtn) return "remove:" + h.removeWtBtn;
     if (h.fetchRoom) return "fetch:" + h.fetchRoom;
@@ -1928,6 +1961,7 @@ class PixelCrew {
     else if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
     else if (hit.removeBtn) this.onRemoveRoomCb(hit.removeBtn);
     else if (hit.addDev) this.onAddDevCb(hit.addDev.island, hit.addDev.key);
+    else if (hit.useDir) this.onUseDirCb(hit.useDir);
     else if (hit.ghost) {
       // +island reserves a new directory; +building creates a new worktree room
       if (hit.ghost.kind === "island") this.onReserveCb(hit.ghost.floor, hit.ghost.col);
@@ -1936,6 +1970,9 @@ class PixelCrew {
       this.onSelectCb(hit.agent);
       this.focusAgent(hit.agent); // zoom onto the dev you clicked
     } else if (hit.room) {
+      // mirror this building's worktree into the Source Control panel, even when
+      // the room holds no agent
+      this.onPickRoomCb(hit.room);
       // from a dev zoom, clicking the building centers it; clicking the already
       // centered building toggles back out
       // already centered on this room → zoom out to an overview of just this
@@ -1978,7 +2015,7 @@ class PixelCrew {
     }
 
     const z = this.cam.z;
-    const cx = this.insetL + (cw - this.insetL - this.insetR) / 2;
+    const cx = this.curInsetL + (cw - this.curInsetL - this.curInsetR) / 2;
     const ox = cx - this.cam.x * z;
     const oy = ch / 2 - this.cam.y * z;
     ctx.setTransform(dpr * z, 0, 0, dpr * z, Math.round(dpr * ox), Math.round(dpr * oy));
@@ -2173,6 +2210,12 @@ class PixelCrew {
       const devHov = this.hov("addDev:" + r.name);
       this.drawRoomButton(ctx, d1.x, d1.y, d2.x - d1.x, d2.y - d1.y, "+ DEV",
         devHov ? "#aef5cf" : "#3ee089", `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`, devHov);
+      // "USE DIR" just left of + DEV — point the Explorer at this room's worktree
+      const u1 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 46, top);
+      const u2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 18, top + 8);
+      const useHov = this.hov("useDir:" + r.name);
+      this.drawRoomButton(ctx, u1.x, u1.y, u2.x - u1.x, u2.y - u1.y, "USE DIR",
+        useHov ? "#cfe6ff" : "#5bb8ff", `600 ${clamp(3.0 * this.cam.z, 7, 10)}px 'Martian Mono', monospace`, useHov);
       // ✕ — main nukes the whole directory, a worktree removes just itself
       const x1 = this.screenOf(r.x0 + ROOM_W - 10, top);
       const x2 = this.screenOf(r.x0 + ROOM_W - 2, top + 8);
@@ -2210,12 +2253,23 @@ class PixelCrew {
       const sel = tn.agent.id === this.selectedId;
       ctx.font = "9px 'IBM Plex Mono', monospace";
       const nw = ctx.measureText(tn.agent.name).width;
-      const box = { x0: s.x - nw / 2 - 2, x1: s.x + nw / 2 + 2, y0: s.y - 18, y1: s.y - 6 };
+      // sub-agent badge sits to the LEFT of the name: [bot][count] gap name.
+      // Reserve its width in the label box so the overlap test accounts for it.
+      const subN = tn.agent.subagents && tn.agent.subagents > 0 ? tn.agent.subagents : 0;
+      let badgeW = 0;
+      if (subN) {
+        ctx.font = "bold 8px 'IBM Plex Mono', monospace";
+        badgeW = 8 /*icon*/ + 1 /*gap*/ + ctx.measureText(String(subN)).width + 3 /*gap to name*/;
+        ctx.font = "9px 'IBM Plex Mono', monospace";
+      }
+      const box = { x0: s.x - nw / 2 - 2 - badgeW, x1: s.x + nw / 2 + 2, y0: s.y - 18, y1: s.y - 6 };
       if (sel || !nameOverlaps(box)) {
         claimed.push(box);
         const ext = tn.agent.external;
-        ctx.fillStyle = sel ? "#ffb13d" : ext ? "rgba(150,162,170,0.7)" : "rgba(230,238,240,0.88)";
+        const nameColor = sel ? "#ffb13d" : ext ? "rgba(150,162,170,0.7)" : "rgba(230,238,240,0.88)";
+        ctx.fillStyle = nameColor;
         ctx.fillText(tn.agent.name, s.x, s.y - 8);
+        if (subN) this.drawSubagentBadge(s.x - nw / 2 - 3, s.y, subN, nameColor);
         if (ext && !sel) {
           // dashed underline: the "running outside DevTower" marker
           ctx.save();
@@ -2279,6 +2333,32 @@ class PixelCrew {
     }
 
     if (this.toonDrag?.active) this.paintDropHint();
+  }
+
+  /** A small pixel "bot head" + count, drawn left of an agent's name to show how
+   *  many sub-agents (Task/Agent tool calls) it currently has in flight. Passive
+   *  indicator only — no hit-test. `rightX` is where the count's right edge ends
+   *  (the name's left edge, minus a gap); `baseY` is the toon's label anchor. */
+  private drawSubagentBadge(rightX: number, baseY: number, n: number, color: string) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.font = "bold 8px 'IBM Plex Mono', monospace";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "alphabetic";
+    const count = String(n);
+    ctx.fillStyle = color;
+    ctx.fillText(count, rightX, baseY - 8);
+    // bot head: 8px wide, sitting just left of the count
+    const ix = rightX - ctx.measureText(count).width - 1 - 8;
+    const iy = baseY - 16;
+    ctx.fillStyle = color;
+    ctx.fillRect(ix + 2, iy, 3, 2); // antenna tip
+    ctx.fillRect(ix + 3, iy + 2, 1, 1); // antenna stalk
+    ctx.fillRect(ix, iy + 3, 8, 6); // head
+    ctx.fillStyle = "rgba(12,17,20,0.9)"; // punch two dark eyes into the head
+    ctx.fillRect(ix + 2, iy + 5, 1, 2);
+    ctx.fillRect(ix + 5, iy + 5, 1, 2);
+    ctx.restore();
   }
 
   /** Overlay drawn while a toon is being dragged: highlight the drop target
@@ -2637,8 +2717,9 @@ class PixelCrew {
     // to the wall's perspective, just below the window
     this.drawBookshelf(ctx, r, onWall);
 
-    // the paper shredder a dev visits on /clear (right of the desks, on the floor)
-    this.drawShredder(ctx, r);
+    // the paper shredder a dev visits on /clear, stood against the left wall just
+    // in front of the bookshelf's near end
+    this.drawShredder(ctx, r, onWall);
 
     // plant + hash decor
     const px = x + w - DOOR_W - 6;
@@ -3233,11 +3314,22 @@ class PixelCrew {
    *  its session is /cleared, feeds its stack of context papers in, then returns
    *  to its seat (see the shred state machine in tick + the carried stack in
    *  drawToon). It blinks red and spits confetti strips while a dev is feeding. */
-  private drawShredder(ctx: CanvasRenderingContext2D, r: Room) {
+  private drawShredder(
+    ctx: CanvasRenderingContext2D,
+    r: Room,
+    onWall: (t: number, f: number) => { x: number; y: number }
+  ) {
     const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
     if (eFurn <= 0) return;
-    const base = r.baseY;
-    const sx = r.x0 + SHRED_REACH + 3; // bin sits just past where the dev stands
+    // stand the bin against the left wall, just in front of the bookshelf's near
+    // end (t0 = 0.4). It sits proud of the wall like the cabinet does, and is
+    // scaled down for the perspective at that depth.
+    const tShred = 0.34;
+    const s = 0.82; // perspective scale at this depth
+    const floor = onWall(tShred, 1.0); // floor point on the left wall
+    const d = 6 * (1 - tShred * 0.5); // protrusion toward the room (matches the shelf)
+    const sx = floor.x + d;
+    const base = floor.y + d * 0.5;
     // remaining feed fraction if a dev is shredding into THIS room's bin (0 = idle)
     let feed = 0;
     for (const tn of this.toons.values()) {
@@ -3247,44 +3339,46 @@ class PixelCrew {
     }
     ctx.save();
     ctx.globalAlpha = eFurn;
+    ctx.translate(sx, base);
+    ctx.scale(s, s); // draw at full pixel sizes, shrunk into the wall's perspective
     ctx.fillStyle = "rgba(0,0,0,0.3)"; // contact shadow
-    ctx.fillRect(sx - 1.5, base - 0.6, 12, 1.6);
+    ctx.fillRect(-1.5, -0.6, 12, 1.6);
     // bin body
     ctx.fillStyle = "#23282e";
-    ctx.fillRect(sx, base - 15, 9, 15);
+    ctx.fillRect(0, -15, 9, 15);
     ctx.fillStyle = "#2e343b"; // lit left face
-    ctx.fillRect(sx, base - 15, 2, 15);
+    ctx.fillRect(0, -15, 2, 15);
     ctx.fillStyle = "#171b20"; // right shadow
-    ctx.fillRect(sx + 7, base - 15, 2, 15);
+    ctx.fillRect(7, -15, 2, 15);
     // window onto the collected shreds
     ctx.fillStyle = "#3a4148";
-    ctx.fillRect(sx + 2, base - 11, 5, 8);
+    ctx.fillRect(2, -11, 5, 8);
     for (let i = 0; i < 4; i++) {
       ctx.fillStyle = i % 2 ? "#cfc9b6" : "#b4ae9b";
-      ctx.fillRect(sx + 2.4 + i * 1.1, base - 10.5, 0.7, 7);
+      ctx.fillRect(2.4 + i * 1.1, -10.5, 0.7, 7);
     }
     // shredder head (motor unit) on top of the bin, wider than the body
     ctx.fillStyle = "#3a4046";
-    ctx.fillRect(sx - 1, base - 19, 11, 4);
+    ctx.fillRect(-1, -19, 11, 4);
     ctx.fillStyle = "#4a5158";
-    ctx.fillRect(sx - 1, base - 19, 11, 1); // top highlight
+    ctx.fillRect(-1, -19, 11, 1); // top highlight
     ctx.fillStyle = "#0f1318"; // intake slot
-    ctx.fillRect(sx + 0.5, base - 16.4, 8, 1);
+    ctx.fillRect(0.5, -16.4, 8, 1);
     // status LED: steady green idle, blinking red while shredding
     const blink = this.frame % 6 < 3;
     ctx.fillStyle = feed > 0 ? (blink ? "#ff5a52" : "#5a2522") : "#3ee089";
-    ctx.fillRect(sx + 8, base - 18.5, 1.2, 1.2);
+    ctx.fillRect(8, -18.5, 1.2, 1.2);
     if (feed > 0) {
       // a sheet jutting from the slot, shrinking as it feeds through
       const sheetH = 4 + feed * 5;
       ctx.fillStyle = "#e9e3d2";
-      ctx.fillRect(sx + 2.5, base - 16.4 - sheetH, 4, sheetH);
+      ctx.fillRect(2.5, -16.4 - sheetH, 4, sheetH);
       ctx.fillStyle = "#cfc9b6";
-      ctx.fillRect(sx + 2.5, base - 16.4 - sheetH, 4, 0.6);
+      ctx.fillRect(2.5, -16.4 - sheetH, 4, 0.6);
       // confetti strips spilling out below the head into the bin window
       for (let i = 0; i < 6; i++) {
-        const fx = sx + 1.8 + i * 1.05;
-        const fy = base - 14.5 + ((this.frame * 0.9 + i * 4) % 10);
+        const fx = 1.8 + i * 1.05;
+        const fy = -14.5 + ((this.frame * 0.9 + i * 4) % 10);
         ctx.fillStyle = i % 2 ? "#e9e3d2" : "#d8d2bf";
         ctx.fillRect(fx, fy, 0.7, 1.6);
       }
@@ -3394,6 +3488,9 @@ class PixelCrew {
     const slump = st === "error" && !walking ? 1.4 : 0;
     const base = y0 + hop;
     const facingLeft = sitting; // seated devs face their monitor (to the left)
+    // reading a fetched skill book at the desk: the dev looks DOWN at an open book
+    // held in front of it, so the pages (and their text) face up toward its gaze
+    const reading = sitting && tn.booksInHand > 0 && !tn.agent.reviewOf;
 
     ctx.fillStyle = p.pants;
     if (sitting) {
@@ -3518,7 +3615,11 @@ class PixelCrew {
       // eyes drop to the phone when idle, occasionally glancing back up
       const phoneGaze = (st === "idle" || st === "complete") && !walking && f % 50 > 6 ? 0.9 : 0;
       const ey = hy + 2.4 + slump * 0.5 + phoneGaze;
-      if (facingLeft || (walking && tn.targetX < tn.x)) {
+      if (reading) {
+        // both eyes lowered and centered, peering down at the open book below
+        ctx.fillRect(x - 1.5, ey + 0.8, 1.1, 1.1);
+        ctx.fillRect(x + 0.4, ey + 0.8, 1.1, 1.1);
+      } else if (facingLeft || (walking && tn.targetX < tn.x)) {
         ctx.fillRect(x - 2.2, ey, 1.1, 1.1);
         ctx.fillRect(x - 0.2, ey, 1.1, 1.1);
       } else {
@@ -3537,25 +3638,43 @@ class PixelCrew {
     // the open book is drawn after the head so it sits in front of the face
     // (the dev is holding it up to read), not occluded behind the skull; still
     // drawn within drawToon, so the desk/monitor edge occludes only its far corner
-    if (sitting && tn.booksInHand > 0 && !tn.agent.reviewOf) {
-      const bob = Math.sin(f * 0.16 + tn.ph) * 0.35;
-      const bx = x - 3, by = ty - 3.5 + bob, bw = 6, bh = 3.6;
-      ctx.fillStyle = "#e9e3d2"; // open pages
-      ctx.fillRect(bx, by, bw, bh);
+    if (reading) {
+      // an open book held low and tilted up toward the face: drawn as a flat
+      // spread seen from above, so the page block is a trapezoid (far/top edge
+      // foreshortened narrow, near/bottom edge wide) and the TEXT faces the dev's
+      // downward gaze rather than facing away toward the viewer.
+      const bob = Math.sin(f * 0.16 + tn.ph) * 0.3;
+      const yT = ty - 1.4 + bob, yB = ty + 3 + bob; // far (top) and near (bottom) edges
+      const wT = 2.7, wB = 3.9; // half-widths: wider toward the viewer for perspective
       const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
-      ctx.fillStyle = `hsl(${hue} 42% 40%)`; // cover edges
-      ctx.fillRect(bx - 0.7, by - 0.4, 0.9, bh + 0.8);
-      ctx.fillRect(bx + bw - 0.2, by - 0.4, 0.9, bh + 0.8);
-      ctx.fillStyle = "#b6ae98"; // center gutter
-      ctx.fillRect(bx + bw / 2 - 0.25, by, 0.5, bh);
-      ctx.fillStyle = "rgba(70,70,70,0.45)"; // a few text lines
-      ctx.fillRect(bx + 0.8, by + 1.1, 1.8, 0.4);
-      ctx.fillRect(bx + 0.8, by + 2.1, 1.5, 0.4);
-      ctx.fillRect(bx + bw / 2 + 0.7, by + 1.1, 1.7, 0.4);
-      ctx.fillRect(bx + bw / 2 + 0.7, by + 2.1, 1.4, 0.4);
-      ctx.fillStyle = handC; // hands gripping the lower corners
-      ctx.fillRect(bx - 0.6, by + bh - 0.4, 1.4, 1.4);
-      ctx.fillRect(bx + bw - 0.8, by + bh - 0.4, 1.4, 1.4);
+      const tri = (
+        a: [number, number], b: [number, number], c: [number, number], d: [number, number], fill: string
+      ) => {
+        ctx.beginPath();
+        ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(d[0], d[1]);
+        ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+      };
+      // cover backing, a touch proud of the page block on every side
+      tri([x - wT - 0.6, yT - 0.5], [x + wT + 0.6, yT - 0.5], [x + wB + 0.7, yB + 0.5], [x - wB - 0.7, yB + 0.5], `hsl(${hue} 42% 38%)`);
+      // the two open pages
+      tri([x - wT, yT], [x + wT, yT], [x + wB, yB], [x - wB, yB], "#e9e3d2");
+      // center gutter (the spine crease) running near→far
+      ctx.strokeStyle = "#b6ae98";
+      ctx.lineWidth = 0.6;
+      ctx.beginPath(); ctx.moveTo(x, yT); ctx.lineTo(x, yB); ctx.stroke();
+      // a few lines of text on each page, foreshortened with the page
+      ctx.fillStyle = "rgba(70,70,70,0.45)";
+      for (let i = 0; i < 3; i++) {
+        const f2 = (i + 1) / 4; // down the page, near→far
+        const ly = yT + (yB - yT) * f2;
+        const hw = wT + (wB - wT) * f2;
+        ctx.fillRect(x - hw + 0.6, ly, hw * 0.62, 0.4); // left page
+        ctx.fillRect(x + 0.6, ly, hw * 0.62, 0.4);      // right page
+      }
+      // hands cupping the near corners
+      ctx.fillStyle = handC;
+      ctx.fillRect(x - wB - 0.6, yB - 0.8, 1.5, 1.5);
+      ctx.fillRect(x + wB - 0.9, yB - 0.8, 1.5, 1.5);
     }
 
     // skill books in the dev's arms on the way back from the shelf (it leaves
@@ -3581,8 +3700,8 @@ class PixelCrew {
       const sheets = tn.shred.phase === "feed"
         ? Math.ceil(clamp(tn.shred.t / SHRED_FEED, 0, 1) * 4)
         : 4;
-      const dir = tn.targetX >= tn.x ? 1 : -1; // held in the direction of travel
-      const bx = x - 2 + (dir > 0 ? 1.4 : -0.4);
+      // the bin sits to the dev's left, so hold the stack on that side (toward it)
+      const bx = x - 2.4;
       for (let k = 0; k < sheets; k++) {
         const by = ty + 3 - k * 1.2;
         ctx.fillStyle = "#e9e3d2"; // white paper

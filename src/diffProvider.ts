@@ -71,9 +71,10 @@ export async function openGitFileDiff(
     ? vscode.Uri.file(path.join(cwd, file.path))
     : vscode.Uri.file(path.join(cwd, file.path));
   const title = `${label} ⌥ ${path.basename(file.path)} (HEAD ↔ working)`;
+  // preview (not pinned) + the active group → switching files REPLACES this tab
+  // instead of stacking a new one, matching the Source Control panel.
   await vscode.commands.executeCommand("vscode.diff", left, right, title, {
     preview: true,
-    viewColumn: vscode.ViewColumn.Beside,
   });
 }
 
@@ -93,6 +94,6 @@ export async function openMockFileDiff(
     left,
     right,
     `${agent.name} ⌥ ${path.basename(filePath)}`,
-    { preview: true, viewColumn: vscode.ViewColumn.Beside }
+    { preview: true }
   );
 }

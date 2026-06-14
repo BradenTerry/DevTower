@@ -49,6 +49,11 @@
     "views": {
       "devtower": [
         {
+          "id": "devtower.directory",
+          "name": "Selected Directory",
+          "type": "tree"
+        },
+        {
           "id": "devtower.changes",
           "name": "Changes",
           "type": "tree"
@@ -69,6 +74,14 @@
       {
         "command": "devtower.openSettings",
         "title": "DevTower: Open Settings"
+      },
+      {
+        "command": "devtower.installHooks",
+        "title": "DevTower: Install Notification Hook"
+      },
+      {
+        "command": "devtower.openErrorLog",
+        "title": "DevTower: Open Error Log"
       },
       {
         "command": "devtower.refreshChanges",
@@ -98,14 +111,24 @@
         "command": "devtower.unstageAll",
         "title": "Unstage All Changes",
         "icon": "$(remove)"
+      },
+      {
+        "command": "devtower.refreshDirectory",
+        "title": "DevTower: Refresh Selected Directory",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "devtower.openConsole",
-          "when": "view == devtower.changes",
+          "when": "view == devtower.directory",
           "group": "navigation@0"
+        },
+        {
+          "command": "devtower.refreshDirectory",
+          "when": "view == devtower.directory",
+          "group": "navigation@1"
         },
         {
           "command": "devtower.stageAll",

@@ -5,7 +5,8 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo } from "./git";
-import { dlog } from "./debugLog";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker } from "./hooks";
+import { dlog, elog } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -16,12 +17,17 @@ function execP(cmd: string, args: string[]): Promise<string> {
 }
 
 /** Liveness of running `claude` processes, used to filter out phantom sessions.
- *  - perCwd: exact count per working directory (Unix, via ps + lsof).
- *  - total:  fleet-wide count only (Windows — no cwd is available; the caller
+ *  - perCwd: exact count per working directory (Unix, via ps + lsof). `sessionIds`
+ *    are the live processes' `--session-id` argv values, when present — these let
+ *    the caller keep transcripts by EXACT session identity instead of guessing by
+ *    mtime (which mis-fires when a session exits: its final write makes it the
+ *    freshest, so the newest-first heuristic would evict an older but still-live
+ *    sibling in the same cwd).
+ *  - total:  tower-wide count only (Windows — no cwd is available; the caller
  *    caps kept sessions to this many, newest-first).
  *  - null:   process info unavailable → caller falls back to mtime freshness. */
 type LiveCounts =
-  | { mode: "perCwd"; counts: Map<string, number> }
+  | { mode: "perCwd"; counts: Map<string, number>; sessionIds?: Set<string> }
   | { mode: "total"; total: number }
   | null;
 
@@ -71,7 +77,12 @@ export class ClaudeDiscovery {
     private store: DevTowerStore,
     // tests inject a fake transcripts root and process-liveness source; in the
     // extension both default to the real home dir + `ps`/`lsof`.
-    private deps: { projectsRoot?: string; liveCounts?: () => Promise<LiveCounts> } = {}
+    private deps: {
+      projectsRoot?: string;
+      liveCounts?: () => Promise<LiveCounts>;
+      waitingDir?: string;
+      successionDir?: string;
+    } = {}
   ) {}
 
   /** Record that an agent was sent `/cd <dir>`. The move is NOT applied until a
@@ -96,7 +107,9 @@ export class ClaudeDiscovery {
   }
 
   start(intervalMs = 8_000): void {
-    this.timer = setInterval(() => void this.refresh(), intervalMs);
+    this.timer = setInterval(() => {
+      this.refresh().catch((e) => elog("discovery.poll", { message: String(e), stack: (e as any)?.stack }));
+    }, intervalMs);
   }
 
   dispose(): void {
@@ -140,7 +153,21 @@ export class ClaudeDiscovery {
         const cwd = line.slice(1).trim();
         counts.set(cwd, (counts.get(cwd) ?? 0) + 1);
       }
-      return { mode: "perCwd", counts };
+      // Pull each live process's `--session-id <uuid>` from argv. The transcript
+      // file is named <session-id>.jsonl, so this maps a running process to its
+      // exact transcript — far stronger than the per-cwd freshness fallback. Not
+      // every session has the flag in argv (a bare `claude` won't), so this is a
+      // best-effort overlay; processes without it fall back to the count budget.
+      const sessionIds = new Set<string>();
+      try {
+        const args = await execP("ps", ["-p", pids.join(","), "-o", "args="]);
+        const re = /--session-id[= ]([0-9a-fA-F-]{36})/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(args))) sessionIds.add(m[1].toLowerCase());
+      } catch {
+        // argv unavailable — leave sessionIds empty, freshness fallback applies
+      }
+      return { mode: "perCwd", counts, sessionIds };
     } catch {
       return null;
     }
@@ -148,7 +175,7 @@ export class ClaudeDiscovery {
 
   /**
    * Windows has no lsof equivalent for a process's working directory, but we can
-   * still count how many `claude` processes are running fleet-wide via WMI. That
+   * still count how many `claude` processes are running tower-wide via WMI. That
    * lets the caller cap kept sessions to exactly that many (newest-first) — a
    * strict improvement on the pure mtime-freshness fallback: zero running → drop
    * every phantom at once instead of waiting out the freshness window.
@@ -180,7 +207,8 @@ export class ClaudeDiscovery {
     let found: Found[];
     try {
       found = await this.scan(root);
-    } catch {
+    } catch (e) {
+      elog("discovery.scan", { root, message: String(e), stack: (e as any)?.stack });
       return 0;
     }
 
@@ -223,13 +251,29 @@ export class ClaudeDiscovery {
       }
     } else {
       const remaining = new Map(liveCounts.counts);
+      const liveIds = liveCounts.sessionIds ?? new Set<string>();
       const claim = (cwd: string): boolean => {
         const n = remaining.get(cwd) ?? 0;
         if (n <= 0) return false;
         remaining.set(cwd, n - 1);
         return true;
       };
+      // PASS 1: keep transcripts whose session-id matches a live process exactly.
+      // This pins each running process to ITS transcript, so exiting one session
+      // drops that session (not whichever happens to be oldest by mtime).
+      const claimedHere = new Set<Found>();
       for (const f of found) {
+        if (!liveIds.has(f.sessionId.toLowerCase())) continue;
+        if (claim(f.launchCwd) || (f.cwd !== f.launchCwd && claim(f.cwd))) {
+          keptCwd.add(f.launchCwd);
+          kept.push(f);
+          claimedHere.add(f);
+        }
+      }
+      // PASS 2: fill any leftover per-cwd budget (live processes whose argv hid
+      // the session-id) newest-first, then mark the rest as recent if asked.
+      for (const f of found) {
+        if (claimedHere.has(f)) continue;
         if (claim(f.launchCwd) || (f.cwd !== f.launchCwd && claim(f.cwd))) {
           keptCwd.add(f.launchCwd);
           kept.push(f);
@@ -249,6 +293,23 @@ export class ClaudeDiscovery {
     for (const a of this.store.list()) {
       if (!a.transcriptPath && !this.mine.has(a.id) && !placeholderByWorktree.has(a.worktree)) {
         placeholderByWorktree.set(a.worktree, a.id);
+      }
+    }
+
+    // /clear support: the SessionStart(clear) hook drops a marker keyed by the
+    // NEW session uuid. An owned dev whose bound transcript is no longer among
+    // the live sessions ("orphaned") is the one that was just cleared; grouping
+    // those by worktree lets the new session rebind to the same dev so it stays
+    // in place instead of being culled and replaced by a stranger.
+    const succession = await readSuccessionMarkers(this.deps.successionDir);
+    const liveSessionIds = new Set(found.map((f) => f.sessionId.toLowerCase()));
+    const orphansByWorktree = new Map<string, string[]>();
+    if (succession.size) {
+      for (const a of this.store.list()) {
+        if (!this.mine.has(a.id) || !a.transcriptPath) continue;
+        const sid = path.basename(a.transcriptPath, ".jsonl").toLowerCase();
+        if (liveSessionIds.has(sid)) continue; // its session is still live → not orphaned
+        (orphansByWorktree.get(a.worktree) ?? orphansByWorktree.set(a.worktree, []).get(a.worktree)!).push(a.id);
       }
     }
 
@@ -301,6 +362,24 @@ export class ClaudeDiscovery {
           this.adopted.set(f.id, cand);
           this.launchPending.delete(cand);
           dlog("discovery.bind.worktree", { sessionId: f.sessionId, placeholder: cand, cwd: f.cwd });
+        }
+      }
+      // (3) SUCCESSION bind: this uuid is the successor minted by a /clear (a
+      // SessionStart(clear) hook left a marker for it). Rebind it to the owned
+      // dev whose session just died in the same worktree, so /clear keeps the
+      // dev in place rather than culling it and surfacing a fresh stranger.
+      if (!targetId && !this.mine.has(f.id)) {
+        const mark = succession.get(f.sessionId) ?? succession.get(f.sessionId.toLowerCase());
+        if (mark) {
+          const pool = orphansByWorktree.get(mark.cwd || f.cwd);
+          const predecessor = pool?.shift();
+          if (predecessor && this.store.get(predecessor)) {
+            targetId = predecessor;
+            this.adopted.set(f.id, predecessor);
+            succession.delete(f.sessionId);
+            clearSuccessionMarker(f.sessionId, this.deps.successionDir);
+            dlog("discovery.bind.succession", { sessionId: f.sessionId, dev: predecessor, cwd: mark.cwd });
+          }
         }
       }
       const id = targetId ?? f.id;
@@ -357,6 +436,7 @@ export class ClaudeDiscovery {
           question: f.question,
           contextTokens: f.contextTokens,
           skills: f.skills,
+          subagents: f.subagents,
           external: false, // DevTower launched/owns this one
         });
       } else {
@@ -377,6 +457,7 @@ export class ClaudeDiscovery {
           question: f.question,
           contextTokens: f.contextTokens,
           skills: f.skills,
+          subagents: f.subagents,
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
           external: !isAdopted,
@@ -399,9 +480,17 @@ export class ClaudeDiscovery {
     }
     // forget adoptions whose session has gone away
     for (const [sid] of [...this.adopted]) if (!seenSessions.has(sid)) this.adopted.delete(sid);
+    // a /clear whose successor session hasn't surfaced yet (a poll landing in the
+    // sub-second gap between the old session dying and the new transcript being
+    // written): keep the orphaned dev parked in its worktree so the next pass can
+    // rebind it, rather than culling it now and then meeting its successor as a
+    // stranger. Unconsumed markers are the still-pending clears.
+    const pendingSuccessionCwds = new Set([...succession.values()].map((m) => m.cwd));
     // sessions that aged out or were deleted leave the tower
     for (const id of [...this.mine]) {
       if (!present.has(id)) {
+        const a = this.store.get(id);
+        if (a?.transcriptPath && pendingSuccessionCwds.has(a.worktree)) continue; // /clear in flight
         this.mine.delete(id);
         this.store.remove(id);
       }
@@ -422,6 +511,11 @@ export class ClaudeDiscovery {
     const now = Date.now();
     const out: Found[] = [];
 
+    // hook-backed "raised hand": Claude Code's Notification hook drops a marker
+    // when a session is parked on a permission/input prompt. A marker newer than
+    // the transcript mtime means the session hasn't moved since → still waiting.
+    const markers = await readWaitingMarkers(this.deps.waitingDir);
+
     const projDirs = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
     for (const d of projDirs) {
       if (!d.isDirectory()) continue;
@@ -435,13 +529,25 @@ export class ClaudeDiscovery {
         const meta = await readMeta(file, st.size);
         if (!meta.cwd) continue;
         const age = now - st.mtimeMs;
-        // waiting ONLY when the assistant actually asked something; a turn
-        // that ends in a statement is just done → idle (off the clock)
-        const state: AgentState =
-          age < 120_000 ? "active" : meta.lastRole === "assistant" && meta.question ? "waiting" : "idle";
+        const sessionId = fn.slice(0, -6); // strip ".jsonl"
+        // a fresh Notification marker overrides everything: the harness told us
+        // this session is parked. Once it resumes, the transcript advances past
+        // the marker's ts — drop the now-stale marker so the hand falls.
+        const marker = markers.get(sessionId);
+        const waitingByHook = !!marker && marker.ts > st.mtimeMs;
+        if (marker && !waitingByHook) clearMarker(sessionId, this.deps.waitingDir);
+        // otherwise: waiting ONLY when the assistant actually asked something; a
+        // turn that ends in a statement is just done → idle (off the clock)
+        const state: AgentState = waitingByHook
+          ? "waiting"
+          : age < 120_000
+            ? "active"
+            : meta.lastRole === "assistant" && meta.question
+              ? "waiting"
+              : "idle";
         out.push({
           id: "cc-" + fn.slice(0, 8),
-          sessionId: fn.slice(0, -6), // strip ".jsonl"
+          sessionId,
           file,
           cwd: meta.cwd,
           launchCwd: meta.launchCwd ?? meta.cwd,
@@ -449,9 +555,11 @@ export class ClaudeDiscovery {
           state,
           task: meta.task || "Claude session",
           model: meta.model || "claude",
-          question: state === "waiting" ? meta.question : undefined,
+          question:
+            state !== "waiting" ? undefined : waitingByHook ? marker!.message || meta.question : meta.question,
           contextTokens: meta.contextTokens,
           skills: meta.skills,
+          subagents: meta.subagents,
         });
       }
     }
@@ -473,13 +581,14 @@ interface Found {
   question?: string;
   contextTokens?: number;
   skills?: string[];
+  subagents?: number;
 }
 
 /** Read head (for cwd) + tail (for last role / prompt / model) of a transcript. */
 export async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[] }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -527,6 +636,22 @@ export async function readMeta(
       let m: RegExpExecArray | null;
       while ((m = re.exec(tail))) addSkill(m[1]);
     }
+
+    // in-flight sub-agents: Task/Agent tool calls the session spawned that have
+    // not returned yet. Each spawn is an assistant tool_use block
+    // ("id":"toolu_…","name":"Task"); its completion is a later tool_result with
+    // a matching tool_use_id. The count is spawned-minus-resolved within the
+    // read window, so it rises on fan-out and falls back to 0 once work settles.
+    // (Spawns that scrolled out of the tail are simply not counted.)
+    const spawned = new Set<string>();
+    const reSpawn = /"type"\s*:\s*"tool_use"\s*,\s*"id"\s*:\s*"([^"]+)"\s*,\s*"name"\s*:\s*"(?:Task|Agent)"/g;
+    let sm: RegExpExecArray | null;
+    while ((sm = reSpawn.exec(tail))) spawned.add(sm[1]);
+    let resolved = 0;
+    const reDone = /"tool_use_id"\s*:\s*"([^"]+)"/g;
+    let dm: RegExpExecArray | null;
+    while ((dm = reDone.exec(tail))) if (spawned.has(dm[1])) resolved++;
+    const subagents = Math.max(0, spawned.size - resolved);
 
     // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
     // Mirrors Claude Code's own `/context`: input + the two cache buckets (all
@@ -588,7 +713,7 @@ export async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents };
   } finally {
     await fh.close();
   }

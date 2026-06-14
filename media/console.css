@@ -68,6 +68,7 @@ button{ font-family:inherit; }
 .umeter .ubar{ width:64px; height:6px; border-radius:3px; background:var(--edge-soft); overflow:hidden; }
 .umeter .ubar i{ display:block; height:100%; width:0; background:var(--active); box-shadow:0 0 8px var(--active); transition:width .4s ease; }
 .umeter .upct{ font-size:14px; font-weight:600; color:var(--text); min-width:34px; text-align:right; font-variant-numeric:tabular-nums; }
+.umeter .ureset{ font-size:10px; font-weight:500; color:var(--text-dim); letter-spacing:.02em; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .umeter.warn .ubar i{ background:var(--waiting); box-shadow:0 0 8px var(--waiting); }
 .umeter.warn .upct{ color:var(--waiting); }
 .umeter.crit .ubar i{ background:var(--error); box-shadow:0 0 8px var(--error); }
