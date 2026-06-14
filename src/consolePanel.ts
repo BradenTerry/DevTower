@@ -98,6 +98,9 @@ export class ConsolePanel {
   private gitDebounce?: ReturnType<typeof setTimeout>;
   /** room key → absolute git path, so a sync request can run git in the right dir. */
   private roomGitPaths = new Map<string, string>();
+  /** room key whose worktree is mounted in the Selected Directory view (set only
+   *  by its "USE DIR" button). The scene marks it "SELECTED DIR". */
+  private usedDirRoom?: string;
   private fetchTimer?: ReturnType<typeof setInterval>;
   /** True once the webview has sent `ready` (its message listener is wired). A
    *  message posted before this is dropped by VS Code, so openSettings sent on a
@@ -282,23 +285,31 @@ export class ConsolePanel {
           .update("efficiencyMode", !!m.on, vscode.ConfigurationTarget.Global);
         break;
       case "select":
-        if (id) this.store.setSelected(id);
-        break;
-      case "pickRoom":
-        // a room/building was clicked (possibly empty) → point the Source
-        // Control mirror at that worktree, independent of any agent
-        if (typeof m.room === "string") {
-          const dir = this.roomGitPaths.get(m.room) ?? m.room;
-          this.store.setFocusedWorktree(resolveDir(dir));
+        if (id) {
+          this.store.setSelected(id);
+          // An agent DevTower runs inside VS Code (not external) has a native
+          // integrated terminal hosting its session — reveal it on click so the
+          // chat is right there. External sessions live in their own terminal
+          // outside DevTower, so there's nothing of ours to reveal.
+          const sel = this.store.get(id);
+          if (sel && !sel.external) this.terminals.reveal(id);
         }
         break;
+      case "pickRoom":
+        // a room/building was clicked: only zoom the camera (handled webview-side).
+        // It no longer changes the Selected Directory — that is the explicit job of
+        // the room's "USE DIR" button, so the selection stays put until asked.
+        break;
       case "useDir":
-        // the room's "USE DIR" button → load this worktree into the DevTower tab
-        // (Selected Directory + Changes) and reveal it
+        // the room's "USE DIR" button → mount this worktree in the Selected
+        // Directory view (works even for an empty, agent-less worktree) and reveal
+        // it. This is the ONLY action that changes the selected directory.
         if (typeof m.room === "string") {
           const dir = resolveDir(this.roomGitPaths.get(m.room) ?? m.room);
           if (dir) {
+            this.usedDirRoom = m.room;
             this.store.setFocusedWorktree(dir);
+            this.postState(); // re-render so the room's button reads "SELECTED DIR"
             void vscode.commands.executeCommand("devtower.directory.focus");
           }
         }
@@ -363,6 +374,7 @@ export class ConsolePanel {
       case "clearGithubToken":
         await clearGithubToken();
         await this.postSettings();
+        void this.prs.reauth(); // drop the boards / PR billboard now that the token is gone
         break;
       case "pushBranch":
         if (typeof m.room === "string") await this.pushRoom(m.room);
@@ -424,6 +436,9 @@ export class ConsolePanel {
       crew: this.prs.getCrew(),
       review: this.prs.getReview(),
       connected: this.prs.isConnected(),
+      // first GitHub poll still in flight → the webview shows a spinner instead of
+      // a premature "not connected" (isConnected() reads false until that completes)
+      loading: !this.prs.hasFetched(),
     });
   }
 
@@ -1221,6 +1236,7 @@ export class ConsolePanel {
       type: "state",
       agents,
       selectedId: this.store.getSelectedId(),
+      usedDir: this.usedDirRoom,
       rooms,
       boards: Object.fromEntries(this.boardsByPath),
     });

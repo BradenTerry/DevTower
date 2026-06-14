@@ -210,9 +210,9 @@ export class PrService {
     this.timer = setTimeout(() => void this.tick(), running ? 10_000 : 60_000);
   }
 
-  async refresh(): Promise<void> {
+  async refresh(force = false): Promise<void> {
     if (this.refreshing) return;
-    if (Date.now() - this.lastFetchAt < 3_000) return; // floor: never burst the API
+    if (!force && Date.now() - this.lastFetchAt < 3_000) return; // floor: never burst the API
     this.refreshing = true;
     this.lastFetchAt = Date.now();
     try {
@@ -226,10 +226,9 @@ export class PrService {
         this.connected = false;
         this.crew = [];
         this.review = [];
-        const firstFetch = !this.fetched;
         this.fetched = true;
+        this.lastSig = this.signature(); // record so a later reconnect is detected
         this._onChange.fire(); // always re-emit so the disconnected state shows
-        void firstFetch;
         return;
       }
       this.connected = true;
@@ -243,7 +242,7 @@ export class PrService {
       // only repaint when the PR data actually changed — otherwise every poll /
       // git event flashes the PR panel even when nothing moved
       const sig = this.signature();
-      if (firstFetch || sig !== this.lastSig) {
+      if (force || firstFetch || sig !== this.lastSig) {
         this.lastSig = sig;
         this._onChange.fire();
       }
@@ -257,7 +256,7 @@ export class PrService {
   async reauth(): Promise<void> {
     this.signInPrompted = true;
     this.lastFetchAt = 0;
-    await this.refresh();
+    await this.refresh(true); // auth just changed → always repaint, even if PRs match
   }
 
   /** One-time, dismissible nudge when no token is set yet, pointing at the
@@ -276,7 +275,9 @@ export class PrService {
     const key = (p: PrInfo) =>
       [p.id, p.title, p.isDraft, p.checks, p.checksPass, p.checksFailed, p.checksRunning,
         p.checksTotal, p.review, p.approvals, p.changesRequested, p.reviewersPending, p.comments].join("¦");
-    return JSON.stringify([this.crew.map(key).sort(), this.review.map(key).sort()]);
+    // include `connected` so a disconnected↔connected flip repaints even when the
+    // PR lists are identical (e.g. adding a token while you have zero open PRs)
+    return JSON.stringify([this.connected, this.crew.map(key).sort(), this.review.map(key).sort()]);
   }
 
   private async fetchCrew(token: string): Promise<{ prs: PrInfo[]; ok: boolean }> {

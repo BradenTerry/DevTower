@@ -4,6 +4,7 @@ import {
   parseStatusPorcelain,
   parseNumstat,
   parseWorktreeList,
+  parseStashList,
 } from "../src/git";
 
 // These parsers turn raw git stdout into structured data. They are pure, so the
@@ -96,5 +97,26 @@ describe("parseWorktreeList", () => {
     const rows = parseWorktreeList("worktree /repo\r\nbranch refs/heads/main\r\n");
     expect(rows[0].branch).toBe("main");
     expect(rows[0].path).toBe("/repo");
+  });
+});
+
+describe("parseStashList", () => {
+  it("splits ref from message", () => {
+    const out = [
+      "stash@{0}: WIP on main: 1a2b3c subject line",
+      "stash@{1}: On feature: my saved work",
+    ].join("\n");
+    const rows = parseStashList(out);
+    expect(rows).toEqual([
+      { ref: "stash@{0}", message: "WIP on main: 1a2b3c subject line" },
+      { ref: "stash@{1}", message: "On feature: my saved work" },
+    ]);
+  });
+  it("returns [] for empty output", () => {
+    expect(parseStashList("")).toEqual([]);
+  });
+  it("is CRLF-safe", () => {
+    const rows = parseStashList("stash@{0}: WIP on main: x\r\n");
+    expect(rows[0]).toEqual({ ref: "stash@{0}", message: "WIP on main: x" });
   });
 });

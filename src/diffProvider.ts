@@ -60,16 +60,32 @@ function mockUri(agentId: string, file: string, side: "left" | "right"): vscode.
   });
 }
 
+/** Extensions VS Code opens in a non-text (image/binary) editor, which reads via
+ *  workspace.fs (a FileSystemProvider) instead of our TextDocumentContentProvider.
+ *  Diffing these against a devtower-git: URI throws ENOPRO ("no file system
+ *  provider"), so we open the working-tree file directly instead. */
+const BINARY_EXT = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".avif", ".tga",
+  ".pdf", ".zip", ".gz", ".tar", ".woff", ".woff2", ".ttf", ".otf", ".eot",
+  ".mp4", ".mov", ".webm", ".mp3", ".wav", ".ogg",
+]);
+
 /** Open a real changed file: HEAD (left) vs working tree (right). */
 export async function openGitFileDiff(
   cwd: string,
   file: GitFile,
   label: string
 ): Promise<void> {
+  const working = vscode.Uri.file(path.join(cwd, file.path));
+  // Binary/image files can't diff through the text-content scheme — the image
+  // editor would stat the devtower-git: left URI and throw ENOPRO. Just open the
+  // working-tree file.
+  if (BINARY_EXT.has(path.extname(file.path).toLowerCase())) {
+    await vscode.commands.executeCommand("vscode.open", working, { preview: true });
+    return;
+  }
   const left = gitUri(cwd, file.path, "HEAD"); // empty for untracked -> add view
-  const right = file.untracked
-    ? vscode.Uri.file(path.join(cwd, file.path))
-    : vscode.Uri.file(path.join(cwd, file.path));
+  const right = working;
   const title = `${label} ⌥ ${path.basename(file.path)} (HEAD ↔ working)`;
   // preview (not pinned) + the active group → switching files REPLACES this tab
   // instead of stacking a new one, matching the Source Control panel.
