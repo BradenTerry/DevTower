@@ -47,6 +47,16 @@ export class TerminalManager {
       });
       this.terminals.set(agentId, term);
       dlog("terminal.create", { agentId, name: agent.name, cwd, external: !!agent.external, hasTranscript: !!agent.transcriptPath });
+      // Record the shell PID for this owned dev's terminal. The claude process is
+      // a child of this shell, and the shell PID survives /clear (only the
+      // transcript uuid changes), so it is the most reliable agent↔session tie.
+      // processId resolves async (the PTY spawns a beat after createTerminal), so
+      // capture it when ready and flow it into the store for the binding snapshot.
+      term.processId.then((pid) => {
+        if (pid === undefined || this.terminals.get(agentId) !== term) return;
+        dlog("terminal.pid", { agentId, terminalPid: pid });
+        this.store.apply({ id: agentId, terminalPid: pid });
+      });
 
       const cfg = vscode.workspace.getConfiguration("devtower");
       // a session running outside DevTower is managed in its own terminal — never

@@ -153,6 +153,87 @@ describe("ClaudeDiscovery binding", () => {
     expect(store.get("isle-a2")!.external).toBeFalsy();
   });
 
+  it("a placeholder awaiting its pinned session does NOT adopt a stranger in the same worktree (ghost-on-spawn)", async () => {
+    // The bug the debug logs surfaced: a +DEV placeholder launched with a pinned
+    // --session-id, but a DIFFERENT (ambient/external) session in the same cwd
+    // wrote its transcript FIRST. The worktree heuristic grabbed that stranger,
+    // stranding the placeholder's real launched session as an external ghost.
+    // The placeholder must wait for case-1 (its exact id) instead.
+    const store = newStore();
+    const stranger = randomUUID(); // an outside session already live in the cwd
+    const pinned = randomUUID(); // the session DevTower launched for the placeholder
+    let liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 2]]) };
+    const disc = new ClaudeDiscovery(store, {
+      projectsRoot: root, waitingDir, successionDir: succDir, resumeDir, endedDir,
+      liveCounts: async () => liveSnapshot,
+    });
+    placeholder(store, "isle-a1", wt);
+    disc.expectSession("isle-a1", pinned);
+
+    // poll 1: only the stranger is on disk (and freshest, so the old heuristic
+    // would have taken it). The placeholder must stay unbound; the stranger is
+    // its own external agent — NOT adopted into the placeholder.
+    writeSession(wt, 0, stranger);
+    await disc.refresh();
+    const sid = (u: string) => "cc-" + u.slice(0, 8);
+    expect(new Set(store.list().map((a) => a.id))).toEqual(new Set(["isle-a1", sid(stranger)]));
+    expect(store.get("isle-a1")!.transcriptPath).toBeUndefined(); // still waiting
+    expect(store.get("isle-a1")!.external).toBeFalsy();
+    expect(store.get(sid(stranger))!.external).toBe(true); // stays an outside session
+
+    // poll 2: the pinned session finally lands → case-1 binds it to the
+    // placeholder; the stranger remains a separate external agent.
+    writeSession(wt, 0, pinned);
+    await disc.refresh();
+    expect(store.get("isle-a1")!.transcriptPath).toBe(path.join(proj, `${pinned}.jsonl`));
+    expect(store.get("isle-a1")!.external).toBeFalsy();
+    expect(store.get(sid(stranger))!.external).toBe(true);
+    expect(store.list()).toHaveLength(2); // placeholder (now owned) + the stranger
+  });
+
+  it("after /clear, the stale launch transcript does not resurface as a ghost once its marker is consumed", async () => {
+    // The bug the logs surfaced: a dev /clears (launch L → successor C, rebound via
+    // the succession MARKER). The marker is consumed on that poll. On the NEXT poll
+    // the remap is gone, so L (still live by argv) re-steals the cwd slot from C —
+    // C is dropped, the dev is culled, and L resurfaces as an external ghost. The
+    // launch→current tie must be reconstructed from the bound agent, surviving the
+    // marker.
+    const store = newStore();
+    const launch = randomUUID(); // the terminal's --session-id, stable across /clear
+    const succ = randomUUID(); // the new transcript /clear minted
+    const sid = (u: string) => "cc-" + u.slice(0, 8);
+    // argv keeps reporting the LAUNCH id across /clear; one live process in the cwd
+    let liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 1]]), sessionIds: new Set([launch]) };
+    const disc = new ClaudeDiscovery(store, {
+      projectsRoot: root, waitingDir, successionDir: succDir, resumeDir, endedDir,
+      liveCounts: async () => liveSnapshot,
+    });
+
+    // poll 1: placeholder binds its pinned launch session
+    placeholder(store, "isle-a1", wt);
+    disc.expectSession("isle-a1", launch);
+    writeSession(wt, 0, launch);
+    await disc.refresh();
+    expect(store.get("isle-a1")!.transcriptPath).toBe(path.join(proj, `${launch}.jsonl`));
+
+    // poll 2: /clear → succession marker rebinds the new session C onto the dev
+    writeSuccession(succ, wt, launch);
+    writeSession(wt, 0, succ);
+    await disc.refresh();
+    expect(store.get("isle-a1")!.transcriptPath).toBe(path.join(proj, `${succ}.jsonl`));
+    expect(store.get("isle-a1")!.external).toBeFalsy();
+
+    // poll 3: marker is gone, but BOTH transcripts remain on disk and argv still
+    // reports the launch id. The dev must stay bound to C; the stale launch
+    // transcript must NOT resurface as a ghost.
+    await disc.refresh();
+    const a = store.get("isle-a1")!;
+    expect(a.transcriptPath).toBe(path.join(proj, `${succ}.jsonl`));
+    expect(a.external).toBeFalsy();
+    expect(store.get(sid(launch))).toBeUndefined(); // no ghost for the dead launch transcript
+    expect(store.list()).toHaveLength(1); // just the one dev, no twin
+  });
+
   it("keeps live sessions by --session-id, so exiting one drops THAT one (not the oldest by mtime)", async () => {
     // three sessions share one worktree. The naive "keep N newest by mtime" rule
     // breaks when the newest one exits: its final write leaves it freshest, so an

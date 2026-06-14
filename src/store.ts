@@ -51,6 +51,10 @@ export interface Agent {
   /** In-flight sub-agents (Task/Agent tool calls not yet returned) this session
    *  has spawned. Surfaced as a count badge beside the agent's name. */
   subagents?: number;
+  /** This session's Task-tool checklist progress (read from
+   *  `~/.claude/tasks/<session>/`), present only for a list of 2+ tasks. Drives
+   *  the desk TV the dev deploys to track its tasks. */
+  tasks?: { done: number; total: number };
   /** A live session discovered running OUTSIDE DevTower (e.g. an external
    *  terminal). DevTower must not open/resume a terminal for it — it's managed
    *  in its own session. */
@@ -59,6 +63,12 @@ export interface Agent {
    *  with), captured once and kept across /clear so the next clear's marker can
    *  rebind to exactly this dev regardless of how many sessions share its cwd. */
   launchId?: string;
+  /** PID of the VS Code integrated terminal's shell that DevTower opened for this
+   *  (owned) dev. The claude process runs as a child of this shell and the shell
+   *  PID is STABLE across /clear (unlike the transcript uuid), so it is the most
+   *  reliable agent↔session tie for a dev we launched. Absent for external/unseen
+   *  terminals. Diagnostic for now (logged in the binding snapshot). */
+  terminalPid?: number;
   /** Session id of the most recent /clear this dev went through. Rises each time
    *  the dev's session is replaced in place; the scene watches it for a change to
    *  send the dev on its context-shredder trip. */
@@ -96,9 +106,13 @@ export interface StateEvent {
   skills?: string[];
   /** In-flight sub-agent count from this poll's transcript window. */
   subagents?: number;
+  /** Task-tool checklist progress read this poll (2+ tasks only). */
+  tasks?: { done: number; total: number };
   external?: boolean;
   /** The terminal's stable launch id, recorded when first observed. */
   launchId?: string;
+  /** PID of the VS Code terminal shell DevTower opened for this dev (diagnostic). */
+  terminalPid?: number;
   /** Session id of a /clear succession this poll rebound onto the agent. */
   clearedSession?: string;
   reviewOf?: ReviewTarget;
@@ -244,8 +258,12 @@ export class DevTowerStore {
       // a fresh poll reports the current in-flight count (0 when settled), so
       // honor it directly; fall back to last-known only when absent this poll
       subagents: ev.subagents ?? existing?.subagents,
+      // a fresh transcript poll reports the live list each time; keep last-known
+      // only when this event carries none (e.g. a state.jsonl writer)
+      tasks: ev.tasks ?? existing?.tasks,
       external: ev.external ?? existing?.external,
       launchId: ev.launchId ?? existing?.launchId,
+      terminalPid: ev.terminalPid ?? existing?.terminalPid,
       clearedSession: ev.clearedSession ?? existing?.clearedSession,
       reviewOf: ev.reviewOf ?? existing?.reviewOf,
     };
