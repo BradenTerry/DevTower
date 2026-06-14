@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import * as path from "path";
 import { resolveMoveTarget } from "../src/directoryView";
 
 // resolveMoveTarget is a pure function, so these tests run in plain Node
@@ -12,7 +11,7 @@ describe("resolveMoveTarget", () => {
     const src = "/workspace/myrepo/src/foo.ts";
     const destDir = "/workspace/myrepo/lib";
     const result = resolveMoveTarget(src, destDir);
-    expect(result).toEqual({ ok: true, dest: path.join(destDir, "foo.ts") });
+    expect(result).toEqual({ ok: true, dest: "/workspace/myrepo/lib/foo.ts" });
   });
 
   it("drop onto a file resolves to the file's parent dir", () => {
