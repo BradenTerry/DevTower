@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { rollupChecks, checkCounts, reviewCounts, mapDecision } from "../src/prs";
+import { rollupChecks, checkCounts, reviewCounts, mapDecision, PR_CHASE_DELAYS_MS } from "../src/prs";
 
 // gh CLI JSON → display state. Pure mapping/aggregation; OS-independent but core
 // to what the PR board shows, so worth pinning down.
@@ -61,6 +61,21 @@ describe("reviewCounts", () => {
       pending: 0,
       commented: 0,
     });
+  });
+});
+
+describe("PR_CHASE_DELAYS_MS", () => {
+  // The chase exists to beat GitHub's pr-list index lag after `gh pr create`. It
+  // must try IMMEDIATELY (the index is sometimes already warm) and stay short and
+  // bounded so it can't burst the API before the normal poller resumes ownership.
+  it("starts with an immediate attempt", () => {
+    expect(PR_CHASE_DELAYS_MS[0]).toBe(0);
+  });
+  it("is short and bounded so it can't burst the API", () => {
+    expect(PR_CHASE_DELAYS_MS.length).toBeGreaterThanOrEqual(2);
+    expect(PR_CHASE_DELAYS_MS.length).toBeLessThanOrEqual(6);
+    const total = PR_CHASE_DELAYS_MS.reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThanOrEqual(15_000); // whole chase well under the 60s idle tick
   });
 });
 
