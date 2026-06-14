@@ -19,6 +19,26 @@ sessions work, stack floors, spawn devs into worktrees, review diffs and PRs.
 
 Run `npm run typecheck` and `npm test` before handing work back.
 
+## Packaging hygiene: keep the .vsix lean
+
+The published `.vsix` must contain ONLY what is required to run the extension
+plus what the marketplace listing renders. Never let dev artifacts inflate it.
+
+- **Ships:** `out/extension.js`, `media/**` runtime assets (canvas bundle,
+  hooks, icons, and the README/CHANGELOG images), `package.json`, `readme.md`,
+  `changelog.md`, `LICENSE.txt`.
+- **Never ships:** screen recordings or videos (`*.mov`, `*.mp4`, `*.webm`),
+  `screenshots/`, `docs/`, `demo/`, `.devtower/`, `test/`, `test-results/`,
+  `src/`, sourcemaps, and anything else not loaded at runtime. These belong in
+  `.vscodeignore`.
+- An image is only "required" if `readme.md` or `changelog.md` references it
+  (those render on the marketplace page). Marketplace images live in `media/`;
+  keep `screenshots/` and `docs/` out of the package. Before excluding an image
+  folder, grep `readme.md`/`changelog.md` to confirm nothing points at it.
+- After `npm run package`, check the printed size and file tree. A clean build
+  is a few MB. If it is tens of MB, something dev-only leaked in - add it to
+  `.vscodeignore` rather than shipping it.
+
 ## UI conventions: clickable controls
 
 Every control a user can click MUST signal that it is clickable:

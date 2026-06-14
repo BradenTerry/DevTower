@@ -4,6 +4,12 @@
 .fleet/**
 src/**
 prototype/**
+docs/**
+screenshots/**
+demo/**
+.devtower/**
+test/**
+test-results/**
 node_modules/**
 esbuild.js
 tsconfig.json
