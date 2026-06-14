@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import * as os from "os";
 import * as path from "path";
 import { DevTowerStore, Agent } from "./store";
 import {
@@ -131,6 +132,13 @@ class StashNode extends vscode.TreeItem {
   }
 }
 
+/** Render an absolute path with $HOME collapsed to `~`, for a compact directory
+ *  label in the view's dimmed description. */
+function tildify(p: string): string {
+  const home = os.homedir();
+  return p === home || p.startsWith(home + path.sep) ? "~" + p.slice(home.length) : p;
+}
+
 function statusWord(letter: string): string {
   return (
     { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", U: "untracked" }[
@@ -190,6 +198,8 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
 
   private debounce?: ReturnType<typeof setTimeout>;
   private viewMode: ViewMode;
+  /** The tree view, set after creation, so its title can name the live worktree. */
+  view?: vscode.TreeView<Node>;
 
   constructor(
     private store: DevTowerStore,
@@ -208,6 +218,7 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
 
   refresh(): void {
     if (this.debounce) { clearTimeout(this.debounce); this.debounce = undefined; }
+    this.updateTitle();
     this._onDidChange.fire();
   }
 
@@ -216,8 +227,19 @@ export class ChangesProvider implements vscode.TreeDataProvider<Node> {
     if (this.debounce) clearTimeout(this.debounce);
     this.debounce = setTimeout(() => {
       this.debounce = undefined;
+      this.updateTitle();
       this._onDidChange.fire();
     }, 300);
+  }
+
+  /** Name the view after the worktree whose changes it shows (the focused room's
+   *  directory, or the selected agent), with its containing path dimmed beside
+   *  it — instead of the static "Changes" — so it's clear whose changes these are. */
+  private updateTitle(): void {
+    if (!this.view) return;
+    const { cwd, label } = this.currentCwd();
+    this.view.title = cwd ? label : "Changes";
+    this.view.description = cwd ? tildify(path.dirname(cwd)) : undefined;
   }
 
   get mode(): ViewMode {
@@ -446,8 +468,14 @@ export function registerChanges(
     return true;
   };
 
+  // createTreeView (not registerTreeDataProvider) so the view handle is available
+  // to retitle the header with the live worktree's name.
+  const changesView = vscode.window.createTreeView("devtower.changes", { treeDataProvider: provider });
+  provider.view = changesView;
+  provider.refresh(); // seed the title with the current worktree (if any)
+
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider("devtower.changes", provider),
+    changesView,
     vscode.window.registerFileDecorationProvider(deco),
 
     vscode.commands.registerCommand("devtower.changesViewAsTree", () => provider.setViewMode("tree")),

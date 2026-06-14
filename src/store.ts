@@ -55,6 +55,14 @@ export interface Agent {
    *  terminal). DevTower must not open/resume a terminal for it — it's managed
    *  in its own session. */
   external?: boolean;
+  /** The terminal's launch id (the `--session-id` its claude process started
+   *  with), captured once and kept across /clear so the next clear's marker can
+   *  rebind to exactly this dev regardless of how many sessions share its cwd. */
+  launchId?: string;
+  /** Session id of the most recent /clear this dev went through. Rises each time
+   *  the dev's session is replaced in place; the scene watches it for a change to
+   *  send the dev on its context-shredder trip. */
+  clearedSession?: string;
   /** Set when this agent was dispatched to review a PR. Links the agent to the
    *  PR so the scene can render the diegetic review (desk + verdict stamp) and
    *  the verdict can be derived from the polled PR decision. */
@@ -89,6 +97,10 @@ export interface StateEvent {
   /** In-flight sub-agent count from this poll's transcript window. */
   subagents?: number;
   external?: boolean;
+  /** The terminal's stable launch id, recorded when first observed. */
+  launchId?: string;
+  /** Session id of a /clear succession this poll rebound onto the agent. */
+  clearedSession?: string;
   reviewOf?: ReviewTarget;
 }
 
@@ -233,6 +245,8 @@ export class DevTowerStore {
       // honor it directly; fall back to last-known only when absent this poll
       subagents: ev.subagents ?? existing?.subagents,
       external: ev.external ?? existing?.external,
+      launchId: ev.launchId ?? existing?.launchId,
+      clearedSession: ev.clearedSession ?? existing?.clearedSession,
       reviewOf: ev.reviewOf ?? existing?.reviewOf,
     };
     this.agents.set(ev.id, merged);

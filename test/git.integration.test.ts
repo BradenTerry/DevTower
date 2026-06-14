@@ -112,11 +112,11 @@ describe("show", () => {
 describe("worktrees", () => {
   it("adds, lists, and removes a worktree", async () => {
     seedCommit(repo);
-    const { wtPath, branch, base } = await worktreeAdd(repo.dir, "feat", 1);
+    const { wtPath, branch, base } = await worktreeAdd(repo.dir);
 
-    // lives under <repo>/.claude/worktrees and gets a devtower/* branch
+    // lives under <repo>/.claude/worktrees and gets a Claude-style devtower/* branch
     expect(real(path.dirname(path.dirname(wtPath)))).toBe(real(path.join(repo.dir, ".claude")));
-    expect(branch).toMatch(/^devtower\/feat-\d+$/);
+    expect(branch).toMatch(/^devtower\/[a-z]+-[a-z]+-[a-z]+$/);
     expect(base).toMatch(/^[0-9a-f]{40}$/);
     expect(fs.existsSync(wtPath)).toBe(true);
 

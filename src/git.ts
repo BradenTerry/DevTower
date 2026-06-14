@@ -408,21 +408,53 @@ async function ensureExcluded(dir: string, pattern: string): Promise<void> {
   }
 }
 
-export async function worktreeAdd(dir: string, name: string, n: number): Promise<{ wtPath: string; branch: string; base: string }> {
+// Word pools for Claude-style worktree slugs (e.g. "happy-dancing-flask"):
+// adjective + gerund + noun, hyphen-joined. Kept generous so three-word combos
+// rarely collide and read as friendly, unique handles.
+const WT_ADJECTIVES = [
+  "happy", "brave", "calm", "eager", "fancy", "gentle", "jolly", "keen",
+  "lively", "merry", "nimble", "proud", "quick", "swift", "witty", "bold",
+  "bright", "clever", "cosmic", "daring", "lucky", "mellow", "noble", "plucky",
+  "quiet", "rapid", "shiny", "snappy", "spry", "sunny", "vivid", "zesty",
+];
+const WT_GERUNDS = [
+  "dancing", "running", "jumping", "soaring", "gleaming", "roaming", "drifting",
+  "leaping", "glowing", "humming", "racing", "sailing", "spinning", "gliding",
+  "darting", "beaming", "floating", "prancing", "skipping", "whirling",
+  "bouncing", "coasting", "diving", "flowing", "gallops", "hopping", "rolling",
+  "wandering",
+];
+const WT_NOUNS = [
+  "flask", "comet", "falcon", "harbor", "lantern", "meadow", "otter", "pebble",
+  "quartz", "river", "summit", "willow", "badger", "cedar", "ember", "fjord",
+  "glacier", "heron", "ibis", "jasper", "kestrel", "lynx", "maple", "nimbus",
+  "onyx", "pine", "raven", "sparrow", "thistle", "vortex", "walrus", "zephyr",
+];
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** A random Claude-style worktree slug, e.g. "swift-gliding-heron". */
+function worktreeSlug(): string {
+  return `${pick(WT_ADJECTIVES)}-${pick(WT_GERUNDS)}-${pick(WT_NOUNS)}`;
+}
+
+export async function worktreeAdd(dir: string): Promise<{ wtPath: string; branch: string; base: string }> {
   // worktrees live under <repo>/.claude/worktrees/ (kept out of git status via
   // .git/info/exclude) rather than littering the parent directory
   const top = await topLevel(dir).catch(() => dir);
   const wtRoot = path.join(top, ".claude", "worktrees");
   await ensureExcluded(dir, ".claude/worktrees/");
-  // pick a directory + branch that don't already exist — a prior attempt can
-  // leave one behind, and n collides after agents are removed/re-added
-  let i = n;
-  let wtPath = path.join(wtRoot, `${name}-${i}`);
-  let branch = `devtower/${name}-${i}`;
+  // Name the worktree with a Claude-style three-word slug. Regenerate on the
+  // off chance the dir or branch already exists (a prior run, or a collision).
+  let slug = worktreeSlug();
+  let wtPath = path.join(wtRoot, slug);
+  let branch = `devtower/${slug}`;
   for (let tries = 0; tries < 100 && (fs.existsSync(wtPath) || (await branchExists(dir, branch))); tries++) {
-    i++;
-    wtPath = path.join(wtRoot, `${name}-${i}`);
-    branch = `devtower/${name}-${i}`;
+    slug = worktreeSlug();
+    wtPath = path.join(wtRoot, slug);
+    branch = `devtower/${slug}`;
   }
   // record the fork point (current HEAD) so the board can count only the commits
   // made IN this worktree, not the ones it inherits from the branch it's cut from

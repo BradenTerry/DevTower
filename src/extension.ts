@@ -8,7 +8,7 @@ import { registerDebug } from "./debugLaunch";
 import { ConsolePanel } from "./consolePanel";
 import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
-import { ensureHooks, installHooksInteractive } from "./hooks";
+import { syncHooks } from "./hooks";
 import { initGithubAuth } from "./github";
 import { initDebugLog, dlog, elog, errorLogPath } from "./debugLog";
 
@@ -42,10 +42,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   store.watchStateFile();
   prs.start(4_000); // adaptive PR polling (fast while a build runs); off the startup path
 
-  // Offer to install the Notification hook that powers reliable "raised hand"
-  // detection. Consent-gated and remembered; never blocks the tower opening.
+  // Repair installed hook paths and, if a build shipped a brand-new hook, nudge
+  // the user once to review it on Settings > Hooks. Never installs without a
+  // choice; never blocks the tower opening.
   if (cfg.get<boolean>("discoverClaudeSessions", true)) {
-    ensureHooks(context).catch((e) => dlog("hooks.ensure.fail", { err: String(e) }));
+    syncHooks(context).catch((e) => dlog("hooks.sync.fail", { err: String(e) }));
   }
 
   // DevTower tab: a file browser for the selected room's worktree, plus the
@@ -56,13 +57,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   context.subscriptions.push(
     vscode.commands.registerCommand("devtower.refresh", () => store.watchStateFile()),
-    vscode.commands.registerCommand("devtower.openSettings", () =>
-      ConsolePanel.createOrShow(context, store, terminals, prs, discovery).openSettings()
+    vscode.commands.registerCommand("devtower.openSettings", (tab?: string) =>
+      ConsolePanel.createOrShow(context, store, terminals, prs, discovery).openSettings(tab)
     ),
     vscode.commands.registerCommand("devtower.openConsole", () =>
       ConsolePanel.createOrShow(context, store, terminals, prs, discovery)
     ),
-    vscode.commands.registerCommand("devtower.installHooks", () => installHooksInteractive(context)),
+    vscode.commands.registerCommand("devtower.installHooks", () =>
+      ConsolePanel.createOrShow(context, store, terminals, prs, discovery).openSettings("hooks")
+    ),
     vscode.commands.registerCommand("devtower.openErrorLog", async () => {
       const p = errorLogPath();
       if (!p) {

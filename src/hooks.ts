@@ -44,19 +44,27 @@ export interface SuccessionMarker {
   cwd: string;
   source: string;
   ts: number;
+  /** the cleared terminal's launch id — the `--session-id` its claude process
+   *  was started with, stable across every /clear. Discovery matches it to the
+   *  dev driving that terminal, so the rebind is deterministic even when several
+   *  live sessions share the cwd. Absent for bare sessions / old markers. */
+  launchId?: string;
 }
 
-/** Every hook DevTower needs. Adding one here makes the installer prompt for it
- *  (its own consent), so future hooks follow the same per-hook rule. */
+/** Every hook DevTower can manage. Adding one here makes it show up on the
+ *  Settings > Hooks tab (a toggle the user enables/disables) and, the first time
+ *  a build ships it, triggers a one-time "review in Settings" nudge. */
 interface HookSpec {
-  /** stable id, also the globalState key suffix for a remembered "Not now" */
+  /** stable id, also the globalState key suffix for legacy declined answers */
   id: string;
   /** Claude Code hook event name */
   event: string;
   /** the script (under the extension's media/) this hook runs */
   script: string;
-  /** user-facing reason, shown in the consent prompt */
-  reason: string;
+  /** short name shown on the Hooks settings tab */
+  label: string;
+  /** what the hook does, shown under its name on the Hooks settings tab */
+  description: string;
 }
 
 const HOOKS: HookSpec[] = [
@@ -64,17 +72,30 @@ const HOOKS: HookSpec[] = [
     id: "notify",
     event: "Notification",
     script: "devtower-notify.js",
-    reason:
-      "DevTower wants to add a Notification hook to ~/.claude/settings.json so it can raise an agent's hand when it is waiting for your input (e.g. a permission prompt).",
+    label: "Raised hand",
+    description:
+      "Raises an agent's hand the instant Claude needs you (a permission prompt or a question). Without it, waiting is guessed from the transcript and is unreliable.",
   },
   {
     id: "session",
     event: "SessionStart",
     script: "devtower-session.js",
-    reason:
-      "DevTower wants to add a SessionStart hook to ~/.claude/settings.json so a dev stays in its place when you /clear it (otherwise the cleared session is seen as gone and a new stranger appears).",
+    label: "Keep dev on /clear",
+    description:
+      "Keeps a dev in its place when you /clear its session. Without it the cleared session looks gone and a new stranger appears in the tower.",
   },
 ];
+
+/** What the Settings > Hooks tab renders for each managed hook. */
+export interface HookInfo {
+  id: string;
+  event: string;
+  label: string;
+  description: string;
+  installed: boolean;
+}
+
+const KNOWN_HOOKS_KEY = "devtower.hooks.known";
 
 /** Read the waiting markers, keyed by session id, pruning stale ones. */
 export async function readWaitingMarkers(dir = WAITING_DIR): Promise<Map<string, WaitMarker>> {
@@ -123,7 +144,12 @@ export async function readSuccessionMarkers(dir = SUCCESSION_DIR): Promise<Map<s
         await fs.promises.unlink(full).catch(() => {});
         continue;
       }
-      out.set(id, { cwd: String(m.cwd ?? ""), source: String(m.source ?? "clear"), ts: m.ts });
+      out.set(id, {
+        cwd: String(m.cwd ?? ""),
+        source: String(m.source ?? "clear"),
+        ts: m.ts,
+        launchId: m.launchId ? String(m.launchId).toLowerCase() : undefined,
+      });
     } catch {
       /* partial write or garbage — ignore this poll */
     }
@@ -137,56 +163,135 @@ export function clearSuccessionMarker(sessionId: string, dir = SUCCESSION_DIR): 
   fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
 }
 
-/** Consent-gated installer: ensure each hook is present in global settings,
- *  prompting once per missing hook and remembering a declined answer. Silently
- *  repairs the command path when the extension location changes. */
-export async function ensureHooks(context: vscode.ExtensionContext): Promise<void> {
-  for (const spec of HOOKS) {
-    try {
-      await ensureHook(context, spec);
-    } catch (e) {
-      dlog("hooks.ensure.error", { id: spec.id, err: String(e) });
-    }
-  }
-}
-
-/** Re-offer any hooks the user previously declined (backs the install command). */
-export async function installHooksInteractive(context: vscode.ExtensionContext): Promise<void> {
-  for (const spec of HOOKS) await context.globalState.update(declinedKey(spec), undefined);
-  await ensureHooks(context);
-  vscode.window.showInformationMessage("DevTower hooks are up to date.");
-}
-
 const declinedKey = (spec: HookSpec) => `devtower.hook.${spec.id}.declined`;
 
-async function ensureHook(context: vscode.ExtensionContext, spec: HookSpec): Promise<void> {
-  const scriptPath = path.join(context.extensionUri.fsPath, "media", spec.script);
-  const command = `node "${scriptPath}"`;
+/** The `node "<...>/media/<script>"` command this hook runs. Rebuilt each call
+ *  so it tracks the extension's install path across updates. */
+function hookCommand(context: vscode.ExtensionContext, spec: HookSpec): string {
+  return `node "${path.join(context.extensionUri.fsPath, "media", spec.script)}"`;
+}
+
+/** Install state of every hook DevTower manages, for the Settings > Hooks tab. */
+export async function listHooks(): Promise<HookInfo[]> {
   const settings = await readSettings();
+  return HOOKS.map((spec) => ({
+    id: spec.id,
+    event: spec.event,
+    label: spec.label,
+    description: spec.description,
+    installed: !!findHook(settings, spec),
+  }));
+}
 
+/** Enable or disable a single hook by adding/removing it from global
+ *  settings.json. Returns the resulting installed state. */
+export async function setHookEnabled(
+  context: vscode.ExtensionContext,
+  id: string,
+  enabled: boolean
+): Promise<boolean> {
+  const spec = HOOKS.find((h) => h.id === id);
+  if (!spec) return false;
+  const settings = await readSettings();
   const existing = findHook(settings, spec);
-  if (existing) {
-    // already consented; just keep the command path current across updates
-    if (existing.command !== command) {
-      existing.command = command;
-      await writeSettings(settings);
-      dlog("hooks.path.updated", { id: spec.id });
+  if (enabled) {
+    const command = hookCommand(context, spec);
+    if (existing) {
+      if (existing.command === command) return true;
+      existing.command = command; // repair a stale path
+    } else {
+      addHook(settings, spec, command);
     }
-    return;
+    await writeSettings(settings);
+    await context.globalState.update(declinedKey(spec), undefined);
+    dlog("hooks.enabled", { id });
+    return true;
   }
-
-  if (context.globalState.get<boolean>(declinedKey(spec))) return;
-
-  const pick = await vscode.window.showInformationMessage(spec.reason, "Add hook", "Not now");
-  if (pick !== "Add hook") {
-    await context.globalState.update(declinedKey(spec), true);
-    return;
+  if (existing) {
+    removeHook(settings, spec);
+    await writeSettings(settings);
+    dlog("hooks.disabled", { id });
   }
+  return false;
+}
 
-  addHook(settings, spec, command);
-  await writeSettings(settings);
-  await context.globalState.update(declinedKey(spec), undefined);
-  dlog("hooks.installed", { id: spec.id });
+/** Enable or disable every managed hook in one settings.json write. */
+export async function setAllHooksEnabled(
+  context: vscode.ExtensionContext,
+  enabled: boolean
+): Promise<void> {
+  const settings = await readSettings();
+  let changed = false;
+  for (const spec of HOOKS) {
+    const existing = findHook(settings, spec);
+    if (enabled) {
+      const command = hookCommand(context, spec);
+      if (!existing) {
+        addHook(settings, spec, command);
+        changed = true;
+      } else if (existing.command !== command) {
+        existing.command = command;
+        changed = true;
+      }
+      await context.globalState.update(declinedKey(spec), undefined);
+    } else if (existing) {
+      removeHook(settings, spec);
+      changed = true;
+    }
+  }
+  if (changed) await writeSettings(settings);
+  dlog("hooks.setAll", { enabled });
+}
+
+/** On activation: repair the command path of already-installed hooks, then, if a
+ *  build has shipped a hook the user has never seen, nudge them once to review it
+ *  on the Settings > Hooks tab (where they enable all / disable all / one by one).
+ *  Never installs anything without the user choosing to. */
+export async function syncHooks(context: vscode.ExtensionContext): Promise<void> {
+  try {
+    const settings = await readSettings();
+    let changed = false;
+    for (const spec of HOOKS) {
+      const existing = findHook(settings, spec);
+      if (!existing) continue;
+      const command = hookCommand(context, spec);
+      if (existing.command !== command) {
+        existing.command = command;
+        changed = true;
+        dlog("hooks.path.updated", { id: spec.id });
+      }
+    }
+    if (changed) await writeSettings(settings);
+
+    const known = new Set(context.globalState.get<string[]>(KNOWN_HOOKS_KEY, []));
+    // a hook the user already installed or explicitly declined in a prior version
+    // is not "new" — only prompt for ones they have never been offered at all.
+    const isNew = (spec: HookSpec) =>
+      !known.has(spec.id) &&
+      !findHook(settings, spec) &&
+      !context.globalState.get<boolean>(declinedKey(spec));
+    const fresh = HOOKS.filter(isNew);
+
+    // record every current hook as known so each new one only nudges once
+    if (HOOKS.some((s) => !known.has(s.id))) {
+      await context.globalState.update(KNOWN_HOOKS_KEY, HOOKS.map((s) => s.id));
+    }
+    if (fresh.length === 0) return;
+
+    const n = fresh.length;
+    const pick = await vscode.window.showInformationMessage(
+      `DevTower has ${n} new ${n === 1 ? "hook" : "hooks"} you can enable (${fresh
+        .map((s) => s.label)
+        .join(", ")}). They edit ~/.claude/settings.json.`,
+      "Review in Settings",
+      "Not now"
+    );
+    if (pick === "Review in Settings") {
+      void vscode.commands.executeCommand("devtower.openSettings", "hooks");
+    }
+  } catch (e) {
+    dlog("hooks.sync.error", { err: String(e) });
+  }
 }
 
 // --- settings.json plumbing -------------------------------------------------
@@ -227,4 +332,22 @@ function findHook(settings: Settings, spec: HookSpec): { command?: string } | un
 function addHook(settings: Settings, spec: HookSpec, command: string): void {
   settings.hooks ??= {};
   (settings.hooks[spec.event] ??= []).push({ hooks: [{ type: "command", command }] });
+}
+
+/** Strip DevTower's command (matched by script filename) from an event, dropping
+ *  any now-empty entries and the event key itself if nothing else uses it. Other
+ *  tools' hooks on the same event are left untouched. */
+function removeHook(settings: Settings, spec: HookSpec): void {
+  const entries = settings.hooks?.[spec.event];
+  if (!Array.isArray(entries)) return;
+  for (const entry of entries) {
+    if (entry.hooks) {
+      entry.hooks = entry.hooks.filter(
+        (h) => !(typeof h.command === "string" && h.command.includes(spec.script))
+      );
+    }
+  }
+  const kept = entries.filter((e) => (e.hooks?.length ?? 0) > 0);
+  if (kept.length) settings.hooks![spec.event] = kept;
+  else delete settings.hooks![spec.event];
 }

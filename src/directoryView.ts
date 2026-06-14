@@ -1,8 +1,16 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { DevTowerStore } from "./store";
 import { resolveDir } from "./git";
+
+/** Render an absolute path with $HOME collapsed to `~`, for a compact but
+ *  unambiguous directory label in a view's dimmed description. */
+function tildify(p: string): string {
+  const home = os.homedir();
+  return p === home || p.startsWith(home + path.sep) ? "~" + p.slice(home.length) : p;
+}
 
 /**
  * "Selected Directory" — a plain file tree of the currently selected room's
@@ -50,7 +58,11 @@ export class DirectoryProvider implements vscode.TreeDataProvider<FsNode> {
   refresh(): void {
     const cwd = this.cwd();
     if (this.view) {
-      this.view.description = cwd ? path.basename(cwd) : undefined;
+      // Show the selected directory's own name as the view title (instead of the
+      // static "Selected Directory") with its containing path dimmed beside it,
+      // so it's clear which directory's files are listed.
+      this.view.title = cwd ? path.basename(cwd) : "Selected Directory";
+      this.view.description = cwd ? tildify(path.dirname(cwd)) : undefined;
       this.view.message = cwd
         ? undefined
         : "Press a room's USE DIR button to browse its files here.";

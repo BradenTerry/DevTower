@@ -72,6 +72,12 @@ export class ClaudeDiscovery {
   // placeholder that started it — even when several placeholders share one
   // worktree (where the worktree/time heuristic below can't tell them apart).
   private expecting = new Map<string, string>();
+  // agent id → the transcript mtime we last KEPT it at. A tracked session whose
+  // transcript has advanced past this is provably alive right now, so a momentary
+  // dip in the per-cwd live-process count must not evict it (anti-flap, PASS 3).
+  // A genuinely exited session's transcript freezes, so it stops qualifying and
+  // still drops promptly — the --session-id exit contract is preserved.
+  private keptMtime = new Map<string, number>();
 
   constructor(
     private store: DevTowerStore,
@@ -212,6 +218,11 @@ export class ClaudeDiscovery {
       return 0;
     }
 
+    // /clear succession markers (keyed by the NEW session id). Resolved into
+    // predecessor rebinds AFTER the live budget below, once we know which
+    // transcripts are actually live this poll.
+    const succession = await readSuccessionMarkers(this.deps.successionDir);
+
     // Keep one transcript per live claude process. `found` is newest-first, so
     // we walk it and CLAIM a live process slot for each kept session — by its
     // launch dir, or (if renamed/cd'd mid-run) its current dir, whichever still
@@ -219,6 +230,29 @@ export class ClaudeDiscovery {
     // stops a CLOSED session whose dir was later reused/renamed from borrowing a
     // newer session's live process at the same path (the phantom-agent bug).
     const liveCounts = await (this.deps.liveCounts ?? (() => this.liveCwdCounts()))();
+    // live processes' --session-id argv values: the terminals' LAUNCH IDs. A
+    // transcript whose uuid is one of these is an un-cleared launch session, so
+    // its uuid IS the launch id — stamped onto the agent (below) and kept across
+    // /clear.
+    const argvIds = new Set<string>(
+      (liveCounts && liveCounts.mode === "perCwd" ? [...(liveCounts.sessionIds ?? [])] : []).map((s) => s.toLowerCase())
+    );
+    // A terminal keeps its launch id across /clear but writes a NEW transcript each
+    // time, so its live process is really driving its NEWEST successor — not the
+    // launch transcript, which is now dead. Map launch id → newest successor (and
+    // each successor → its launch id) so PASS 1 pins the live one and stale launch
+    // transcripts don't starve it or linger as ghosts.
+    const newestSucc = new Map<string, { succ: string; ts: number }>(); // launch id → newest successor
+    const successorLaunch = new Map<string, string>(); // successor session id → launch id
+    for (const [succ, m] of succession) {
+      if (!m.launchId) continue;
+      successorLaunch.set(succ.toLowerCase(), m.launchId);
+      const c = newestSucc.get(m.launchId);
+      if (!c || m.ts > c.ts) newestSucc.set(m.launchId, { succ: succ.toLowerCase(), ts: m.ts });
+    }
+    // transcript ids PASS 1 pins as live (launch ids remapped to their successor)
+    const livePins = new Set<string>();
+    for (const id of argvIds) livePins.add(newestSucc.get(id)?.succ ?? id);
     const kept: Found[] = [];
     const keptCwd = new Set<string>();
     const asRecent = (f: Found): Found => ({ ...f, state: "idle", task: `(recent) ${f.task}` });
@@ -251,7 +285,7 @@ export class ClaudeDiscovery {
       }
     } else {
       const remaining = new Map(liveCounts.counts);
-      const liveIds = liveCounts.sessionIds ?? new Set<string>();
+      const liveIds = livePins; // argv launch ids, remapped to live successors across /clear
       const claim = (cwd: string): boolean => {
         const n = remaining.get(cwd) ?? 0;
         if (n <= 0) return false;
@@ -283,7 +317,30 @@ export class ClaudeDiscovery {
         }
       }
     }
+    // PASS 3 (anti-flap): rescue a session we showed last poll whose transcript
+    // has ADVANCED since — it is unambiguously alive this instant, so a transient
+    // wobble in the live-process count (or two co-located plain sessions trading
+    // mtime order) must not cull it. Without this, an external ghost in a busy dir
+    // with no --session-id to pin it churns out and back every poll, surfacing as
+    // duplicate ghosts during the leave/spawn overlap. Exited sessions don't write,
+    // so their mtime is frozen and they never qualify → they still leave on time.
+    const keptIds = new Set(kept.map((f) => f.id));
+    for (const f of found) {
+      if (keptIds.has(f.id)) continue; // already shown this poll (live or recent)
+      const prev = this.keptMtime.get(f.id);
+      if (this.mine.has(f.id) && prev !== undefined && f.mtime > prev) {
+        keptCwd.add(f.launchCwd);
+        kept.push(f);
+        keptIds.add(f.id);
+      }
+    }
     found = kept;
+    // remember each kept session's mtime for next poll's advance check; forget
+    // sessions that didn't survive this poll so a later same-uuid reappearance is
+    // treated as fresh, not silently rescued.
+    const keptMtime = new Map<string, number>();
+    for (const f of kept) keptMtime.set(f.id, f.mtime);
+    this.keptMtime = keptMtime;
 
     // Panel-created placeholders (a reviewer / added dev) carry no transcript
     // yet. When a live session turns up in such a placeholder's worktree, adopt
@@ -297,21 +354,51 @@ export class ClaudeDiscovery {
     }
 
     // /clear support: the SessionStart(clear) hook drops a marker keyed by the
-    // NEW session uuid. An owned dev whose bound transcript is no longer among
-    // the live sessions ("orphaned") is the one that was just cleared; grouping
-    // those by worktree lets the new session rebind to the same dev so it stays
-    // in place instead of being culled and replaced by a stranger.
-    const succession = await readSuccessionMarkers(this.deps.successionDir);
+    // NEW session uuid, carrying the cleared terminal's LAUNCH ID (its stable
+    // --session-id argv). Resolve each marker to the dev it continues:
+    //   1. by launch id — deterministic, works even when sessions share a cwd;
+    //   2. else the LONE orphan in the marker's cwd — a dev whose bound session
+    //      is no longer live, when there's exactly one (no ambiguity). With
+    //      several we refuse rather than risk swapping the wrong dev.
+    // The successor then rebinds to that dev (it stays put, no stranger), and the
+    // dev's now-dead transcript is dropped from `found` so it can't double-bind or
+    // surface as a phantom ghost.
     const liveSessionIds = new Set(found.map((f) => f.sessionId.toLowerCase()));
+    const byLaunch = new Map<string, string>(); // launch id → agent id
     const orphansByWorktree = new Map<string, string[]>();
-    if (succession.size) {
-      for (const a of this.store.list()) {
-        if (!this.mine.has(a.id) || !a.transcriptPath) continue;
-        const sid = path.basename(a.transcriptPath, ".jsonl").toLowerCase();
-        if (liveSessionIds.has(sid)) continue; // its session is still live → not orphaned
-        (orphansByWorktree.get(a.worktree) ?? orphansByWorktree.set(a.worktree, []).get(a.worktree)!).push(a.id);
-      }
+    for (const a of this.store.list()) {
+      if (a.launchId) byLaunch.set(a.launchId.toLowerCase(), a.id);
+      if (!succession.size || !a.transcriptPath || !this.mine.has(a.id)) continue;
+      const sid = path.basename(a.transcriptPath, ".jsonl").toLowerCase();
+      if (liveSessionIds.has(sid)) continue; // its session is still live → not orphaned
+      (orphansByWorktree.get(a.worktree) ?? orphansByWorktree.set(a.worktree, []).get(a.worktree)!).push(a.id);
     }
+    const predecessorOf = new Map<string, string>(); // successor session id (lc) → predecessor agent id
+    const retired = new Set<string>(); // dead transcript uuids (lc) to drop from `found`
+    for (const [succ, mark] of succession) {
+      const lc = succ.toLowerCase();
+      // chained clears: only the NEWEST successor per launch is live; older ones
+      // are dead intermediates — retire them, don't rebind.
+      if (mark.launchId && newestSucc.get(mark.launchId)?.succ !== lc) {
+        retired.add(lc);
+        continue;
+      }
+      let pred = mark.launchId ? byLaunch.get(mark.launchId) : undefined;
+      if (!pred) {
+        const pool = orphansByWorktree.get(mark.cwd);
+        if (pool && pool.length === 1) pred = pool[0]; // lone orphan → unambiguous
+      }
+      const a = pred ? this.store.get(pred) : undefined;
+      if (!pred || !a) continue;
+      predecessorOf.set(lc, pred);
+      if (a.transcriptPath) retired.add(path.basename(a.transcriptPath, ".jsonl").toLowerCase());
+      if (mark.launchId) retired.add(mark.launchId); // the stale launch transcript is dead too
+    }
+    if (retired.size) found = found.filter((f) => !retired.has(f.sessionId.toLowerCase()));
+    // session ids this poll's succession rebinds landed on, so the apply below
+    // can flag the agent (→ the scene sends the dev on its shredder trip) and
+    // keep an external dev external rather than re-flagging it as owned.
+    const succeeded = new Map<string, string>(); // agent id → new session id
 
     const seenSessions = new Set<string>();
     const claimedPlaceholders = new Set<string>();
@@ -364,22 +451,19 @@ export class ClaudeDiscovery {
           dlog("discovery.bind.worktree", { sessionId: f.sessionId, placeholder: cand, cwd: f.cwd });
         }
       }
-      // (3) SUCCESSION bind: this uuid is the successor minted by a /clear (a
-      // SessionStart(clear) hook left a marker for it). Rebind it to the owned
-      // dev whose session just died in the same worktree, so /clear keeps the
-      // dev in place rather than culling it and surfacing a fresh stranger.
+      // (3) SUCCESSION bind: this uuid is the successor minted by a /clear,
+      // already resolved to the dev it continues (by launch id, else lone
+      // orphan). Rebind it there so /clear keeps the dev in place rather than
+      // culling it and surfacing a fresh stranger.
       if (!targetId && !this.mine.has(f.id)) {
-        const mark = succession.get(f.sessionId) ?? succession.get(f.sessionId.toLowerCase());
-        if (mark) {
-          const pool = orphansByWorktree.get(mark.cwd || f.cwd);
-          const predecessor = pool?.shift();
-          if (predecessor && this.store.get(predecessor)) {
-            targetId = predecessor;
-            this.adopted.set(f.id, predecessor);
-            succession.delete(f.sessionId);
-            clearSuccessionMarker(f.sessionId, this.deps.successionDir);
-            dlog("discovery.bind.succession", { sessionId: f.sessionId, dev: predecessor, cwd: mark.cwd });
-          }
+        const predecessor = predecessorOf.get(f.sessionId.toLowerCase());
+        if (predecessor && this.store.get(predecessor)) {
+          targetId = predecessor;
+          this.adopted.set(f.id, predecessor);
+          succeeded.set(predecessor, f.sessionId);
+          succession.delete(f.sessionId);
+          clearSuccessionMarker(f.sessionId, this.deps.successionDir);
+          dlog("discovery.bind.succession", { sessionId: f.sessionId, dev: predecessor });
         }
       }
       const id = targetId ?? f.id;
@@ -424,6 +508,16 @@ export class ClaudeDiscovery {
         branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
         this.branchCache.set(cwd, branch);
       }
+      // a /clear succession rebinding onto an EXTERNAL dev must keep it external
+      // (it's still an outside session); only an owned placeholder adoption flips
+      // it to owned. `cleared` flags the rebind so the scene runs the shred trip.
+      const cleared = succeeded.get(id);
+      // record the terminal's launch id: this transcript's uuid when it's an
+      // un-cleared launch session (matches a live --session-id argv), else the
+      // launch id its succession marker carries. Undefined leaves prior intact.
+      const launchId = argvIds.has(f.sessionId.toLowerCase())
+        ? f.sessionId.toLowerCase()
+        : successorLaunch.get(f.sessionId.toLowerCase());
       if (isAdopted && !cdConfirmed) {
         // keep the placeholder's identity (name/repo/worktree/branch/task);
         // only flow in the live session fields
@@ -437,7 +531,9 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
           skills: f.skills,
           subagents: f.subagents,
-          external: false, // DevTower launched/owns this one
+          external: cleared ? !!this.store.get(id)?.external : false,
+          launchId,
+          clearedSession: cleared,
         });
       } else {
         // a discovered agent (or a just-confirmed /cd) is placed at its real cwd.
@@ -460,7 +556,9 @@ export class ClaudeDiscovery {
           subagents: f.subagents,
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
-          external: !isAdopted,
+          external: cleared ? !!this.store.get(id)?.external : !isAdopted,
+          launchId,
+          clearedSession: cleared,
         });
       }
     }
@@ -482,15 +580,18 @@ export class ClaudeDiscovery {
     for (const [sid] of [...this.adopted]) if (!seenSessions.has(sid)) this.adopted.delete(sid);
     // a /clear whose successor session hasn't surfaced yet (a poll landing in the
     // sub-second gap between the old session dying and the new transcript being
-    // written): keep the orphaned dev parked in its worktree so the next pass can
-    // rebind it, rather than culling it now and then meeting its successor as a
-    // stranger. Unconsumed markers are the still-pending clears.
+    // written): keep the orphaned dev parked so the next pass can rebind it,
+    // rather than culling it now and then meeting its successor as a stranger.
+    // `succession` now holds only UNCONSUMED markers (rebinds were deleted above)
+    // — spare a dev whose worktree has one in flight, or whose launch id matches a
+    // pending marker (its terminal cleared and the new session isn't on disk yet).
     const pendingSuccessionCwds = new Set([...succession.values()].map((m) => m.cwd));
+    const pendingLaunch = new Set([...succession.values()].map((m) => m.launchId).filter(Boolean));
     // sessions that aged out or were deleted leave the tower
     for (const id of [...this.mine]) {
       if (!present.has(id)) {
         const a = this.store.get(id);
-        if (a?.transcriptPath && pendingSuccessionCwds.has(a.worktree)) continue; // /clear in flight
+        if (a?.transcriptPath && (pendingSuccessionCwds.has(a.worktree) || (a.launchId && pendingLaunch.has(a.launchId)))) continue; // /clear in flight
         this.mine.delete(id);
         this.store.remove(id);
       }

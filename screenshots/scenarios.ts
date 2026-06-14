@@ -88,6 +88,23 @@ export const SCENARIOS: Scenario[] = [
     prs: { crew: [], review: [] },
   },
   {
+    // a single waiting agent on the ground floor so the "?" question glyph above
+    // its head is fully on-canvas. Baseline for the question-icon before/after.
+    name: "asking",
+    config: { eco: false },
+    usage: { fiveHour: { pct: 18 }, sevenDay: { pct: 9 } },
+    state: {
+      agents: [
+        { id: "a1", name: "Cleo", state: "waiting", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: [], contextTokens: 33_000, elapsed: "27m", question: "Run the destructive migration?" },
+      ],
+      rooms: [
+        { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] },
+      ],
+      boards: { "/repo": board({ branch: "main", modified: 2, unstagedAdd: 18, unstagedDel: 4 }) },
+    },
+    prs: { crew: [], review: [] },
+  },
+  {
     // near-limit usage so the meters hit warn/crit colors
     name: "usage-critical",
     config: { eco: false },
