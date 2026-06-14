@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readEndMarkers, clearEndMarker } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker } from "./hooks";
 import { dlog, elog } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -96,6 +96,7 @@ export class ClaudeDiscovery {
       liveCounts?: () => Promise<LiveCounts>;
       waitingDir?: string;
       successionDir?: string;
+      resumeDir?: string;
       endedDir?: string;
     } = {}
   ) {}
@@ -231,6 +232,12 @@ export class ClaudeDiscovery {
     // predecessor rebinds AFTER the live budget below, once we know which
     // transcripts are actually live this poll.
     const succession = await readSuccessionMarkers(this.deps.successionDir);
+    // resume-picker redirects (keyed by the RESUMED session id): the operator
+    // spawned a dev — `claude --session-id <launchId>` — then resumed a different,
+    // pre-existing session from Claude's picker. The resumed transcript keeps its
+    // own uuid, so the placeholder waiting on `launchId` would never bind it.
+    // Resolved into deterministic binds below, once placeholders are gathered.
+    const resume = await readResumeMarkers(this.deps.resumeDir);
     // SessionEnd markers: a dev whose session genuinely exited (not /clear). Each
     // is keyed by the EXACT transcript that ended, so we retire that one dev with
     // no guessing — unlike the per-cwd process count, which can't tell which of
@@ -486,6 +493,38 @@ export class ClaudeDiscovery {
         this.store.remove(a.id);
       }
       await Promise.all([...endedIds].map((sid) => clearEndMarker(sid, this.deps.endedDir)));
+    }
+    // Apply resume-picker redirects before binding. A dev spawned with
+    // `claude --session-id <launchId>` whose terminal then resumed a different,
+    // pre-existing session leaves the placeholder waiting on a session id that
+    // never appears, while the resumed transcript surfaces as a stranger in its
+    // own worktree — two ghosts for one dev. The SessionStart(resume) hook linked
+    // the resumed uuid back to that launch id, so point the placeholder's
+    // expectation at the resumed session: the deterministic bind below then adopts
+    // it in place, and any twin already surfaced for it is culled here.
+    if (resume.size) {
+      const foundIds = new Set(found.map((f) => f.sessionId.toLowerCase()));
+      for (const [sessY, mark] of resume) {
+        const y = sessY.toLowerCase();
+        const ph = this.expecting.get(mark.launchId);
+        const a = ph ? this.store.get(ph) : undefined;
+        // stale redirect (placeholder gone or already bound a session) → forget it
+        // so it can't later hijack an unrelated launch reusing the same id.
+        if (!ph || !a || a.transcriptPath) {
+          clearResumeMarker(sessY, this.deps.resumeDir);
+          continue;
+        }
+        if (!foundIds.has(y)) continue; // resumed transcript not on disk yet — wait
+        this.expecting.set(y, ph);
+        this.expecting.delete(mark.launchId);
+        const twin = "cc-" + y.slice(0, 8);
+        if (twin !== ph && this.store.get(twin)) {
+          this.mine.delete(twin);
+          this.store.remove(twin);
+        }
+        clearResumeMarker(sessY, this.deps.resumeDir);
+        dlog("discovery.resume.redirect", { resumed: y, launchId: mark.launchId, placeholder: ph });
+      }
     }
     for (const f of found) {
       seenSessions.add(f.id);
