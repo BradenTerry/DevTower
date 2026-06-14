@@ -215,4 +215,45 @@ export const SCENARIOS: Scenario[] = [
       },
     },
   },
+  {
+    // README "inside a room" hero: one ground-floor room, framed full-canvas, so
+    // the cutaway board reads end to end - feat branch -> main, staged line
+    // stats, a commits column, the synced indicator, and a populated PR cell
+    // (#142 approved). One active dev at the desk.
+    name: "room",
+    config: { eco: false },
+    connected: true,
+    focusIsland: "DevTower",
+    usage: { fiveHour: { pct: 62 }, sevenDay: { pct: 41 } },
+    state: {
+      agents: [
+        { id: "a1", name: "Boris", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "feat/diff-viewer", skills: ["code-review"], contextTokens: 96_000, elapsed: "18m" },
+      ],
+      rooms: [
+        { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "feat/diff-viewer" }] },
+      ],
+      boards: {
+        "/repo": board({
+          branch: "feat/diff-viewer", base: "main",
+          staged: 3, stagedAdd: 120, stagedDel: 18,
+          ahead: 4, unpushed: 0, behind: 0,
+          committedAdd: 540, committedDel: 96,
+          commits: [
+            { sha: "c4", subject: "Wire diff viewer into panel" },
+            { sha: "c3", subject: "Render hunks with line stats" },
+            { sha: "c2", subject: "Parse unified diff" },
+            { sha: "c1", subject: "Scaffold diff viewer" },
+          ],
+          prReady: true,
+          pr: { number: 142, title: "Live diff viewer panel", url: "https://github.com/acme/x/pull/142", draft: false, checks: "pass", checksPass: 4, checksFailed: 0, checksRunning: 0, checksTotal: 4, review: "approved", approvals: 5, changesRequested: 0, reviewersPending: 0, comments: 1 },
+        }),
+      },
+    },
+    prs: {
+      crew: [
+        { id: "DevTower#142", number: 142, title: "Live diff viewer panel", repo: "DevTower", branch: "feat/diff-viewer", url: "https://github.com/acme/x/pull/142", isDraft: false, checks: "pass", checksPass: 4, checksFailed: 0, checksRunning: 0, checksTotal: 4, review: "approved", approvals: 5, changesRequested: 0, reviewersPending: 0, comments: 1, author: "you", agentId: "a1" },
+      ],
+      review: [],
+    },
+  },
 ];
