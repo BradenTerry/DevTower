@@ -19,28 +19,6 @@ sessions work, stack floors, spawn devs into worktrees, review diffs and PRs.
 
 Run `npm run typecheck` and `npm test` before handing work back.
 
-### Always commit the bundle minified
-
-`media/crew.js` (and `out/extension.js`) are checked-in build artifacts. Only
-the production build minifies them (`minify: production` in `esbuild.js`);
-`npm run watch` and `npm run compile` emit an UNMINIFIED bundle plus a
-`.map`, which turns a one-line file into thousands of lines and a giant,
-unreviewable git diff.
-
-So after any change to `src/webview/crew.ts` (or other bundled source), and
-before committing or handing work back:
-
-1. Rebuild with the production build so the artifact is minified:
-   `npm run build`
-2. Confirm the artifact diff is tiny — `media/crew.js` stays a single line:
-   `git diff --stat media/crew.js` should show ~`2 +-`, not thousands.
-3. Don't commit a dev-build `.map`. `npm run build` doesn't emit one, so if a
-   prior `watch`/`compile` left `media/crew.js.map` changed, restore it:
-   `git checkout -- media/crew.js.map`
-
-If you see a multi-thousand-line `media/crew.js` diff, that's an unminified dev
-build leaking in — rerun `npm run build` before committing.
-
 ## UI conventions: clickable controls
 
 Every control a user can click MUST signal that it is clickable:
