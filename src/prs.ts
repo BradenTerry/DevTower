@@ -79,6 +79,17 @@ export function etagOf(resp: string): string | undefined {
 const CHECK_OK = ["SUCCESS", "NEUTRAL", "SKIPPED"];
 const CHECK_BAD = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"];
 
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Forced-refresh schedule (ms to wait BEFORE each attempt) for chasing a
+ *  just-opened PR onto the board. GitHub's `pr list` search index lags creation
+ *  by a few seconds, so the first fetch usually fires too early; and a brand-new
+ *  PR has no checks yet, so the adaptive poller immediately backs off to its 60s
+ *  idle tick. Together a lone refresh leaves the PR missing for up to a minute.
+ *  The schedule is short and bounded (one immediate try, then a few ~2s retries)
+ *  so the chase can't burst the API before the normal poller takes back over. */
+export const PR_CHASE_DELAYS_MS = [0, 2_000, 2_000, 2_000, 2_000];
+
 export function rollupChecks(rollup: any[]): PrInfo["checks"] {
   if (!Array.isArray(rollup) || rollup.length === 0) return "none";
   let pending = false;
@@ -161,6 +172,8 @@ export class PrService {
   private extraSig = "";
   private signInPrompted = false; // only nudge the user to connect GitHub once
   private connected = false; // is a GitHub token present (drives the disconnected UI)
+  private chasing = false; // a just-opened PR is being chased onto the board
+  private disposed = false;
   /** Per-branch ETag cache: a settled PR's last fetch + its PR-resource ETag, so
    *  the next poll can short-circuit with a free 304 when nothing changed. */
   private prCache = new Map<string, { etag: string; info: PrInfo }>();
@@ -257,6 +270,28 @@ export class PrService {
     this.signInPrompted = true;
     this.lastFetchAt = 0;
     await this.refresh(true); // auth just changed → always repaint, even if PRs match
+  }
+
+  /** An agent just ran `gh pr create` (discovery saw it in the transcript). A
+   *  single forced refresh almost always fires before GitHub's pr-list index has
+   *  the new PR, and a checkless PR makes the adaptive poller idle at 60s, so the
+   *  PR can sit off the board for up to a minute. Chase it with a short bounded
+   *  burst of forced refreshes that stops the instant the crew set grows; the
+   *  normal poller owns it from there. Concurrent create events coalesce. */
+  async chaseNewPr(): Promise<void> {
+    if (this.chasing) return; // one chase at a time
+    this.chasing = true;
+    try {
+      const before = this.crew.length;
+      for (const wait of PR_CHASE_DELAYS_MS) {
+        if (this.disposed) return;
+        if (wait) await delay(wait);
+        await this.refresh(true);
+        if (this.crew.length > before) return; // surfaced — hand back to the poller
+      }
+    } finally {
+      this.chasing = false;
+    }
   }
 
   /** One-time, dismissible nudge when no token is set yet, pointing at the
@@ -422,6 +457,7 @@ export class PrService {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.timer) clearTimeout(this.timer);
     this._onChange.dispose();
   }

@@ -42,8 +42,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   store.watchStateFile();
   prs.start(4_000); // adaptive PR polling (fast while a build runs); off the startup path
   // when an agent runs `gh pr create`, discovery sees it in the transcript and
-  // fires this → fetch that PR now instead of waiting out the poller's idle tick
-  context.subscriptions.push(discovery.onPrCreated(() => void prs.refresh(true)));
+  // fires this → chase that PR onto the board now. A lone refresh races GitHub's
+  // pr-list index (which lags creation) and a checkless PR idles the poller at
+  // 60s, so a brand-new PR could sit off the board for up to a minute.
+  context.subscriptions.push(discovery.onPrCreated(() => void prs.chaseNewPr()));
 
   // Repair installed hook paths and, if a build shipped a brand-new hook, nudge
   // the user once to review it on Settings > Hooks. Never installs without a
