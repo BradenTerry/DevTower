@@ -14,6 +14,8 @@ Running several coding agents means several worktrees, each in its own directory
 
 DevTower collapses it into **a single view**. Every repo, worktree, and live session is a room in one campus, so you watch **multiple directories and worktrees at once - without switching windows**: who is active, who is blocked waiting on you, who finished or errored, each branch's unstaged / staged / commit counts, and each PR's checks and review status. Click a dev to act, click a room to focus its crew, and the diff or terminal you need opens in place.
 
+![The campus at a glance: the top-left telemetry strip counts run / wait / err / crew across every room, the PRs-to-review billboard lists PRs that want your eyes, and each room's board shows its branch and change counts - all without leaving this window.](media/shot-campus.png)
+
 ## Run it
 
 ```bash
@@ -33,18 +35,30 @@ To see PRs and checks, add a GitHub token in **Settings** (the ⚙ gear, top rig
 - **Pixel devs**: one sprite per agent with a deterministic persona (hair/shirt/cap/glasses from the id hash). State drives the animation - active types, waiting raises a hand, complete cheers, error slumps, idle breathes. Two or more active agents in a room huddle at the whiteboard.
 - **Arrivals/departures**: a joining agent walks in through the door (with a room construction animation on a new repo); a leaver walks to the edge, climbs a fire-escape ladder down, and an emptied room deconstructs after they exit.
 - **Click a dev** to select it (amber ring) and open the agent panel. Click a room to zoom to its crew, click away for the overview; scroll to zoom, click-drag to pan.
-- **Agent panel**: context-window % bar + token count, model, branch, changed-file counts, a live "now" strip of what the agent is doing/asking, and state-aware quick actions (Approve / Request changes when waiting). A composer sends text to the agent's terminal.
+- **Sub-agent badge**: when a session fans out work (the Task/Agent tool), a small bot glyph + count appears beside the dev's name, so you can see at a glance who has helpers in flight - including long-running and background sub-agents.
+- **Agent panel**: context-window % bar + token count, model, branch, skills, a live "now" strip of what the agent is doing/asking, state-aware quick actions (Approve / Request changes when waiting), and a button to open its Claude terminal or jump to an existing PR. A composer sends text to the agent's terminal. (There is no "create PR" button - prompt the agent to open the PR however you want it.)
+
+![The agent panel: context-window bar, model, skills, and a button into the agent's Claude terminal. When the worktree already has a PR, the panel links straight to it.](media/shot-agent-panel.png)
+
 - **Changes view** (native tree in the ◆ DevTower activity-bar): the selected agent's files split into **Staged Changes** and **Changes**, inline stage (`+`) / unstage (`-`), stage all / unstage all, and click-to-diff (native HEAD <-> working tree).
+- **File viewer** (the *Selected Directory* tree): browse and open **any** file in the focused room's worktree, not just changed ones - editable, in this window, without touching your workspace folders. **Drag a file or folder onto another folder to move it**, or **right-click -> Delete** (sent to the OS Trash). Each action confirms once and offers **"don't ask again"** (reset later with **DevTower: Reset File Prompt Confirmations**). Press a room's **USE DIR** button to point the viewer at that worktree.
 - **PR board + review dispatch**: per-worktree PRs (checks + review status) via `gh`, a standalone "PRs to review" billboard for review-requested PRs, and a Review Dispatch modal that spawns a reviewer agent in an isolated worktree with selected skills/effort/instructions.
 
 See [FEATURES.md](FEATURES.md) for the full capability map and the data-core / presentation split.
+
+## Files: browse, move, delete, diff
+
+The two trees in the **◆ DevTower** activity-bar container turn the focused worktree into a place you can actually work, without opening a second window:
+
+- **Selected Directory** is a full file viewer for the worktree (every file, not just changed ones). Open a file to edit it inline; **drag** a file or folder onto a folder to move it; **right-click -> Delete** to send it to Trash. Both moving and deleting confirm once, with a **"don't ask again"** option.
+- **Changes** is the SCM-style split of Staged / unstaged changes for the same worktree, with inline stage/unstage and click-to-diff into the native VS Code diff editor.
 
 ## Real git, real terminals, real PRs
 
 - The Changes view runs `git status --porcelain` (+ numstat) in the selected agent's resolved worktree; stage/unstage call `git add` / `git reset HEAD`. Diffs read `git show HEAD:<file>` for the left side and the working file for the right.
 - Each agent gets a terminal rooted in its worktree (`cwd`). Set **`devtower.launchCommand`** to run a command on first open (e.g. resume a session) so subsequent sends reach that process. Placeholders: `${worktree}`, `${branch}`, `${id}`.
-- Spawning a dev into a room either creates a git worktree (`git worktree add` + a `devtower/<name>-<n>` branch) or runs in the project base dir, then launches `devtower.claudeCommand` in its terminal.
-- PR features shell out to the GitHub CLI (`gh pr list --head <branch>`, `gh search prs --review-requested=@me`, `gh pr create --web`, `gh pr checkout`).
+- Spawning a dev into a room either creates a git worktree (`git worktree add` under `.claude/worktrees/<slug>` with a `devtower/<slug>` branch, where `<slug>` is a Claude-style three-word name like `swift-gliding-heron` - unique and collision-checked) or runs in the project base dir, then launches `devtower.claudeCommand` in its terminal.
+- PR features shell out to the GitHub CLI (`gh pr list --head <branch>`, `gh search prs --review-requested=@me`, `gh pr checkout`). DevTower does not open PRs for you - prompt the agent in its terminal to create the PR exactly how you want it.
 
 ## Requirements and what it runs on your machine
 
@@ -71,6 +85,8 @@ On macOS, launch VS Code from a terminal so the extension host inherits your she
 ## GitHub access and token storage
 
 PR features authenticate with a GitHub **Personal Access Token** added in the DevTower settings page (the ⚙ gear, top right). The token is **stored in VS Code [SecretStorage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage)** (`context.secrets`), which is backed by the OS credential vault - macOS **Keychain**, Windows **Credential Manager**, or **libsecret / gnome-keyring** on Linux. It is encrypted at rest and is never written to `settings.json`, the workspace, or the repo.
+
+![The GitHub access page: it shows the connected account and scopes, which features the token unlocks (pull requests, CI checks, reviews requested of you), and pre-filled links to mint a fine-grained read-only token.](media/shot-settings-github.png)
 
 The token is used only inside the extension: it is passed to the spawned `gh` subprocess via the `GH_TOKEN` environment variable (which overrides any `gh auth login`), and is never sent to the webview, agent terminals, git, or any DevTower network call. On save, DevTower probes the token to show the account, its scopes, and which features it unlocks. The page recommends a **fine-grained, read-only** token scoped to chosen repos; you can remove it there at any time.
 

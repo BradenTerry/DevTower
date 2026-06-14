@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readEndMarkers, clearEndMarker } from "./hooks";
 import { dlog, elog } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -72,6 +72,20 @@ export class ClaudeDiscovery {
   // placeholder that started it — even when several placeholders share one
   // worktree (where the worktree/time heuristic below can't tell them apart).
   private expecting = new Map<string, string>();
+  // agent id → the transcript mtime we last KEPT it at. A tracked session whose
+  // transcript has advanced past this is provably alive right now, so a momentary
+  // dip in the per-cwd live-process count must not evict it (anti-flap, PASS 3).
+  // A genuinely exited session's transcript freezes, so it stops qualifying and
+  // still drops promptly — the --session-id exit contract is preserved.
+  private keptMtime = new Map<string, number>();
+
+  // session uuid (lc) → when the SessionEnd hook reported it exited. Its dead
+  // transcript lingers on disk (freshest by mtime, thanks to /exit's final
+  // write), so without this it could re-evict a still-live sibling on a later
+  // poll when no --session-id pins the survivor. We suppress it from rediscovery
+  // until it ages out (or its process genuinely returns as a live argv id).
+  private retiredSessions = new Map<string, number>();
+  private static readonly RETIRED_MAX_AGE_MS = 60 * 60_000;
 
   constructor(
     private store: DevTowerStore,
@@ -82,6 +96,7 @@ export class ClaudeDiscovery {
       liveCounts?: () => Promise<LiveCounts>;
       waitingDir?: string;
       successionDir?: string;
+      endedDir?: string;
     } = {}
   ) {}
 
@@ -212,6 +227,17 @@ export class ClaudeDiscovery {
       return 0;
     }
 
+    // /clear succession markers (keyed by the NEW session id). Resolved into
+    // predecessor rebinds AFTER the live budget below, once we know which
+    // transcripts are actually live this poll.
+    const succession = await readSuccessionMarkers(this.deps.successionDir);
+    // SessionEnd markers: a dev whose session genuinely exited (not /clear). Each
+    // is keyed by the EXACT transcript that ended, so we retire that one dev with
+    // no guessing — unlike the per-cwd process count, which can't tell which of
+    // several co-located sessions left. Resolved into endedIds (below) once the
+    // live-process set is known, so a racing/stale marker can't cull a live dev.
+    const endMarkers = await readEndMarkers(this.deps.endedDir);
+
     // Keep one transcript per live claude process. `found` is newest-first, so
     // we walk it and CLAIM a live process slot for each kept session — by its
     // launch dir, or (if renamed/cd'd mid-run) its current dir, whichever still
@@ -219,6 +245,57 @@ export class ClaudeDiscovery {
     // stops a CLOSED session whose dir was later reused/renamed from borrowing a
     // newer session's live process at the same path (the phantom-agent bug).
     const liveCounts = await (this.deps.liveCounts ?? (() => this.liveCwdCounts()))();
+    // live processes' --session-id argv values: the terminals' LAUNCH IDs. A
+    // transcript whose uuid is one of these is an un-cleared launch session, so
+    // its uuid IS the launch id — stamped onto the agent (below) and kept across
+    // /clear.
+    const argvIds = new Set<string>(
+      (liveCounts && liveCounts.mode === "perCwd" ? [...(liveCounts.sessionIds ?? [])] : []).map((s) => s.toLowerCase())
+    );
+    // A terminal keeps its launch id across /clear but writes a NEW transcript each
+    // time, so its live process is really driving its NEWEST successor — not the
+    // launch transcript, which is now dead. Map launch id → newest successor (and
+    // each successor → its launch id) so PASS 1 pins the live one and stale launch
+    // transcripts don't starve it or linger as ghosts.
+    const newestSucc = new Map<string, { succ: string; ts: number }>(); // launch id → newest successor
+    const successorLaunch = new Map<string, string>(); // successor session id → launch id
+    for (const [succ, m] of succession) {
+      if (!m.launchId) continue;
+      successorLaunch.set(succ.toLowerCase(), m.launchId);
+      const c = newestSucc.get(m.launchId);
+      if (!c || m.ts > c.ts) newestSucc.set(m.launchId, { succ: succ.toLowerCase(), ts: m.ts });
+    }
+    // transcript ids PASS 1 pins as live (launch ids remapped to their successor)
+    const livePins = new Set<string>();
+    for (const id of argvIds) livePins.add(newestSucc.get(id)?.succ ?? id);
+    // Session ids the SessionEnd hook reported as exited. Defensively drop (and
+    // clear) any marker whose session is still a LIVE process — a stale or racing
+    // marker must never retire a running dev; the marker is authoritative only
+    // when the process is actually gone.
+    const endedIds = new Set<string>();
+    for (const [sid] of endMarkers) {
+      const lc = sid.toLowerCase();
+      if (argvIds.has(lc) || livePins.has(lc)) {
+        await clearEndMarker(sid, this.deps.endedDir);
+        continue;
+      }
+      endedIds.add(lc);
+      this.retiredSessions.set(lc, Date.now());
+    }
+    // a retired session whose process genuinely came back (its uuid is live again)
+    // is no longer dead — un-suppress it; otherwise age the record out so the map
+    // can't grow without bound.
+    for (const [lc, ts] of [...this.retiredSessions]) {
+      if (argvIds.has(lc) || livePins.has(lc) || Date.now() - ts > ClaudeDiscovery.RETIRED_MAX_AGE_MS) {
+        this.retiredSessions.delete(lc);
+      }
+    }
+    // Strip exited/retired sessions from the candidate pool BEFORE the keep passes
+    // below. Done here (not after) so a dead transcript can't claim a per-cwd slot
+    // by its (freshest, post-/exit) mtime and starve the live sibling that should
+    // have kept it — the retire must free the budget for who's actually running.
+    const suppress = new Set([...endedIds, ...this.retiredSessions.keys()]);
+    if (suppress.size) found = found.filter((f) => !suppress.has(f.sessionId.toLowerCase()));
     const kept: Found[] = [];
     const keptCwd = new Set<string>();
     const asRecent = (f: Found): Found => ({ ...f, state: "idle", task: `(recent) ${f.task}` });
@@ -251,7 +328,7 @@ export class ClaudeDiscovery {
       }
     } else {
       const remaining = new Map(liveCounts.counts);
-      const liveIds = liveCounts.sessionIds ?? new Set<string>();
+      const liveIds = livePins; // argv launch ids, remapped to live successors across /clear
       const claim = (cwd: string): boolean => {
         const n = remaining.get(cwd) ?? 0;
         if (n <= 0) return false;
@@ -283,7 +360,30 @@ export class ClaudeDiscovery {
         }
       }
     }
+    // PASS 3 (anti-flap): rescue a session we showed last poll whose transcript
+    // has ADVANCED since — it is unambiguously alive this instant, so a transient
+    // wobble in the live-process count (or two co-located plain sessions trading
+    // mtime order) must not cull it. Without this, an external ghost in a busy dir
+    // with no --session-id to pin it churns out and back every poll, surfacing as
+    // duplicate ghosts during the leave/spawn overlap. Exited sessions don't write,
+    // so their mtime is frozen and they never qualify → they still leave on time.
+    const keptIds = new Set(kept.map((f) => f.id));
+    for (const f of found) {
+      if (keptIds.has(f.id)) continue; // already shown this poll (live or recent)
+      const prev = this.keptMtime.get(f.id);
+      if (this.mine.has(f.id) && prev !== undefined && f.mtime > prev) {
+        keptCwd.add(f.launchCwd);
+        kept.push(f);
+        keptIds.add(f.id);
+      }
+    }
     found = kept;
+    // remember each kept session's mtime for next poll's advance check; forget
+    // sessions that didn't survive this poll so a later same-uuid reappearance is
+    // treated as fresh, not silently rescued.
+    const keptMtime = new Map<string, number>();
+    for (const f of kept) keptMtime.set(f.id, f.mtime);
+    this.keptMtime = keptMtime;
 
     // Panel-created placeholders (a reviewer / added dev) carry no transcript
     // yet. When a live session turns up in such a placeholder's worktree, adopt
@@ -297,21 +397,51 @@ export class ClaudeDiscovery {
     }
 
     // /clear support: the SessionStart(clear) hook drops a marker keyed by the
-    // NEW session uuid. An owned dev whose bound transcript is no longer among
-    // the live sessions ("orphaned") is the one that was just cleared; grouping
-    // those by worktree lets the new session rebind to the same dev so it stays
-    // in place instead of being culled and replaced by a stranger.
-    const succession = await readSuccessionMarkers(this.deps.successionDir);
+    // NEW session uuid, carrying the cleared terminal's LAUNCH ID (its stable
+    // --session-id argv). Resolve each marker to the dev it continues:
+    //   1. by launch id — deterministic, works even when sessions share a cwd;
+    //   2. else the LONE orphan in the marker's cwd — a dev whose bound session
+    //      is no longer live, when there's exactly one (no ambiguity). With
+    //      several we refuse rather than risk swapping the wrong dev.
+    // The successor then rebinds to that dev (it stays put, no stranger), and the
+    // dev's now-dead transcript is dropped from `found` so it can't double-bind or
+    // surface as a phantom ghost.
     const liveSessionIds = new Set(found.map((f) => f.sessionId.toLowerCase()));
+    const byLaunch = new Map<string, string>(); // launch id → agent id
     const orphansByWorktree = new Map<string, string[]>();
-    if (succession.size) {
-      for (const a of this.store.list()) {
-        if (!this.mine.has(a.id) || !a.transcriptPath) continue;
-        const sid = path.basename(a.transcriptPath, ".jsonl").toLowerCase();
-        if (liveSessionIds.has(sid)) continue; // its session is still live → not orphaned
-        (orphansByWorktree.get(a.worktree) ?? orphansByWorktree.set(a.worktree, []).get(a.worktree)!).push(a.id);
-      }
+    for (const a of this.store.list()) {
+      if (a.launchId) byLaunch.set(a.launchId.toLowerCase(), a.id);
+      if (!succession.size || !a.transcriptPath || !this.mine.has(a.id)) continue;
+      const sid = path.basename(a.transcriptPath, ".jsonl").toLowerCase();
+      if (liveSessionIds.has(sid)) continue; // its session is still live → not orphaned
+      (orphansByWorktree.get(a.worktree) ?? orphansByWorktree.set(a.worktree, []).get(a.worktree)!).push(a.id);
     }
+    const predecessorOf = new Map<string, string>(); // successor session id (lc) → predecessor agent id
+    const retired = new Set<string>(); // dead transcript uuids (lc) to drop from `found`
+    for (const [succ, mark] of succession) {
+      const lc = succ.toLowerCase();
+      // chained clears: only the NEWEST successor per launch is live; older ones
+      // are dead intermediates — retire them, don't rebind.
+      if (mark.launchId && newestSucc.get(mark.launchId)?.succ !== lc) {
+        retired.add(lc);
+        continue;
+      }
+      let pred = mark.launchId ? byLaunch.get(mark.launchId) : undefined;
+      if (!pred) {
+        const pool = orphansByWorktree.get(mark.cwd);
+        if (pool && pool.length === 1) pred = pool[0]; // lone orphan → unambiguous
+      }
+      const a = pred ? this.store.get(pred) : undefined;
+      if (!pred || !a) continue;
+      predecessorOf.set(lc, pred);
+      if (a.transcriptPath) retired.add(path.basename(a.transcriptPath, ".jsonl").toLowerCase());
+      if (mark.launchId) retired.add(mark.launchId); // the stale launch transcript is dead too
+    }
+    if (retired.size) found = found.filter((f) => !retired.has(f.sessionId.toLowerCase()));
+    // session ids this poll's succession rebinds landed on, so the apply below
+    // can flag the agent (→ the scene sends the dev on its shredder trip) and
+    // keep an external dev external rather than re-flagging it as owned.
+    const succeeded = new Map<string, string>(); // agent id → new session id
 
     const seenSessions = new Set<string>();
     const claimedPlaceholders = new Set<string>();
@@ -323,6 +453,40 @@ export class ClaudeDiscovery {
     // the shred trip only fires when the swap arrives as a single atomic
     // snapshot (old gone AND new present together).
     await this.store.batch(async () => {
+    // Retire devs whose session the SessionEnd hook reported as exited. We match
+    // the dev whose CURRENT transcript IS the exited session (this also covers an
+    // adopted placeholder, whose transcriptPath was flowed to the live session),
+    // with the launch id as a fallback. A dev that already moved on via /clear
+    // has a different current transcript, so it is correctly left alone. This is
+    // deterministic where the per-cwd count is not: exactly the dev you /exit'd
+    // leaves, even with several sessions in one folder.
+    if (endedIds.size) {
+      // a placeholder that exited BEFORE its first prompt never wrote a transcript
+      // (a brand-new session writes none until prompted), so it has no
+      // transcriptPath/launchId to match. But DevTower knows which placeholder it
+      // launched each --session-id into (expecting), so retire by that too — this
+      // is the /exit-before-prompting case (quitting the terminal already drops it
+      // via the terminal-close path; /exit leaves the shell open, so it can't).
+      const endedPlaceholders = new Set<string>();
+      for (const e of endedIds) {
+        const p = this.expecting.get(e);
+        if (p) endedPlaceholders.add(p);
+      }
+      for (const a of this.store.list()) {
+        const sid = a.transcriptPath ? path.basename(a.transcriptPath, ".jsonl").toLowerCase() : "";
+        // never retire a dev whose own session is still a live process — the
+        // marker only speaks to the exited uuid, not to this agent if it moved on
+        if (sid && (argvIds.has(sid) || livePins.has(sid))) continue;
+        const byTranscript = sid && endedIds.has(sid);
+        const byLaunch = !!a.launchId && endedIds.has(a.launchId.toLowerCase());
+        const byExpecting = endedPlaceholders.has(a.id);
+        if (!byTranscript && !byLaunch && !byExpecting) continue;
+        dlog("discovery.end.retire", { agent: a.id, session: sid, worktree: a.worktree, viaPlaceholder: byExpecting });
+        this.mine.delete(a.id);
+        this.store.remove(a.id);
+      }
+      await Promise.all([...endedIds].map((sid) => clearEndMarker(sid, this.deps.endedDir)));
+    }
     for (const f of found) {
       seenSessions.add(f.id);
       // which store agent this session drives: a prior adoption, a fresh adopt
@@ -364,22 +528,19 @@ export class ClaudeDiscovery {
           dlog("discovery.bind.worktree", { sessionId: f.sessionId, placeholder: cand, cwd: f.cwd });
         }
       }
-      // (3) SUCCESSION bind: this uuid is the successor minted by a /clear (a
-      // SessionStart(clear) hook left a marker for it). Rebind it to the owned
-      // dev whose session just died in the same worktree, so /clear keeps the
-      // dev in place rather than culling it and surfacing a fresh stranger.
+      // (3) SUCCESSION bind: this uuid is the successor minted by a /clear,
+      // already resolved to the dev it continues (by launch id, else lone
+      // orphan). Rebind it there so /clear keeps the dev in place rather than
+      // culling it and surfacing a fresh stranger.
       if (!targetId && !this.mine.has(f.id)) {
-        const mark = succession.get(f.sessionId) ?? succession.get(f.sessionId.toLowerCase());
-        if (mark) {
-          const pool = orphansByWorktree.get(mark.cwd || f.cwd);
-          const predecessor = pool?.shift();
-          if (predecessor && this.store.get(predecessor)) {
-            targetId = predecessor;
-            this.adopted.set(f.id, predecessor);
-            succession.delete(f.sessionId);
-            clearSuccessionMarker(f.sessionId, this.deps.successionDir);
-            dlog("discovery.bind.succession", { sessionId: f.sessionId, dev: predecessor, cwd: mark.cwd });
-          }
+        const predecessor = predecessorOf.get(f.sessionId.toLowerCase());
+        if (predecessor && this.store.get(predecessor)) {
+          targetId = predecessor;
+          this.adopted.set(f.id, predecessor);
+          succeeded.set(predecessor, f.sessionId);
+          succession.delete(f.sessionId);
+          clearSuccessionMarker(f.sessionId, this.deps.successionDir);
+          dlog("discovery.bind.succession", { sessionId: f.sessionId, dev: predecessor });
         }
       }
       const id = targetId ?? f.id;
@@ -424,6 +585,16 @@ export class ClaudeDiscovery {
         branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
         this.branchCache.set(cwd, branch);
       }
+      // a /clear succession rebinding onto an EXTERNAL dev must keep it external
+      // (it's still an outside session); only an owned placeholder adoption flips
+      // it to owned. `cleared` flags the rebind so the scene runs the shred trip.
+      const cleared = succeeded.get(id);
+      // record the terminal's launch id: this transcript's uuid when it's an
+      // un-cleared launch session (matches a live --session-id argv), else the
+      // launch id its succession marker carries. Undefined leaves prior intact.
+      const launchId = argvIds.has(f.sessionId.toLowerCase())
+        ? f.sessionId.toLowerCase()
+        : successorLaunch.get(f.sessionId.toLowerCase());
       if (isAdopted && !cdConfirmed) {
         // keep the placeholder's identity (name/repo/worktree/branch/task);
         // only flow in the live session fields
@@ -437,7 +608,9 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
           skills: f.skills,
           subagents: f.subagents,
-          external: false, // DevTower launched/owns this one
+          external: cleared ? !!this.store.get(id)?.external : false,
+          launchId,
+          clearedSession: cleared,
         });
       } else {
         // a discovered agent (or a just-confirmed /cd) is placed at its real cwd.
@@ -460,7 +633,9 @@ export class ClaudeDiscovery {
           subagents: f.subagents,
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
-          external: !isAdopted,
+          external: cleared ? !!this.store.get(id)?.external : !isAdopted,
+          launchId,
+          clearedSession: cleared,
         });
       }
     }
@@ -482,15 +657,18 @@ export class ClaudeDiscovery {
     for (const [sid] of [...this.adopted]) if (!seenSessions.has(sid)) this.adopted.delete(sid);
     // a /clear whose successor session hasn't surfaced yet (a poll landing in the
     // sub-second gap between the old session dying and the new transcript being
-    // written): keep the orphaned dev parked in its worktree so the next pass can
-    // rebind it, rather than culling it now and then meeting its successor as a
-    // stranger. Unconsumed markers are the still-pending clears.
+    // written): keep the orphaned dev parked so the next pass can rebind it,
+    // rather than culling it now and then meeting its successor as a stranger.
+    // `succession` now holds only UNCONSUMED markers (rebinds were deleted above)
+    // — spare a dev whose worktree has one in flight, or whose launch id matches a
+    // pending marker (its terminal cleared and the new session isn't on disk yet).
     const pendingSuccessionCwds = new Set([...succession.values()].map((m) => m.cwd));
+    const pendingLaunch = new Set([...succession.values()].map((m) => m.launchId).filter(Boolean));
     // sessions that aged out or were deleted leave the tower
     for (const id of [...this.mine]) {
       if (!present.has(id)) {
         const a = this.store.get(id);
-        if (a?.transcriptPath && pendingSuccessionCwds.has(a.worktree)) continue; // /clear in flight
+        if (a?.transcriptPath && (pendingSuccessionCwds.has(a.worktree) || (a.launchId && pendingLaunch.has(a.launchId)))) continue; // /clear in flight
         this.mine.delete(id);
         this.store.remove(id);
       }
@@ -608,6 +786,17 @@ export async function readMeta(
       await fh.read(tailBuf, 0, CHUNK, size - CHUNK);
       tail = tailBuf.toString("utf8");
     }
+    // Sub-agent accounting needs the WHOLE transcript, not the head/tail window:
+    // a spawn can sit anywhere, and a background spawn acks its launch right
+    // away, so a fixed window misses both. Read the file in full when it is a
+    // sane size; very large transcripts fall back to the tail window.
+    const SUB_MAX = 8 * 1024 * 1024;
+    let full = tail;
+    if (size > CHUNK && size <= SUB_MAX) {
+      const fullBuf = Buffer.alloc(size);
+      await fh.read(fullBuf, 0, size, 0);
+      full = fullBuf.toString("utf8");
+    }
     // prefer the most recent cwd record so /cd mid-session relocates the agent
     const cwd = jsonUnescape(lastMatch(tail, /"cwd"\s*:\s*"([^"]+)"/g)) ?? headCwd;
     // newest real model id — synthetic/meta turns carry "model":"<synthetic>",
@@ -638,20 +827,51 @@ export async function readMeta(
     }
 
     // in-flight sub-agents: Task/Agent tool calls the session spawned that have
-    // not returned yet. Each spawn is an assistant tool_use block
-    // ("id":"toolu_…","name":"Task"); its completion is a later tool_result with
-    // a matching tool_use_id. The count is spawned-minus-resolved within the
-    // read window, so it rises on fan-out and falls back to 0 once work settles.
-    // (Spawns that scrolled out of the tail are simply not counted.)
-    const spawned = new Set<string>();
-    const reSpawn = /"type"\s*:\s*"tool_use"\s*,\s*"id"\s*:\s*"([^"]+)"\s*,\s*"name"\s*:\s*"(?:Task|Agent)"/g;
-    let sm: RegExpExecArray | null;
-    while ((sm = reSpawn.exec(tail))) spawned.add(sm[1]);
-    let resolved = 0;
-    const reDone = /"tool_use_id"\s*:\s*"([^"]+)"/g;
-    let dm: RegExpExecArray | null;
-    while ((dm = reDone.exec(tail))) if (spawned.has(dm[1])) resolved++;
-    const subagents = Math.max(0, spawned.size - resolved);
+    // not returned yet. Two kinds, tracked differently because they close at
+    // different times:
+    //   - foreground: an assistant tool_use block (name Task/Agent) stays open
+    //     until its matching tool_result lands.
+    //   - background (run_in_background): the tool_result ARRIVES IMMEDIATELY as
+    //     a launch ack ("agentId: <id>"), so it can't mark the work done. It is
+    //     instead tracked by that agentId and closed when a <task-notification>
+    //     reports it completed/failed.
+    // The count rises on fan-out and falls back to 0 once everything settles.
+    const fgPending = new Set<string>(); // foreground tool_use ids, still open
+    const bgPendingTool = new Set<string>(); // background tool ids awaiting their ack
+    const bgPendingId = new Set<string>(); // background agentIds, still running
+    const reNote = /<task-id>\s*([A-Za-z0-9_-]+)\s*<\/task-id>[\s\S]*?<status>\s*(?:completed|failed|cancelled|canceled|killed|error|stopped)\s*<\/status>/g;
+    for (const raw of full.split("\n")) {
+      const t = raw.trim();
+      if (!t.startsWith("{")) continue;
+      let rec: any;
+      try { rec = JSON.parse(t); } catch { continue; }
+      const content = rec.message?.content ?? rec.content;
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (!b || typeof b !== "object") continue;
+          if (b.type === "tool_use" && (b.name === "Task" || b.name === "Agent")) {
+            if (b.input && b.input.run_in_background) bgPendingTool.add(b.id);
+            else fgPending.add(b.id);
+          } else if (b.type === "tool_result" && b.tool_use_id) {
+            const txt = typeof b.content === "string" ? b.content : flatten(b.content);
+            const ack = /agentId:\s*([A-Za-z0-9_-]+)/.exec(txt);
+            if (bgPendingTool.has(b.tool_use_id) && ack) {
+              bgPendingTool.delete(b.tool_use_id);
+              bgPendingId.add(ack[1]);
+            } else {
+              fgPending.delete(b.tool_use_id); // foreground subagent returned
+            }
+          }
+        }
+      }
+      // a finished background agent posts a <task-notification> as an injected turn
+      if (t.includes("task-notification")) {
+        reNote.lastIndex = 0;
+        let nm: RegExpExecArray | null;
+        while ((nm = reNote.exec(t))) bgPendingId.delete(nm[1]);
+      }
+    }
+    const subagents = fgPending.size + bgPendingTool.size + bgPendingId.size;
 
     // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
     // Mirrors Claude Code's own `/context`: input + the two cache buckets (all

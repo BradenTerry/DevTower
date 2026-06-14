@@ -11,6 +11,34 @@
 
 type Listener<T> = (e: T) => void;
 
+export enum TreeItemCollapsibleState {
+  None = 0,
+  Collapsed = 1,
+  Expanded = 2,
+}
+
+export class TreeItem {
+  label?: string;
+  description?: string;
+  tooltip?: string;
+  contextValue?: string;
+  command?: unknown;
+  iconPath?: unknown;
+  collapsibleState?: TreeItemCollapsibleState;
+  resourceUri?: unknown;
+  constructor(
+    labelOrUri: string | { fsPath: string },
+    collapsibleState?: TreeItemCollapsibleState
+  ) {
+    if (typeof labelOrUri === "string") {
+      this.label = labelOrUri;
+    } else {
+      this.resourceUri = labelOrUri;
+    }
+    this.collapsibleState = collapsibleState ?? TreeItemCollapsibleState.None;
+  }
+}
+
 export class EventEmitter<T> {
   private listeners = new Set<Listener<T>>();
   event = (fn: Listener<T>) => {
@@ -102,6 +130,8 @@ export function __reset(): void {
 export default {
   EventEmitter,
   ThemeIcon,
+  TreeItem,
+  TreeItemCollapsibleState,
   ConfigurationTarget,
   RelativePattern,
   workspace,

@@ -154,6 +154,15 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "devtower.deleteFile",
+        "title": "Delete",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "devtower.resetFilePrompts",
+        "title": "DevTower: Reset File Prompt Confirmations"
+      },
+      {
         "command": "devtower.changesViewAsTree",
         "title": "DevTower: View Changes as Tree",
         "icon": "$(list-tree)"
@@ -318,6 +327,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "devtower.deleteFile",
+          "when": "view == devtower.directory && viewItem == file",
+          "group": "9_delete@1"
+        },
+        {
+          "command": "devtower.deleteFile",
+          "when": "view == devtower.directory && viewItem == dir",
+          "group": "9_delete@1"
+        },
         {
           "command": "devtower.discardFile",
           "when": "view == devtower.changes && viewItem == unstaged",
@@ -516,6 +535,10 @@
         },
         {
           "command": "devtower.collapseChanges",
+          "when": "false"
+        },
+        {
+          "command": "devtower.deleteFile",
           "when": "false"
         }
       ]

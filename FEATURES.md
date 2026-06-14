@@ -24,11 +24,12 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | Tower building: worktrees stack upward into floors | ✅ | rooms share floors/ceilings (one contiguous tower); a ghost slot on top stacks the next worktree, a reserve slot adds another repo as its own tower; ragged-skyline roofs |
 | Remove a reserved room (✕ button + modal confirm) | ✅ | Reservation only — directory and agents untouched |
 | Reserve a cell: click a ghost slot → native folder picker binds a directory | ✅ | Persisted globally (`devtower.reservedRooms`, with column); vacant rooms sit dark |
-| "+ DEV" button on rooms: spawn an agent there | ✅ | QuickPick: create git worktree (`git worktree add` + `devtower/<name>-<n>` branch) or run in the project base directory; then launches `devtower.claudeCommand` in its terminal |
+| "+ DEV" button on rooms: spawn an agent there | ✅ | QuickPick: create git worktree (`git worktree add` under `.claude/worktrees/<slug>` + `devtower/<slug>` branch, a Claude-style three-word slug like `swift-gliding-heron`, collision-checked) or run in the project base directory; then launches `devtower.claudeCommand` in its terminal |
 | Live Claude CLI session discovery | ✅ | Scans `~/.claude/projects/*/*.jsonl`; cwd/model/last-role parsed from transcript head+tail; active <2m, assistant-last → waiting; chat panel renders the real transcript; 30s poll; mock data only seeds when nothing real is found |
 | Phantom-session filter: only sessions with a running `claude` process | ✅ | `ps`+`lsof` cwd match; closed-but-recent sessions hidden unless `devtower.showRecentSessions` (then shown idle as "(recent)"); 15-min freshness fallback where process check unavailable |
 | Terminal-first chat: native terminal auto-attaches `claude --resume <session>` | ✅ | The terminal IS the conversation; custom chat panel removed |
 | Agent stats card: context-window % bar (+ token count), model, branch, changes | ✅ | Usage parsed from transcript tail; 1M-context inferred when >200k |
+| Sub-agent badge: bot glyph + in-flight count beside the dev | ✅ | Counts Task/Agent tool calls from the full transcript; foreground sub-agents close on their `tool_result`, background (`run_in_background`) ones track by `agentId` from the launch ack and close on a completed `<task-notification>` |
 | Departure sequence: walk to building edge → fire-escape ladder to ground → away | ✅ | Ladder drawn under climber; hand-over-hand climb pose |
 | Deferred demolition: empty rooms deconstruct only after the leaver exits | ✅ | Reverse construction with dust; cell stays occupied until done |
 | Camera: click agent → zoom to them; new dev → camera follows; overview pan preserved across re-layouts | ✅ | Startup lag fixes: debounced resize, staggered construction, font-ready repaint, deferred PR polling |
@@ -45,7 +46,8 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | Per-agent native terminal rooted in its worktree | ✅ | `devtower.launchCommand` to attach a real session |
 | PR board: worktree PRs (checks + review status) | ✅ | `gh pr list --head <branch>` per worktree; 2-min poll |
 | PR board: PRs requesting my review | ✅ | `gh search prs --review-requested=@me`; badge count in HUD |
-| PR chip on agent panel + Create PR / View PR tool | ✅ | `gh pr create --web` via agent terminal |
+| PR chip on agent panel + View PR link | ✅ | Opens the worktree's existing PR; no create-PR button (prompt the agent to open the PR how you want it) |
+| File viewer: drag-to-move + right-click delete | ✅ | *Selected Directory* tree: `TreeDragAndDropController` renames within the worktree; `devtower.deleteFile` removes to Trash; each confirms once with a "don't ask again" opt-out (`devtower.confirmFileMove` / `devtower.confirmFileDelete` in globalState; reset via `devtower.resetFilePrompts`) |
 | Review Dispatch modal: skills + instructions + effort + agent md, save defaults | ✅ | Glass modal from a PR row or the billboard; `devtower.reviewSkills` / `devtower.reviewDefaults`; agent md auto-discovered from `.claude/agents` and applied via `--append-system-prompt` |
 | Review in an isolated worktree | ✅ | `worktreeForPr` adds a detached worktree under `.claude/worktrees`, `gh pr checkout` brings the PR branch in; main checkout untouched; registered as its own room |
 | Central "PRs to review" billboard | ✅ | Standalone signboard left of the campus listing review-requested (@me) PRs; click a row → dispatch modal; bounds extend so the overview frames it |

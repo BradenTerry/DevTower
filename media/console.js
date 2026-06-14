@@ -57,7 +57,7 @@
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, external: a.external, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, external: a.external, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 
@@ -310,10 +310,15 @@
   function reviewDispatchOpen() { return !$("#reviewdispatch").hidden; }
   function closeReviewDispatch() { const s = $("#reviewdispatch"); s.hidden = true; s.innerHTML = ""; }
 
-  /* ---------- settings overlay (tabbed: GitHub / General) ---------- */
+  /* ---------- settings overlay (tabbed: General / Hooks / GitHub) ---------- */
   let settings = null; // last { caps, scopeHelp } pushed by the extension
+  let hooks = null; // last [{ id, label, description, installed }] pushed by the extension
   let settingsTab = "general"; // active left-rail tab
-  const SETTINGS_TABS = [{ id: "general", label: "General" }, { id: "github", label: "GitHub" }];
+  const SETTINGS_TABS = [
+    { id: "general", label: "General" },
+    { id: "hooks", label: "Hooks" },
+    { id: "github", label: "GitHub" },
+  ];
   function settingsOpen() { return !$("#settings").hidden; }
   function closeSettings() { const s = $("#settings"); s.hidden = true; s.innerHTML = ""; }
   function openSettings() {
@@ -321,6 +326,7 @@
     s.hidden = false;
     renderSettings(); // render immediately (cached), then refresh from the host
     vscode.postMessage({ type: "getSettings" });
+    vscode.postMessage({ type: "getHooks" });
   }
 
   // ---- GitHub tab ----
@@ -402,12 +408,40 @@
       </div>`;
   }
 
+  // ---- Hooks tab ----
+  function hooksPaneHTML() {
+    const list = hooks || [];
+    const anyOff = list.some((h) => !h.installed);
+    const anyOn = list.some((h) => h.installed);
+    const rows = list.length
+      ? list.map((h) => `
+        <div class="s-row">
+          <div class="s-row-t">
+            <div class="s-row-name">${esc(h.label)}</div>
+            <div class="s-row-sub">${esc(h.description)}</div>
+          </div>
+          <button class="s-toggle ${h.installed ? "on" : ""}" data-hook="${esc(h.id)}" role="switch" aria-checked="${h.installed}"><span class="knob"></span></button>
+        </div>`).join("")
+      : `<p class="s-desc">No hooks available.</p>`;
+    return `
+      <h3>Claude Code hooks</h3>
+      <p class="s-desc">DevTower can add hooks to your global <code>~/.claude/settings.json</code> to
+        watch your sessions more reliably. Toggle each one on or off, or use the buttons below.</p>
+      <div class="s-hookbar">
+        <button class="s-actbtn" id="s-hook-all" ${anyOff ? "" : "disabled"}>Enable all</button>
+        <button class="s-actbtn" id="s-hook-none" ${anyOn ? "" : "disabled"}>Disable all</button>
+      </div>
+      ${rows}`;
+  }
+
   function renderSettings() {
     const s = $("#settings");
     if (s.hidden) return;
     const nav = SETTINGS_TABS.map((t) =>
       `<button class="s-tab ${settingsTab === t.id ? "on" : ""}" data-tab="${t.id}">${t.label}</button>`).join("");
-    const pane = settingsTab === "general" ? generalPaneHTML() : githubPaneHTML();
+    const pane = settingsTab === "general" ? generalPaneHTML()
+      : settingsTab === "hooks" ? hooksPaneHTML()
+      : githubPaneHTML();
 
     s.innerHTML = `
       <div class="settings-card">
@@ -445,6 +479,28 @@
     // General-tab wiring
     const ecoT = $("#s-eco", s);
     if (ecoT) ecoT.onclick = () => { applyEco(!eco); vscode.postMessage({ type: "setEco", on: eco }); renderSettings(); };
+
+    // Hooks-tab wiring: optimistically flip local state so the toggle responds
+    // instantly, then let the host echo the authoritative state back.
+    $$(".s-toggle[data-hook]", s).forEach((t) => (t.onclick = () => {
+      const id = t.dataset.hook;
+      const h = (hooks || []).find((x) => x.id === id);
+      if (!h) return;
+      h.installed = !h.installed;
+      vscode.postMessage({ type: "setHook", id, on: h.installed });
+      renderSettings();
+    }));
+    const all = $("#s-hook-all", s), none = $("#s-hook-none", s);
+    if (all) all.onclick = () => {
+      (hooks || []).forEach((h) => (h.installed = true));
+      vscode.postMessage({ type: "setAllHooks", on: true });
+      renderSettings();
+    };
+    if (none) none.onclick = () => {
+      (hooks || []).forEach((h) => (h.installed = false));
+      vscode.postMessage({ type: "setAllHooks", on: false });
+      renderSettings();
+    };
   }
 
   function prChipHTML(a) {
@@ -534,7 +590,7 @@
         ${a.external
           ? `<div class="pa ext-note" title="This session runs outside DevTower — manage it in its own terminal">⌗ Runs in its own session</div>`
           : `<button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>`}
-        <button class="pa" data-tool="pr">⇄ ${prFor(a.id) ? "PR" : "Create PR"}</button>
+        ${prFor(a.id) ? `<button class="pa" data-tool="pr">⇄ PR</button>` : ""}
       </div>`;
 
     // wiring
@@ -545,7 +601,6 @@
       if (t.dataset.tool === "pr") {
         const p = prFor(a.id);
         if (p) vscode.postMessage({ type: "action", act: "openPr", url: p.url });
-        else vscode.postMessage({ type: "action", id: a.id, act: "createPr" });
         return;
       }
       vscode.postMessage({ type: "action", id: a.id, act: t.dataset.tool });
@@ -629,7 +684,11 @@
       // Only the GitHub pane consumes caps; re-rendering the General pane here
       // just rebuilds identical DOM and flickers, so skip it.
       if (settingsTab === "github") renderSettings();
+    } else if (m.type === "hooks") {
+      hooks = Array.isArray(m.hooks) ? m.hooks : [];
+      if (settingsTab === "hooks") renderSettings(); // authoritative state from the host
     } else if (m.type === "openSettings") {
+      if (m.tab) settingsTab = m.tab; // land on a requested tab (e.g. the hooks nudge)
       openSettings();
     } else if (m.type === "focusAgent" && m.id) {
       selectAgent(m.id, true); // host (or harness) asks to open an agent's panel

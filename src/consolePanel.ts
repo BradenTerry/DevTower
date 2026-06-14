@@ -8,6 +8,7 @@ import { randomUUID } from "crypto";
 import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
+import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
 import { dlog, elog } from "./debugLog";
 import * as fs from "fs";
@@ -107,8 +108,9 @@ export class ConsolePanel {
    *  freshly created panel is deferred until ready instead of lost. */
   private webviewReady = false;
   /** A pending "open settings" request that arrived before the webview was ready,
-   *  flushed from the `ready` handler. */
-  private pendingOpenSettings = false;
+   *  flushed from the `ready` handler. Holds the tab to land on (or `true` for the
+   *  default tab) when set. */
+  private pendingOpenSettings: boolean | string = false;
 
   static createOrShow(
     context: vscode.ExtensionContext,
@@ -272,10 +274,14 @@ export class ConsolePanel {
         // push the persisted efficiency-mode setting (defaults off) plus the
         // review-dispatch options (selectable skills + saved defaults)
         this.postConfig();
-        void this.refreshState(); // fill in each island's worktree rooms
+        await this.refreshState(); // fill in each island's worktree rooms
+        // re-mount the room whose "USE DIR" was last pressed in this workspace,
+        // restored from global state (needs roomGitPaths, so after refreshState)
+        await this.restoreSelectedDir();
         if (this.pendingOpenSettings) {
+          const tab = typeof this.pendingOpenSettings === "string" ? this.pendingOpenSettings : undefined;
           this.pendingOpenSettings = false;
-          this.panel.webview.postMessage({ type: "openSettings" });
+          this.panel.webview.postMessage({ type: "openSettings", tab });
         }
         break;
       case "setEco":
@@ -308,6 +314,7 @@ export class ConsolePanel {
           const dir = resolveDir(this.roomGitPaths.get(m.room) ?? m.room);
           if (dir) {
             this.usedDirRoom = m.room;
+            void this.saveSelectedDir(m.room); // remember it across restarts
             this.store.setFocusedWorktree(dir);
             this.postState(); // re-render so the room's button reads "SELECTED DIR"
             void vscode.commands.executeCommand("devtower.directory.focus");
@@ -375,6 +382,21 @@ export class ConsolePanel {
         await clearGithubToken();
         await this.postSettings();
         void this.prs.reauth(); // drop the boards / PR billboard now that the token is gone
+        break;
+      case "getHooks":
+        await this.postHooks();
+        break;
+      case "setHook":
+        if (typeof m.id === "string" && typeof m.on === "boolean") {
+          await setHookEnabled(this.context, m.id, m.on);
+          await this.postHooks();
+        }
+        break;
+      case "setAllHooks":
+        if (typeof m.on === "boolean") {
+          await setAllHooksEnabled(this.context, m.on);
+          await this.postHooks();
+        }
         break;
       case "pushBranch":
         if (typeof m.room === "string") await this.pushRoom(m.room);
@@ -449,13 +471,19 @@ export class ConsolePanel {
     this.panel.webview.postMessage({ type: "settings", caps, scopeHelp: SCOPE_HELP });
   }
 
-  /** Reveal the tower and open the settings overlay (from the nudge / command). */
-  openSettings(): void {
+  /** Push the managed Claude Code hooks and their enabled state to the Hooks tab. */
+  private async postHooks(): Promise<void> {
+    this.panel.webview.postMessage({ type: "hooks", hooks: await listHooks() });
+  }
+
+  /** Reveal the tower and open the settings overlay (from the nudge / command),
+   *  optionally landing on a specific tab (e.g. "hooks"). */
+  openSettings(tab?: string): void {
     this.panel.reveal();
     // On a freshly created panel the webview's message listener isn't wired yet,
     // so this post would be dropped — defer it until the webview reports `ready`.
-    if (this.webviewReady) this.panel.webview.postMessage({ type: "openSettings" });
-    else this.pendingOpenSettings = true;
+    if (this.webviewReady) this.panel.webview.postMessage({ type: "openSettings", tab });
+    else this.pendingOpenSettings = tab ?? true;
   }
 
   /* ============ ROOMS (tower floors) ============ */
@@ -519,6 +547,41 @@ export class ConsolePanel {
 
   private async saveWorktreeRooms(rows: { island: string; path: string; branch: string; base?: string }[]): Promise<void> {
     await this.context.globalState.update("devtower.worktreeRooms", rows);
+  }
+
+  /* ============ SELECTED DIRECTORY (persisted "USE DIR") ============ */
+
+  /** Key the persisted selection by the folder VS Code is opened at, so each
+   *  workspace reopens to its own last-used room. Falls back to a fixed key when
+   *  no folder is open (a window started on a bare editor still gets one slot). */
+  private workspaceKey(): string {
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "__noworkspace__";
+  }
+
+  /** Remember (or clear) the room whose "USE DIR" was last pressed, globally but
+   *  keyed by workspace, so it survives a window close/reopen. */
+  private async saveSelectedDir(room: string | undefined): Promise<void> {
+    const map = this.context.globalState.get<Record<string, string>>("devtower.selectedDirByWorkspace", {});
+    const key = this.workspaceKey();
+    if (room) map[key] = room;
+    else delete map[key];
+    await this.context.globalState.update("devtower.selectedDirByWorkspace", map);
+  }
+
+  /** Re-mount the last "USE DIR" room for this workspace on open. No-op when none
+   *  was saved or its directory no longer resolves (a removed/renamed worktree). */
+  private async restoreSelectedDir(): Promise<void> {
+    const map = this.context.globalState.get<Record<string, string>>("devtower.selectedDirByWorkspace", {});
+    const room = map[this.workspaceKey()];
+    if (!room) return;
+    const dir = resolveDir(this.roomGitPaths.get(room) ?? room);
+    if (!dir) {
+      await this.saveSelectedDir(undefined); // stale entry — its directory is gone
+      return;
+    }
+    this.usedDirRoom = room;
+    this.store.setFocusedWorktree(dir); // directory view lists it (no focus steal)
+    this.postState(); // scene marks the room "SELECTED DIR"
   }
 
   /** Click on an empty grid slot → pick a directory → reserve the room. */
@@ -585,6 +648,11 @@ export class ConsolePanel {
     if (reserved) await this.saveRooms(this.getRooms().filter((r) => r.name !== name));
     // forget every worktree room assigned to this island
     await this.saveWorktreeRooms(this.getWorktreeRooms().filter((w) => w.island !== name));
+    // drop the persisted "USE DIR" selection if it pointed at this directory
+    if (reserved && this.usedDirRoom === reserved.path) {
+      this.usedDirRoom = undefined;
+      await this.saveSelectedDir(undefined);
+    }
     this.postState();
     void this.refreshState();
   }
@@ -605,6 +673,18 @@ export class ConsolePanel {
     );
     if (!pick) return;
 
+    if (pick === "Remove room + delete worktree") {
+      const changes = await changedFiles(worktree).catch(() => []);
+      if (changes.length) {
+        const confirm = await vscode.window.showWarningMessage(
+          `"${label}" has ${changes.length} uncommitted change${changes.length === 1 ? "" : "s"}. Deleting the worktree discards them permanently. Are you sure?`,
+          { modal: true },
+          "Delete worktree and discard changes"
+        );
+        if (confirm !== "Delete worktree and discard changes") return;
+      }
+    }
+
     for (const a of agents) {
       this.terminals.disposeAgent(a.id);
       this.store.remove(a.id);
@@ -624,6 +704,11 @@ export class ConsolePanel {
     }
     // unassign this worktree room
     await this.saveWorktreeRooms(this.getWorktreeRooms().filter((w) => w.path !== worktree));
+    // drop the persisted "USE DIR" selection if it pointed at this worktree
+    if (this.usedDirRoom === worktree) {
+      this.usedDirRoom = undefined;
+      await this.saveSelectedDir(undefined);
+    }
     this.postState();
     void this.refreshState();
   }
@@ -713,7 +798,7 @@ export class ConsolePanel {
       let row: { island: string; path: string; branch: string; base?: string };
       if (pick.id === "__new__") {
         try {
-          const wt = await worktreeAdd(dir, island, assigned.length + 2);
+          const wt = await worktreeAdd(dir);
           row = { island, path: wt.wtPath, branch: wt.branch, base: wt.base };
         } catch (e) {
           vscode.window.showErrorMessage(`DevTower: worktree creation failed — ${String(e).slice(0, 160)}`);
@@ -1108,10 +1193,6 @@ export class ConsolePanel {
         break;
       case "terminal":
         this.terminals.reveal(id);
-        break;
-      case "createPr":
-        // runs in the agent's worktree terminal; --web hands off to the browser
-        this.terminals.send(id, "gh pr create --web");
         break;
       case "diff":
         await this.openDiffFor(id);

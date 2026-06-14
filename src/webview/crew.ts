@@ -24,6 +24,7 @@ interface CrewAgent {
   skills?: string[]; // skills this session has used (accumulated, first-use order)
   subagents?: number; // in-flight sub-agents (Task/Agent tool calls not yet returned)
   external?: boolean; // a live session running OUTSIDE DevTower (not one we launched)
+  clearedSession?: string; // session id of the dev's latest /clear; a change sends it to the shredder
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
   reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
 }
@@ -336,6 +337,10 @@ interface Toon {
   // worktree keeps this dev, which carries its context papers to the shredder
   // ("out"), feeds the stack in ("feed"), then walks back to its seat ("back").
   shred?: { phase: "out" | "feed" | "back"; t: number };
+  // last /clear session id this toon has reacted to. A change (the dev's session
+  // was replaced in place, owned or external) kicks off a fresh shred trip; we
+  // dedupe on it so a re-render with the same value doesn't replay the walk.
+  clearedSession?: string;
   // review verdict animation: when a reviewer's PR decision resolves, `stampAt`
   // records the frame so the APPROVED/CHANGES stamp can "thud" in over ~1s.
   lastVerdict?: string;
@@ -864,6 +869,10 @@ class PixelCrew {
           skills: resume?.skills ?? [...(a.skills ?? [])],
           booksShown: resume?.booksShown ?? (a.skills?.length ?? 0),
           booksInHand: resume?.booksInHand ?? 0,
+          // seed with the dev's current /clear id so a clear that happened BEFORE
+          // it appeared isn't replayed as a shred trip on first sight — only a
+          // change while the toon is on screen animates.
+          clearedSession: a.clearedSession,
           ph: (hash(a.id) % 628) / 100,
         };
         this.toons.set(a.id, tn);
@@ -879,6 +888,18 @@ class PixelCrew {
         tn.stampAt = this.frame;
       }
       tn.lastVerdict = nextV;
+      // /clear in place (owned OR external): discovery bumps clearedSession when a
+      // dev's session is replaced. On a change, send the SAME dev on its shredder
+      // trip — carry the context papers over, feed them in, walk back to its seat.
+      const nextClear = a.clearedSession;
+      if (nextClear && tn.clearedSession !== nextClear && !tn.entering && !tn.leaving && !tn.shred) {
+        tn.shred = { phase: "out", t: 0 };
+        tn.errand = undefined;
+        tn.booksShown = tn.skills.length;
+        tn.booksInHand = 0;
+        this.invalidate(); // wake the loop so the walk plays now, not at the next event
+      }
+      tn.clearedSession = nextClear;
       tn.agent = a;
       // accumulate newly-used skills; the tick walks the dev to the shelf to
       // fetch a book for each one beyond what's already on its desk
@@ -988,7 +1009,10 @@ class PixelCrew {
     tn.base = room.baseY;
     tn.x0 = room.x0;
     const deskX = this.seatX(room, tn.seatCol, tn.row);
-    if (tn.agent.state === "active") tn.targetX = deskX + 13;
+    // active devs work at the keyboard; idle/complete devs stay in the chair too
+    // (they recline back, see drawToon). Only waiting/error devs stand back.
+    const s = tn.agent.state;
+    if (s === "active" || s === "idle" || s === "complete") tn.targetX = deskX + 13;
     else tn.targetX = deskX + 19;
   }
 
@@ -1516,27 +1540,43 @@ class PixelCrew {
   }
 
   /** Screen-space rects for a room's top-row HUD controls (✕, + DEV, USE DIR).
-   *  Each is anchored to the room and sized against the LIVE zoom (cam.z), so the
-   *  controls live in world space: zoom out and they shrink with the room (you
-   *  zoom into the room to read them); zoom in and they grow. Shared by the
-   *  hit-test (pick) and the renderer so they never diverge. */
+   *  The controls live in WORLD space: every size (and the font, see the render
+   *  pass) scales with the live zoom (cam.z), so the chips keep a constant
+   *  proportion to the room's console at every zoom — zoom in close and they grow
+   *  with it instead of staying a fixed pixel size and looking tiny against the
+   *  enlarged console. Box and font scale by the same factor so the text always
+   *  fills the chip. Shared by the hit-test (pick) and the renderer so they never
+   *  diverge. */
   private topRects(r: Room): {
     close: { x: number; y: number; w: number; h: number };
     dev: { x: number; y: number; w: number; h: number };
     useDir: { x: number; y: number; w: number; h: number; selected: boolean };
   } {
     const s = this.cam.z;
-    const top = r.baseY - ROOM_H + 2;
-    const h = 8 * s;
     const selected = !!this.usedDirRoom && r.name === this.usedDirRoom;
-    const closeR = this.screenOf(r.x0 + ROOM_W - 2, top);
-    const devR = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, top);
-    const useR = this.screenOf(r.x0 + ROOM_W - DOOR_W - 18, top);
-    const closeW = 8 * s, devW = 16 * s, useW = (selected ? 48 : 28) * s;
+    // The cluster sits in the band to the RIGHT of the rightmost ceiling lamp,
+    // above the board (TV), inside the room — never touching the lamp, the TV or
+    // the right wall. Lamps hang at ROOM_W*(i+1)/4, so the last one is at 3/4 W;
+    // the band runs from just past it to a small inset off the right wall, and
+    // the three chips share that band. All world units (× s), so the whole thing
+    // scales with zoom and keeps its proportion to the room.
+    const lampRight = (ROOM_W * 3) / 4 + 6; // last lamp centre + half + a gap
+    const edge = ROOM_W - 6; // inset from the right wall
+    const band = edge - lampRight; // available world width
+    const gapW = band * 0.045;
+    const inner = band - gapW * 2;
+    const closeW = inner * 0.15 * s, devW = inner * 0.37 * s, useW = inner * 0.48 * s;
+    const hW = 9, gap = gapW * s, h = hW * s;
+    // board top = backWall.yTop + 3 = baseY - ROOM_H + 13; lift the chip + a gap
+    const top = r.baseY - ROOM_H + 13 - 4 - hW;
+    const a = this.screenOf(r.x0 + lampRight, top); // band's top-left, in screen
+    const useX = a.x;
+    const devX = useX + useW + gap;
+    const closeX = devX + devW + gap;
     return {
-      close: { x: closeR.x - closeW, y: closeR.y, w: closeW, h },
-      dev: { x: devR.x - devW, y: devR.y, w: devW, h },
-      useDir: { x: useR.x - useW, y: useR.y, w: useW, h, selected },
+      useDir: { x: useX, y: a.y, w: useW, h, selected },
+      dev: { x: devX, y: a.y, w: devW, h },
+      close: { x: closeX, y: a.y, w: closeW, h },
     };
   }
 
@@ -1692,6 +1732,10 @@ class PixelCrew {
     }
     for (const tn of this.toons.values()) {
       if (tn.entering || Math.abs(tn.targetX - tn.x) > 1) return false;
+      // a shredder (/clear) or shelf (skill) trip is a multi-frame walk; keep the
+      // loop alive through it even though the dev's state is idle and it hasn't
+      // started moving yet (tick sets its targetX on the next frame).
+      if (tn.shred || tn.errand) return false;
       const s = tn.agent.state;
       if (s === "active" || s === "waiting") return false;
     }
@@ -1857,7 +1901,8 @@ class PixelCrew {
       const dx = tn.targetX - tn.x;
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
-      tn.sitting = tn.agent.state === "active" && !tn.entering && !tn.errand && !tn.shred && Math.abs(dx) <= 1;
+      const seatable = tn.agent.state === "active" || tn.agent.state === "idle" || tn.agent.state === "complete";
+      tn.sitting = seatable && !tn.entering && !tn.errand && !tn.shred && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
       // (lift -> 0) whenever walking, entering, leaving, or off on a book
       // errand (so the dev rides the near floor to the shelf and back)
@@ -1956,8 +2001,8 @@ class PixelCrew {
       }
     }
 
-    // complete devs no longer throw confetti: they kick back and scroll their
-    // phone (see drawToon), so a cheer burst would read as a contradiction.
+    // complete devs no longer throw confetti: they kick back with a coffee
+    // (see drawToon), so a cheer burst would read as a contradiction.
     if (!this.eco && this.frame % 14 === 0) {
       for (const tn of this.toons.values()) {
         if (tn.agent.state === "error") {
@@ -2357,16 +2402,20 @@ class PixelCrew {
     /* ---- screen-space pass ---- */
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = "center";
-    const hs = this.cam.z;
+    // font sized to fill each chip: capped by height, and by width / label length
+    // (monospace ≈ 0.6em per glyph) so even "SELECTED DIR" fits its box
+    const fitPx = (w: number, h: number, len: number) =>
+      Math.max(4, Math.min(h * 0.42, (w * 0.68) / (len * 0.6)));
     for (const r of this.rooms.values()) {
       if (r.built < 0.95) continue;
-      // top-row controls are world-anchored: sized from the live zoom so they
-      // shrink with the room when you zoom out (zoom in to read them)
+      // top-row controls live in world space: sized and lettered against the
+      // live zoom so they keep their proportion to the console (see topRects)
       const tr = this.topRects(r);
       // "+ DEV" on every room — drop an agent into this room's worktree
       const devHov = this.hov("addDev:" + r.name);
       this.drawRoomButton(ctx, tr.dev.x, tr.dev.y, tr.dev.w, tr.dev.h, "+ DEV",
-        devHov ? "#aef5cf" : "#3ee089", `600 ${clamp(3.2 * hs, 3, 11)}px 'Martian Mono', monospace`, devHov);
+        devHov ? "#aef5cf" : "#3ee089",
+        `600 ${fitPx(tr.dev.w, tr.dev.h, 5).toFixed(1)}px 'Martian Mono', monospace`, devHov);
       // "USE DIR" just left of + DEV — mount this room's worktree in the Selected
       // Directory view. The room already mounted reads "SELECTED DIR" (green).
       const useHov = this.hov("useDir:" + r.name);
@@ -2376,12 +2425,12 @@ class PixelCrew {
         ? "#6a7570"
         : (useHov ? "#cfe6ff" : "#5bb8ff");
       this.drawRoomButton(ctx, tr.useDir.x, tr.useDir.y, tr.useDir.w, tr.useDir.h, useLabel,
-        useColor, `600 ${clamp(3.0 * hs, 3, 10)}px 'Martian Mono', monospace`,
+        useColor, `600 ${fitPx(tr.useDir.w, tr.useDir.h, useLabel.length).toFixed(1)}px 'Martian Mono', monospace`,
         tr.useDir.selected ? false : useHov);
       // ✕ — main nukes the whole directory, a worktree removes just itself
       const xHov = this.hov("remove:" + (r.isMain ? r.island : r.name));
       this.drawRoomButton(ctx, tr.close.x, tr.close.y, tr.close.w, tr.close.h, "✕",
-        xHov ? "#ffd2ce" : "#ff6055", `bold ${clamp(2.8 * hs, 3, 10)}px monospace`, xHov);
+        xHov ? "#ffd2ce" : "#ff6055", `bold ${fitPx(tr.close.w, tr.close.h, 1.4).toFixed(1)}px monospace`, xHov);
     }
     // ghost labels: +building (create a worktree room) vs +island (reserve a dir)
     for (const g of this.ghosts) {
@@ -2449,16 +2498,39 @@ class PixelCrew {
       }
       const glyph = st === "waiting" ? "?" : st === "complete" ? "✓" : st === "error" ? "✗" : "";
       if (glyph) {
-        const bob = st === "waiting" ? Math.sin(this.frame * 0.6 + tn.ph) * 2 : 0;
-        const bx = s.x + 10, by = s.y - 24 + bob;
-        ctx.fillStyle = "rgba(10,15,18,0.85)";
-        ctx.fillRect(bx - 6, by - 8, 12, 12);
-        ctx.strokeStyle = STATE_COLOR[st];
-        ctx.lineWidth = 1;
-        ctx.strokeRect(bx - 6, by - 8, 12, 12);
-        ctx.fillStyle = STATE_COLOR[st];
-        ctx.font = "bold 9px 'IBM Plex Mono', monospace";
-        ctx.fillText(glyph, bx, by + 1.5);
+        const wait = st === "waiting";
+        const bob = wait ? Math.sin(this.frame * 0.6 + tn.ph) * 2 : 0;
+        const sz = wait ? 20 : 16; // bubble side: the question is bigger so it carries
+        const bx = s.x, by = s.y - 32 + bob; // centered above the head
+        const col = STATE_COLOR[st];
+        ctx.save();
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        // a waiting "?" pulses with a glow so it's spottable from across the tower
+        if (wait) {
+          const pulse = 0.5 + 0.5 * Math.sin(this.frame * 0.18 + tn.ph);
+          ctx.shadowColor = col;
+          ctx.shadowBlur = 6 + pulse * 8;
+        }
+        const x0 = bx - sz / 2, y0 = by - sz / 2;
+        ctx.fillStyle = "rgba(10,15,18,0.9)";
+        ctx.fillRect(x0, y0, sz, sz);
+        ctx.strokeStyle = col;
+        ctx.lineWidth = wait ? 2 : 1.5;
+        ctx.strokeRect(x0, y0, sz, sz);
+        // a little tail under the bubble so it reads as a thought pointing at the dev
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(bx - 3, y0 + sz - 0.5);
+        ctx.lineTo(bx + 3, y0 + sz - 0.5);
+        ctx.lineTo(bx, y0 + sz + 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = col;
+        ctx.font = `bold ${wait ? 15 : 12}px 'IBM Plex Mono', monospace`;
+        ctx.fillText(glyph, bx, by + 1);
+        ctx.restore();
       }
       // reviewer badge: a pill above the dev showing the PR under review, which
       // stamps into APPROVED / CHANGES once the PR's decision resolves
@@ -3720,9 +3792,33 @@ class PixelCrew {
     // reading a fetched skill book at the desk: the dev looks DOWN at an open book
     // held in front of it, so the pages (and their text) face up toward its gaze
     const reading = sitting && tn.booksInHand > 0 && !tn.agent.reviewOf;
+    // idle/complete devs stay seated but recline back into the chair: the upper
+    // body tips toward the backrest (to its right) and sinks a little, hands
+    // laced behind the head. Reads as "kicked back", not hunched at the desk.
+    const relaxed = sitting && !reading && !tn.agent.reviewOf && (st === "idle" || st === "complete");
+    const lean = relaxed ? 2 : 0;     // upper body reclines toward the backrest
+    const leanDrop = relaxed ? 1 : 0; // ...and dips as it tips back
 
     ctx.fillStyle = p.pants;
-    if (sitting) {
+    if (relaxed) {
+      // feet kicked up on the desk: the legs lift to desk height and stretch out
+      // left toward the monitor, ankles crossed with the shoes angled up. Drawn
+      // up at the surface so the desktop (painted afterwards) doesn't swallow
+      // them; the torso is painted over their near ends, the monitor over the far.
+      // shins stretch left across the desk toward the monitor, ankles crossed,
+      // the crossed sneakers resting on the clear left end of the desktop. Kept
+      // just above the surface line so the desktop (painted after) doesn't eat
+      // them, with bright soles so they read against the dark monitor behind.
+      const surf = base - 7.5; // the desk top surface sits ~7.5px above base
+      ctx.fillRect(x - 11, surf - 3.4, 11, 1.7);  // upper shin
+      ctx.fillRect(x - 10, surf - 1.9, 10, 1.6);  // lower shin, crossed under it
+      ctx.fillStyle = "#2a2f35";                  // crossed shoes at the far end
+      ctx.fillRect(x - 13.6, surf - 3.8, 3, 1.9);
+      ctx.fillRect(x - 12.6, surf - 2.0, 3, 1.9);
+      ctx.fillStyle = "#dfe3e8";                  // bright soles underneath
+      ctx.fillRect(x - 13.8, surf - 2.2, 3.2, 0.7);
+      ctx.fillRect(x - 12.8, surf - 0.4, 3.2, 0.7);
+    } else if (sitting) {
       ctx.fillRect(x - 3, base - 4, 6, 2);
       ctx.fillRect(x - 3.6, base - 3, 1.6, 3.4);
       ctx.fillRect(x + 2, base - 3, 1.6, 3.4);
@@ -3740,11 +3836,11 @@ class PixelCrew {
       ctx.fillRect(x + 0.4, base - 0.8, 2.6, 0.9);
     }
 
-    const ty = base - 12 + slump * 0.4;
+    const ty = base - 12 + slump * 0.4 + leanDrop;
     ctx.fillStyle = p.shirt;
-    ctx.fillRect(x - 3.2, ty, 6.4, 6.4);
+    ctx.fillRect(x - 3.2 + lean, ty, 6.4, 6.4);
     ctx.fillStyle = p.shirtDark;
-    ctx.fillRect(x - 3.2, ty + 5.2, 6.4, 1.2);
+    ctx.fillRect(x - 3.2 + lean, ty + 5.2, 6.4, 1.2);
 
     ctx.fillStyle = p.shirt;
     const handC = p.skin;
@@ -3779,6 +3875,21 @@ class PixelCrew {
       ctx.fillStyle = p.shirt; // forearms up to the book
       ctx.fillRect(x - 2.4, ty + 1.4, 1.8, 1.8);
       ctx.fillRect(x + 2.2, ty + 1.4, 1.8, 1.8);
+    } else if (relaxed) {
+      // reclined in the chair: both hands laced behind the head, elbows out,
+      // swaying gently (offset by `lean` so the arms follow the tipped torso)
+      const ease = Math.sin(f * 0.06 + tn.ph) * 0.5;
+      ctx.fillStyle = p.shirt;
+      // upper arms out to the sides, elbows raised
+      ctx.fillRect(x - 5.4 + lean, ty - 0.4, 2.2, 1.6);
+      ctx.fillRect(x + 3.2 + lean, ty - 0.4, 2.2, 1.6);
+      // forearms angle up from the elbows toward behind the head
+      ctx.fillRect(x - 5.2 + lean, ty - 4.6 + ease, 1.6, 4.4);
+      ctx.fillRect(x + 3.6 + lean, ty - 4.6 - ease, 1.6, 4.4);
+      // hands tucked behind the head, peeking at its top corners
+      ctx.fillStyle = handC;
+      ctx.fillRect(x - 4.2 + lean, ty - 5.4 + ease, 1.6, 1.6);
+      ctx.fillRect(x + 2.6 + lean, ty - 5.4 - ease, 1.6, 1.6);
     } else if (sitting) {
       // typing toward the keyboard/monitor on the left
       const tap = f % 2 === 0 ? 0 : 0.8;
@@ -3801,109 +3912,105 @@ class PixelCrew {
       ctx.fillRect(x - 4.2, ty + 1.5 + sw * 0.8, 1.4, 4);
       ctx.fillRect(x + 2.8, ty + 1.5 - sw * 0.8, 1.4, 4);
     } else if (st === "idle" || st === "complete") {
-      // not working (done, or off the clock): scrolling on their phone
-      ctx.fillRect(x - 4.2, ty + 1.5, 1.4, 4); // left arm hangs
-      ctx.fillRect(x + 2.6, ty + 1.2, 1.4, 2.4); // right arm bent up
-      // phone with glowing screen
-      ctx.fillStyle = "#171c21";
-      ctx.fillRect(x + 1.8, ty + 2.8, 2.6, 3.6);
-      const glow = f % 6 < 3 ? "#9fd8ff" : "#7fb8df";
-      ctx.fillStyle = glow;
-      ctx.fillRect(x + 2.2, ty + 3.2, 1.8, 2.8);
-      // thumb scrolls
+      // not working (done, or off the clock): kicked back with both hands laced
+      // behind the head, elbows out, swaying gently. Plays out up at head level
+      // (above the desk, so it stays visible) and reads as "taking it easy"
+      // rather than hunched over a phone.
+      const ease = Math.sin(f * 0.06 + tn.ph) * 0.5; // slow relaxed sway
+      ctx.fillStyle = p.shirt;
+      // upper arms out to the sides, elbows raised
+      ctx.fillRect(x - 5.4, ty - 0.4, 2.2, 1.6);
+      ctx.fillRect(x + 3.2, ty - 0.4, 2.2, 1.6);
+      // forearms angle up from the elbows toward behind the head
+      ctx.fillRect(x - 5.2, ty - 4.6 + ease, 1.6, 4.4);
+      ctx.fillRect(x + 3.6, ty - 4.6 - ease, 1.6, 4.4);
+      // hands tucked behind the head, peeking at its top corners
       ctx.fillStyle = handC;
-      ctx.fillRect(x + 3.6, ty + 3.4 + (f % 4 < 2 ? 0 : 0.8), 1.2, 1.2);
-      // soft screen light on the face
-      ctx.fillStyle = "rgba(159,216,255,0.10)";
-      ctx.fillRect(x - 1.5, ty - 4.5, 4.5, 5);
+      ctx.fillRect(x - 4.2, ty - 5.4 + ease, 1.6, 1.6);
+      ctx.fillRect(x + 2.6, ty - 5.4 - ease, 1.6, 1.6);
     } else {
       ctx.fillRect(x - 4.2, ty + 1.5, 1.4, 4);
       ctx.fillRect(x + 2.8, ty + 1.5, 1.4, 4);
     }
 
     const hy = ty - 6 + slump;
+    const hx = x + lean; // the head rides the reclined torso when relaxed
     ctx.fillStyle = p.skin;
-    ctx.fillRect(x - 2.8, hy, 5.6, 5.6);
+    ctx.fillRect(hx - 2.8, hy, 5.6, 5.6);
     ctx.fillStyle = p.hair;
-    ctx.fillRect(x - 3, hy - 1, 6, 2.2);
-    ctx.fillRect(x - 3, hy - 0.5, 1.2, 3.4);
-    ctx.fillRect(x + 1.8, hy - 0.5, 1.2, 2.4);
+    ctx.fillRect(hx - 3, hy - 1, 6, 2.2);
+    ctx.fillRect(hx - 3, hy - 0.5, 1.2, 3.4);
+    ctx.fillRect(hx + 1.8, hy - 0.5, 1.2, 2.4);
     if (p.acc === 2) {
       ctx.fillStyle = p.accColor;
-      ctx.fillRect(x - 3.2, hy - 1.6, 6.4, 1.8);
-      ctx.fillRect(facingLeft ? x - 4.6 : x + 1.6, hy - 0.4, 3, 1);
+      ctx.fillRect(hx - 3.2, hy - 1.6, 6.4, 1.8);
+      ctx.fillRect(facingLeft ? hx - 4.6 : hx + 1.6, hy - 0.4, 3, 1);
     } else if (p.acc === 3) {
       ctx.fillStyle = p.accColor;
-      ctx.fillRect(x - 3.6, hy + 1.6, 1.2, 2.4);
-      ctx.fillRect(x + 2.4, hy + 1.6, 1.2, 2.4);
-      ctx.fillRect(x - 3.4, hy - 1.6, 6.8, 1);
+      ctx.fillRect(hx - 3.6, hy + 1.6, 1.2, 2.4);
+      ctx.fillRect(hx + 2.4, hy + 1.6, 1.2, 2.4);
+      ctx.fillRect(hx - 3.4, hy - 1.6, 6.8, 1);
     }
     const blink = (f + Math.floor(tn.ph * 7)) % 40 === 0;
     if (!blink) {
       ctx.fillStyle = "#14181b";
-      // eyes drop to the phone when idle, occasionally glancing back up
-      const phoneGaze = (st === "idle" || st === "complete") && !walking && f % 50 > 6 ? 0.9 : 0;
-      const ey = hy + 2.4 + slump * 0.5 + phoneGaze;
+      const ey = hy + 2.4 + slump * 0.5;
       if (reading) {
         // both eyes lowered and centered, peering down at the open book below
-        ctx.fillRect(x - 1.5, ey + 0.8, 1.1, 1.1);
-        ctx.fillRect(x + 0.4, ey + 0.8, 1.1, 1.1);
+        ctx.fillRect(hx - 1.5, ey + 0.8, 1.1, 1.1);
+        ctx.fillRect(hx + 0.4, ey + 0.8, 1.1, 1.1);
+      } else if (relaxed) {
+        // gazing up, easy and unfocused, while reclined
+        ctx.fillRect(hx - 1.6, ey - 0.6, 1.1, 1.1);
+        ctx.fillRect(hx + 0.4, ey - 0.6, 1.1, 1.1);
       } else if (facingLeft || (walking && tn.targetX < tn.x)) {
-        ctx.fillRect(x - 2.2, ey, 1.1, 1.1);
-        ctx.fillRect(x - 0.2, ey, 1.1, 1.1);
+        ctx.fillRect(hx - 2.2, ey, 1.1, 1.1);
+        ctx.fillRect(hx - 0.2, ey, 1.1, 1.1);
       } else {
-        ctx.fillRect(x - 0.8, ey, 1.1, 1.1);
-        ctx.fillRect(x + 1.2, ey, 1.1, 1.1);
+        ctx.fillRect(hx - 0.8, ey, 1.1, 1.1);
+        ctx.fillRect(hx + 1.2, ey, 1.1, 1.1);
       }
     }
     if (p.acc === 1) {
       ctx.strokeStyle = "#23262a";
       ctx.lineWidth = 0.5;
       const ey = hy + 2.6;
-      ctx.strokeRect(x - 1.4, ey - 0.8, 1.9, 1.9);
-      ctx.strokeRect(x + 0.9, ey - 0.8, 1.9, 1.9);
+      ctx.strokeRect(hx - 1.4, ey - 0.8, 1.9, 1.9);
+      ctx.strokeRect(hx + 0.9, ey - 0.8, 1.9, 1.9);
     }
 
     // the open book is drawn after the head so it sits in front of the face
     // (the dev is holding it up to read), not occluded behind the skull; still
     // drawn within drawToon, so the desk/monitor edge occludes only its far corner
     if (reading) {
-      // an open book held low and tilted up toward the face: drawn as a flat
-      // spread seen from above, so the page block is a trapezoid (far/top edge
-      // foreshortened narrow, near/bottom edge wide) and the TEXT faces the dev's
-      // downward gaze rather than facing away toward the viewer.
+      // an open book held up in front of the face, pages turned toward the dev
+      // (who faces its monitor on the left): the viewer sees the OUTSIDE covers,
+      // not the text, so the page faces the reader rather than the screen. Drawn
+      // as two cover panels meeting at a raised central spine, forming a shallow
+      // V that opens away from us toward the dev's gaze.
       const bob = Math.sin(f * 0.16 + tn.ph) * 0.3;
-      const yT = ty - 1.4 + bob, yB = ty + 3 + bob; // far (top) and near (bottom) edges
-      const wT = 2.7, wB = 3.9; // half-widths: wider toward the viewer for perspective
+      const sx = x - 0.5;                       // spine, held slightly toward the monitor
+      const yT = ty - 1.8 + bob, yB = ty + 3.6 + bob; // top and bottom edges
+      const wHalf = 3.6;
       const hue = BOOK_HUES[tn.booksShown % BOOK_HUES.length];
-      const tri = (
-        a: [number, number], b: [number, number], c: [number, number], d: [number, number], fill: string
-      ) => {
+      const panel = (toX: number, fill: string) => {
         ctx.beginPath();
-        ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(d[0], d[1]);
+        ctx.moveTo(sx, yT); ctx.lineTo(toX, yT + 0.8);
+        ctx.lineTo(toX, yB - 0.8); ctx.lineTo(sx, yB);
         ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
       };
-      // cover backing, a touch proud of the page block on every side
-      tri([x - wT - 0.6, yT - 0.5], [x + wT + 0.6, yT - 0.5], [x + wB + 0.7, yB + 0.5], [x - wB - 0.7, yB + 0.5], `hsl(${hue} 42% 38%)`);
-      // the two open pages
-      tri([x - wT, yT], [x + wT, yT], [x + wB, yB], [x - wB, yB], "#e9e3d2");
-      // center gutter (the spine crease) running near→far
-      ctx.strokeStyle = "#b6ae98";
-      ctx.lineWidth = 0.6;
-      ctx.beginPath(); ctx.moveTo(x, yT); ctx.lineTo(x, yB); ctx.stroke();
-      // a few lines of text on each page, foreshortened with the page
-      ctx.fillStyle = "rgba(70,70,70,0.45)";
-      for (let i = 0; i < 3; i++) {
-        const f2 = (i + 1) / 4; // down the page, near→far
-        const ly = yT + (yB - yT) * f2;
-        const hw = wT + (wB - wT) * f2;
-        ctx.fillRect(x - hw + 0.6, ly, hw * 0.62, 0.4); // left page
-        ctx.fillRect(x + 0.6, ly, hw * 0.62, 0.4);      // right page
-      }
-      // hands cupping the near corners
+      panel(sx - wHalf, `hsl(${hue} 44% 33%)`); // left cover (in shadow)
+      panel(sx + wHalf, `hsl(${hue} 46% 43%)`); // right cover (lit)
+      // the page block peeks along the top edge as a thin cream strip
+      ctx.fillStyle = "#e9e3d2";
+      ctx.fillRect(sx - wHalf, yT + 0.4, wHalf * 2, 0.7);
+      // raised spine ridge down the middle
+      ctx.fillStyle = `hsl(${hue} 52% 53%)`;
+      ctx.fillRect(sx - 0.3, yT, 0.6, yB - yT);
+      // hands cupping the lower corners
       ctx.fillStyle = handC;
-      ctx.fillRect(x - wB - 0.6, yB - 0.8, 1.5, 1.5);
-      ctx.fillRect(x + wB - 0.9, yB - 0.8, 1.5, 1.5);
+      ctx.fillRect(sx - wHalf - 0.3, yB - 1.4, 1.5, 1.5);
+      ctx.fillRect(sx + wHalf - 1.2, yB - 1.4, 1.5, 1.5);
     }
 
     // skill books in the dev's arms on the way back from the shelf (it leaves

@@ -21,10 +21,11 @@ DevTower collapses it into **a single view**. Every repo, worktree, and live ses
 - **A living campus.** Each repo is an office room; rooms share walls into one contiguous building. Click a ghost slot to stack the next worktree on top, or reserve another repo as its own tower. New repos animate themselves into existence.
 - **Pixel devs per agent.** One sprite per session with a deterministic look. Animation follows state: active types, **waiting raises a hand**, complete cheers, error slumps, idle breathes. Crowded rooms huddle at the whiteboard.
 - **Auto-discovered Claude sessions.** Live Claude Code CLI sessions are found from `~/.claude/projects` and placed in the tower automatically - no setup. A phantom-session filter keeps only sessions whose process is actually running.
-- **Spawn a dev into a worktree.** Reserve an empty cell, pick a folder, hit **+ DEV**: DevTower creates a git worktree and a fresh branch (or runs in the project dir) and launches Claude in a native terminal rooted there.
+- **Sub-agent badge.** When a session fans out work with the Task/Agent tool, a small bot glyph and count appear next to the dev - so you can see who has helpers running, including long-lived and background sub-agents.
+- **Spawn a dev into a worktree.** Reserve an empty cell, pick a folder, hit **+ DEV**: DevTower creates a git worktree under `.claude/worktrees/` with a Claude-style three-word branch name (like `swift-gliding-heron`), or runs in the project dir, then launches Claude in a native terminal rooted there.
 - **Native diffs and terminals.** Click a changed file for the real VS Code diff (HEAD <-> working tree). Each agent gets a native integrated terminal in its worktree - the terminal *is* the conversation.
-- **Changes view.** The selected agent's files split into Staged / Changes with inline stage, unstage, stage-all, and unstage-all, backed by real `git`.
-- **Pull requests in-scene.** A PR board shows per-worktree PRs with checks and review status, a standalone billboard lists PRs requesting your review, and a **Review Dispatch** modal spawns a reviewer agent in an isolated worktree with the skills, effort, and instructions you choose.
+- **Changes view + a full file viewer.** The selected agent's files split into Staged / Changes with inline stage, unstage, stage-all, and unstage-all, backed by real `git`. A second *Selected Directory* tree lets you browse and edit **any** file in the worktree, **drag to move** files, and **right-click to delete** them - each with a one-time confirm and a "don't ask again" option.
+- **Pull requests in-scene.** A PR board shows per-worktree PRs with checks and review status, a standalone billboard lists PRs requesting your review, and a **Review Dispatch** modal spawns a reviewer agent in an isolated worktree with the skills, effort, and instructions you choose. (DevTower won't open a PR for you - just ask the agent in its terminal to create it however you like.)
 
 ## Getting started
 
@@ -61,12 +62,23 @@ PR features authenticate with a GitHub **Personal Access Token** you add in the 
 
 DevTower uses the token only inside the extension: it is passed to the `gh` subprocess it spawns (via the `GH_TOKEN` environment variable) and is never sent to the webview, your agent terminals, git, or any network call DevTower makes itself. The settings page recommends a **fine-grained, read-only** token scoped to just the repositories you choose; you can review which features your token unlocks, and remove it, from the same page.
 
-<!--
-More screenshots: drop captures into media/ and uncomment.
-![The DevTower campus with live agents](media/screenshot-campus.png)
-![Agent panel: context bar, model, branch, quick actions](media/screenshot-agent.png)
-![PR board and Review Dispatch](media/screenshot-prs.png)
--->
+## A look around
+
+The campus at a glance - telemetry across every room, the PRs-to-review billboard, and a live room board, all in one window:
+
+![The DevTower campus: run / wait / err / crew telemetry, a PRs-to-review billboard, and a room board with branch and change counts.](media/shot-campus.png)
+
+A single room: the worktree's board (branch, unstaged / staged / commit counts, PR cell), the **USE DIR** and **+ DEV** controls, the ghost slot to stack the next worktree, and the dev at their desk (here with a sub-agent badge):
+
+![A single DevTower room with its board, controls, and a dev showing a sub-agent badge.](media/shot-room.png)
+
+The agent panel - context-window bar, model, skills, a button into the agent's Claude terminal, and a link to its PR when one exists:
+
+![The DevTower agent panel.](media/shot-agent-panel.png)
+
+The GitHub access page - connected account, scopes, the features your token unlocks, and pre-filled links to mint a fine-grained read-only token:
+
+![The DevTower GitHub access settings page.](media/shot-settings-github.png)
 
 ## Settings
 

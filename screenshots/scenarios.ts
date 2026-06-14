@@ -22,6 +22,9 @@ export interface Scenario {
   connected?: boolean;
   /** Open the agent side-panel on this agent id (posts a focusAgent message). */
   focusAgent?: string;
+  /** Frame this island's whole tower (calls DevTowerCrew.focusIsland) so every
+   *  stacked worktree room sits fully in view instead of the ground-up overview. */
+  focusIsland?: string;
 }
 
 const board = (over: Partial<Record<string, any>>) => ({
@@ -71,6 +74,42 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    // README hero: a tidy 2-room tower at the scene's natural overview zoom, so
+    // both worktree rooms sit fully in frame (roof + sky above, no cropped top
+    // floor) - the context-switching pitch made literal. The bottom room holds
+    // an active + a waiting dev (fills run/wait telemetry and shows the "?"
+    // glyph); the top room carries a live PR so the board's PR cell is shown.
+    name: "campus",
+    config: { eco: false },
+    usage: { fiveHour: { pct: 62 }, sevenDay: { pct: 41 } },
+    state: {
+      agents: [
+        { id: "a1", name: "Atlas", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: ["code-review"], contextTokens: 84_000, elapsed: "12m" },
+        { id: "a2", name: "Boris", state: "active", repo: "DevTower", model: "sonnet-4.6", worktree: "/wt/feat", branch: "feat/streaming", skills: [], contextTokens: 150_000, elapsed: "4m" },
+        { id: "a3", name: "Cleo", state: "waiting", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: ["security-review"], contextTokens: 33_000, elapsed: "27m", question: "Run the destructive migration?" },
+      ],
+      rooms: [
+        { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [
+          { path: "/repo", branch: "main" },
+          { path: "/wt/feat", branch: "feat/streaming" },
+        ] },
+      ],
+      boards: {
+        "/repo": board({ branch: "main", modified: 2, unstagedAdd: 18, unstagedDel: 4 }),
+        "/wt/feat": board({ branch: "feat/streaming", modified: 3, unstagedAdd: 40, unstagedDel: 6, ahead: 2, unpushed: 2,
+          pr: { number: 318, title: "SSE streaming for /v1/messages", url: "https://github.com/acme/x/pull/318", draft: true, checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5, review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2, comments: 0 } }),
+      },
+    },
+    prs: {
+      crew: [
+        { id: "DevTower#318", number: 318, title: "SSE streaming for /v1/messages", repo: "DevTower", branch: "feat/streaming", url: "https://github.com/acme/x/pull/318", isDraft: true, checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5, review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2, comments: 0, author: "you", agentId: "a2" },
+      ],
+      review: [
+        { id: "acme/infra#87", number: 87, title: "Terraform: split staging state", repo: "acme/infra", branch: "infra/split", url: "https://github.com/acme/infra/pull/87", isDraft: false, checks: "none", checksPass: 0, checksFailed: 0, checksRunning: 0, checksTotal: 0, review: "required", approvals: 0, changesRequested: 0, reviewersPending: 1, comments: 0, author: "mrivera" },
+      ],
+    },
+  },
+  {
     // a quiet tower: one active agent, low usage, no PRs. Good baseline for HUD
     // before/after where the busy scene is visually noisy.
     name: "calm",
@@ -79,6 +118,23 @@ export const SCENARIOS: Scenario[] = [
     state: {
       agents: [
         { id: "a1", name: "Atlas", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: [], contextTokens: 22_000, elapsed: "3m" },
+      ],
+      rooms: [
+        { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] },
+      ],
+      boards: { "/repo": board({ branch: "main", modified: 2, unstagedAdd: 18, unstagedDel: 4 }) },
+    },
+    prs: { crew: [], review: [] },
+  },
+  {
+    // a single waiting agent on the ground floor so the "?" question glyph above
+    // its head is fully on-canvas. Baseline for the question-icon before/after.
+    name: "asking",
+    config: { eco: false },
+    usage: { fiveHour: { pct: 18 }, sevenDay: { pct: 9 } },
+    state: {
+      agents: [
+        { id: "a1", name: "Cleo", state: "waiting", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: [], contextTokens: 33_000, elapsed: "27m", question: "Run the destructive migration?" },
       ],
       rooms: [
         { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] },
