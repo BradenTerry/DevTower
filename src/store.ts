@@ -157,6 +157,13 @@ export class DevTowerStore {
   private _onFocusWorktree = new vscode.EventEmitter<string | undefined>();
   readonly onDidChangeFocusWorktree = this._onFocusWorktree.event;
   private focusedWorktree?: string;
+  // The directory mounted in the "Selected Directory" view via a room's USE DIR
+  // button. UNLIKE focusedWorktree (which Source Control deliberately clears on
+  // agent select), this is sticky: only USE DIR sets it and only removing that
+  // room clears it, so clicking around agents never empties the file tree.
+  private _onSelectedDir = new vscode.EventEmitter<string | undefined>();
+  readonly onDidChangeSelectedDir = this._onSelectedDir.event;
+  private selectedDir?: string;
   private watcher?: vscode.FileSystemWatcher;
   private stateFileAbs?: string;
 
@@ -185,6 +192,17 @@ export class DevTowerStore {
   setFocusedWorktree(dir: string | undefined): void {
     this.focusedWorktree = dir;
     this._onFocusWorktree.fire(dir);
+  }
+
+  getSelectedDir(): string | undefined {
+    return this.selectedDir;
+  }
+
+  /** Mount (or clear) the sticky directory shown by the Selected Directory view.
+   *  Set only by USE DIR / its restore; cleared only when that room is removed. */
+  setSelectedDir(dir: string | undefined): void {
+    this.selectedDir = dir;
+    this._onSelectedDir.fire(dir);
   }
 
   list(): Agent[] {
