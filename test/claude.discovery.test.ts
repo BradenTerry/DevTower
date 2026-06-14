@@ -326,6 +326,54 @@ describe("ClaudeDiscovery binding", () => {
     expect(fs.existsSync(path.join(waitingDir, `${ext}.json`))).toBe(false);
   });
 
+  /** Write a sub-agent transcript under <uuid>/subagents/, mtime `agoSec` ago —
+   *  the separate file a foreground spawn writes while the parent stays frozen. */
+  const writeSubagent = (uuid: string, agoSec = 0) => {
+    const dir = path.join(proj, uuid, "subagents");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "agent-deadbeef.jsonl");
+    fs.writeFileSync(file, JSON.stringify({ type: "assistant", isSidechain: true }) + "\n");
+    if (agoSec) {
+      const t = Date.now() / 1000 - agoSec;
+      fs.utimesSync(file, t, t);
+    }
+  };
+
+  it("drops the hand once a sub-agent advances past the marker, though the parent transcript is frozen", async () => {
+    // The bug: a permission prompt raised the hand, the operator answered, then the
+    // session ran a foreground sub-agent. The parent transcript stays silent for the
+    // whole spawn (the sub-agent writes its OWN file), so the answered marker keeps
+    // marker.ts ahead of the parent mtime and the hand sticks up until the spawn ends.
+    const store = newStore();
+    const disc = discovery(store, { [wt]: 1 });
+    const ext = writeSession(wt, 30); // parent went quiet 30s ago (blocked on the spawn)
+    writeMarker(ext, "Claude needs your permission to read files", -10); // answered 10s before the freeze
+    writeSubagent(ext, 0); // sub-agent is actively writing now → past the marker
+
+    await disc.refresh();
+
+    expect(store.list()[0].state).not.toBe("waiting"); // hand falls: the session moved on
+    await new Promise((r) => setTimeout(r, 10)); // clearMarker is fire-and-forget
+    expect(fs.existsSync(path.join(waitingDir, `${ext}.json`))).toBe(false);
+  });
+
+  it("holds the hand when a sub-agent is blocked on its own permission (its file frozen too)", async () => {
+    // The mirror case: the sub-agent itself is parked on a prompt, so neither the
+    // parent NOR the sub-agent file is advancing. A marker newer than both must keep
+    // the hand up — folding in sub-agent activity must not mask a real pending prompt.
+    const store = newStore();
+    const disc = discovery(store, { [wt]: 1 });
+    const ext = writeSession(wt, 30);
+    writeSubagent(ext, 20); // sub-agent also quiet (blocked)
+    writeMarker(ext, "Claude needs your permission to read files", 5); // fresh, past all activity
+
+    await disc.refresh();
+
+    const a = store.list()[0];
+    expect(a.state).toBe("waiting");
+    expect(a.question).toBe("Claude needs your permission to read files");
+  });
+
   it("keeps a dev in place across /clear, rebinding the new session to it", async () => {
     // a dev is launched and adopts its session
     const store = newStore();

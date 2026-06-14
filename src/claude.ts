@@ -745,13 +745,22 @@ export class ClaudeDiscovery {
         if (!st || now - st.mtimeMs > maxAge || st.size === 0) continue;
         const meta = await readMeta(file, st.size);
         if (!meta.cwd) continue;
-        const age = now - st.mtimeMs;
         const sessionId = fn.slice(0, -6); // strip ".jsonl"
+        // A foreground sub-agent BLOCKS the parent's main thread, so the parent
+        // transcript falls silent for the whole spawn while the sub-agent writes
+        // its OWN file under <sessionId>/subagents/. Fold that activity in as the
+        // session's real last-active time. Without it a session running a spawn
+        // looks idle, and — the bug this fixes — an already-answered permission
+        // marker keeps the hand up: marker.ts stays ahead of the frozen parent
+        // mtime until the sub-agent returns. A genuinely blocked sub-agent isn't
+        // writing, so its mtime stays behind the marker and the hand holds.
+        const activityMtime = Math.max(st.mtimeMs, await newestSubMtime(pdir, sessionId));
+        const age = now - activityMtime;
         // a fresh Notification marker overrides everything: the harness told us
-        // this session is parked. Once it resumes, the transcript advances past
-        // the marker's ts — drop the now-stale marker so the hand falls.
+        // this session is parked. Once it resumes, activity advances past the
+        // marker's ts — drop the now-stale marker so the hand falls.
         const marker = markers.get(sessionId);
-        const waitingByHook = !!marker && marker.ts > st.mtimeMs;
+        const waitingByHook = !!marker && marker.ts > activityMtime;
         if (marker && !waitingByHook) clearMarker(sessionId, this.deps.waitingDir);
         // otherwise: waiting ONLY when the assistant actually asked something; a
         // turn that ends in a statement is just done → idle (off the clock)
@@ -799,6 +808,22 @@ interface Found {
   contextTokens?: number;
   skills?: string[];
   subagents?: number;
+}
+
+/** Newest mtime among a session's sub-agent transcripts. They live in a sibling
+ *  `<sessionId>/subagents/agent-*.jsonl` dir, NOT in the parent .jsonl, so the
+ *  parent's mtime stays frozen while a foreground spawn runs. Returns 0 when the
+ *  session has spawned none (the common case). */
+export async function newestSubMtime(projectDir: string, sessionId: string): Promise<number> {
+  const dir = path.join(projectDir, sessionId, "subagents");
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  let newest = 0;
+  for (const fn of files) {
+    if (!fn.endsWith(".jsonl")) continue;
+    const st = await fs.promises.stat(path.join(dir, fn)).catch(() => null);
+    if (st && st.mtimeMs > newest) newest = st.mtimeMs;
+  }
+  return newest;
 }
 
 /** Read head (for cwd) + tail (for last role / prompt / model) of a transcript. */
