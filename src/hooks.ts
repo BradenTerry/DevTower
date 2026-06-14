@@ -24,6 +24,7 @@ import { dlog } from "./debugLog";
 
 export const WAITING_DIR = path.join(os.homedir(), ".claude", "devtower", "waiting");
 export const SUCCESSION_DIR = path.join(os.homedir(), ".claude", "devtower", "succession");
+export const RESUME_DIR = path.join(os.homedir(), ".claude", "devtower", "resume");
 export const ENDED_DIR = path.join(os.homedir(), ".claude", "devtower", "ended");
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 const MARKER_MAX_AGE = 24 * 3_600_000; // prune markers for sessions long gone
@@ -31,6 +32,10 @@ const MARKER_MAX_AGE = 24 * 3_600_000; // prune markers for sessions long gone
 // (terminal closed right after) forget the marker so it can't later hijack an
 // unrelated session that happens to start in the same worktree.
 const SUCCESSION_MAX_AGE = 10 * 60_000;
+// a resume-picker redirect is consumed on the first poll that sees the resumed
+// transcript; if its session never surfaces (terminal closed right after) forget
+// the marker so it can't later hijack an unrelated launch reusing the same id.
+const RESUME_MAX_AGE = 10 * 60_000;
 // an exit retires its dev on the very next poll; the marker is cleared then. The
 // age cap only guards against a marker whose poll never ran (extension asleep) —
 // keep it short so a stale one can't retire a same-uuid session resumed later.
@@ -172,6 +177,53 @@ export async function readSuccessionMarkers(dir = SUCCESSION_DIR): Promise<Map<s
 
 /** Drop a succession marker once its successor session has been rebound. */
 export function clearSuccessionMarker(sessionId: string, dir = SUCCESSION_DIR): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return;
+  fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
+}
+
+/** A SessionStart(resume) in a DevTower-launched terminal drops one of these,
+ *  keyed by the RESUMED session's uuid (see media/devtower-session.js). When the
+ *  operator spawns a dev (which launches `claude --session-id <launchId>`) and
+ *  then picks a DIFFERENT, pre-existing session from Claude's resume picker, the
+ *  resumed transcript keeps its own uuid — so the placeholder waiting on
+ *  `launchId` would never bind it, and the resumed session would surface as a
+ *  separate stranger in its original worktree. The launch id links the resumed
+ *  session back to that waiting placeholder so discovery adopts it in place. */
+export interface ResumeMarker {
+  cwd: string;
+  ts: number;
+  /** the resuming terminal's launch id — the `--session-id` its claude process
+   *  was started with, i.e. the placeholder DevTower is waiting to bind. */
+  launchId: string;
+}
+
+/** Read the resume-redirect markers, keyed by the resumed session id, pruning
+ *  stale ones (a resume whose transcript never surfaced before it aged out). */
+export async function readResumeMarkers(dir = RESUME_DIR): Promise<Map<string, ResumeMarker>> {
+  const out = new Map<string, ResumeMarker>();
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const now = Date.now();
+  for (const fn of files) {
+    if (!fn.endsWith(".json")) continue;
+    const id = fn.slice(0, -5);
+    const full = path.join(dir, fn);
+    try {
+      const raw = await fs.promises.readFile(full, "utf8");
+      const m = JSON.parse(raw) as ResumeMarker;
+      if (typeof m?.ts !== "number" || now - m.ts > RESUME_MAX_AGE || !m.launchId) {
+        await fs.promises.unlink(full).catch(() => {});
+        continue;
+      }
+      out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts, launchId: String(m.launchId).toLowerCase() });
+    } catch {
+      /* partial write or garbage — ignore this poll */
+    }
+  }
+  return out;
+}
+
+/** Drop a resume marker once its resumed session has been bound to a dev. */
+export function clearResumeMarker(sessionId: string, dir = RESUME_DIR): void {
   if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return;
   fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
 }

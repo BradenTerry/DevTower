@@ -21,6 +21,7 @@ describe("ClaudeDiscovery binding", () => {
   let wt: string; // a worktree the placeholders live in
   let waitingDir: string; // fake ~/.claude/devtower/waiting
   let succDir: string; // fake ~/.claude/devtower/succession
+  let resumeDir: string; // fake ~/.claude/devtower/resume
   let endedDir: string; // fake ~/.claude/devtower/ended
 
   beforeEach(() => {
@@ -30,6 +31,7 @@ describe("ClaudeDiscovery binding", () => {
     wt = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-wt-"));
     waitingDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-wait-"));
     succDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-succ-"));
+    resumeDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-resume-"));
     endedDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-ended-"));
   });
   afterEach(() => {
@@ -37,6 +39,7 @@ describe("ClaudeDiscovery binding", () => {
     fs.rmSync(wt, { recursive: true, force: true });
     fs.rmSync(waitingDir, { recursive: true, force: true });
     fs.rmSync(succDir, { recursive: true, force: true });
+    fs.rmSync(resumeDir, { recursive: true, force: true });
     fs.rmSync(endedDir, { recursive: true, force: true });
   });
 
@@ -46,6 +49,14 @@ describe("ClaudeDiscovery binding", () => {
     fs.writeFileSync(
       path.join(succDir, `${uuid}.json`),
       JSON.stringify({ cwd, source: "clear", ts: Date.now(), ...(launchId ? { launchId } : {}) })
+    );
+
+  /** Drop a SessionStart(resume) marker: a DevTower terminal launched with
+   *  `--session-id <launchId>` resumed the pre-existing session `uuid`. */
+  const writeResume = (uuid: string, launchId: string, cwd = wt) =>
+    fs.writeFileSync(
+      path.join(resumeDir, `${uuid}.json`),
+      JSON.stringify({ cwd, source: "resume", ts: Date.now(), launchId })
     );
 
   /** Drop a SessionEnd-hook marker for a session that genuinely exited. */
@@ -93,6 +104,7 @@ describe("ClaudeDiscovery binding", () => {
       liveCounts: live(counts, sessionIds),
       waitingDir,
       successionDir: succDir,
+      resumeDir,
       endedDir,
     });
 
@@ -347,6 +359,84 @@ describe("ClaudeDiscovery binding", () => {
     // marker consumed once rebound
     await new Promise((r) => setTimeout(r, 10)); // unlink is fire-and-forget
     expect(fs.existsSync(path.join(succDir, `${u2}.json`))).toBe(false);
+  });
+
+  it("resume picker: binds the resumed foreign session to the waiting placeholder (no twin, no orphan)", async () => {
+    // a dev is spawned in worktree wt: `claude --session-id <launchX>` launched,
+    // placeholder waiting on launchX. The operator then picks a DIFFERENT,
+    // pre-existing session (uuidY, originally from another branch wt2) from
+    // Claude's resume picker. The SessionStart(resume) hook leaves a marker
+    // linking uuidY back to launchX.
+    const wt2 = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-wt2-"));
+    try {
+      const store = newStore();
+      const launchX = randomUUID();
+      // the resuming claude runs with --session-id launchX; its transcript is uuidY
+      const liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt2, 1]]), sessionIds: new Set([launchX]) };
+      const disc = new ClaudeDiscovery(store, {
+        projectsRoot: root, waitingDir, successionDir: succDir, resumeDir, liveCounts: async () => liveSnapshot,
+      });
+      placeholder(store, "isle-a1", wt);
+      disc.expectSession("isle-a1", launchX);
+      const uuidY = randomUUID();
+      writeSession(wt2, 0, uuidY); // resumed transcript reports its original branch
+      writeResume(uuidY, launchX);
+
+      await disc.refresh();
+
+      // exactly one agent: the placeholder, now driving the resumed session in place
+      const all = store.list();
+      expect(all).toHaveLength(1);
+      const a = store.get("isle-a1")!;
+      expect(a.transcriptPath).toBe(path.join(proj, `${uuidY}.jsonl`));
+      expect(a.external).toBeFalsy(); // adopted into the dev, not a stranger
+      expect(a.worktree).toBe(wt); // stays in the room the operator dropped it into
+      expect(store.get("cc-" + uuidY.slice(0, 8))).toBeUndefined(); // no twin
+      // marker consumed once bound
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fs.existsSync(path.join(resumeDir, `${uuidY}.json`))).toBe(false);
+    } finally {
+      fs.rmSync(wt2, { recursive: true, force: true });
+    }
+  });
+
+  it("resume picker: culls a twin that already surfaced before the redirect was applied", async () => {
+    // a poll lands AFTER the resumed session is on disk but BEFORE the resume
+    // marker is read: it surfaces as an external twin in its own branch while the
+    // placeholder still waits. The next poll (marker present) must fold them into
+    // one dev — twin gone, placeholder bound.
+    const wt2 = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-wt2-"));
+    try {
+      const store = newStore();
+      const launchX = randomUUID();
+      const liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt2, 1]]), sessionIds: new Set([launchX]) };
+      const disc = new ClaudeDiscovery(store, {
+        projectsRoot: root, waitingDir, successionDir: succDir, resumeDir, liveCounts: async () => liveSnapshot,
+      });
+      placeholder(store, "isle-a1", wt);
+      disc.expectSession("isle-a1", launchX);
+      const uuidY = randomUUID();
+      writeSession(wt2, 0, uuidY);
+
+      // poll 1: no marker yet → twin appears beside the still-waiting placeholder
+      await disc.refresh();
+      expect(store.list()).toHaveLength(2);
+      expect(store.get("cc-" + uuidY.slice(0, 8))!.external).toBe(true);
+      expect(store.get("isle-a1")!.transcriptPath).toBeUndefined();
+
+      // poll 2: marker present → twin culled, placeholder adopts the session
+      writeResume(uuidY, launchX);
+      await disc.refresh();
+
+      const all = store.list();
+      expect(all).toHaveLength(1);
+      const a = store.get("isle-a1")!;
+      expect(a.transcriptPath).toBe(path.join(proj, `${uuidY}.jsonl`));
+      expect(a.external).toBeFalsy();
+      expect(store.get("cc-" + uuidY.slice(0, 8))).toBeUndefined();
+    } finally {
+      fs.rmSync(wt2, { recursive: true, force: true });
+    }
   });
 
   it("parks the cleared dev for the poll that lands in the gap before its successor surfaces", async () => {
