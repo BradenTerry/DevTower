@@ -33,6 +33,8 @@
     if (!window.DevTowerCrew) return;
     window.DevTowerCrew.mount($("#crew-wrap"), $("#crew-canvas"));
     window.DevTowerCrew.onSelect((id) => selectAgent(id, true));
+    // clicking off an agent (empty space or another room) closes its stat panel
+    if (DevTowerCrew.onDeselect) DevTowerCrew.onDeselect(() => { if (panelOpen) closePanel(); });
     if (DevTowerCrew.onPickRoom) DevTowerCrew.onPickRoom((room) => vscode.postMessage({ type: "pickRoom", room }));
     if (DevTowerCrew.onUseDir) DevTowerCrew.onUseDir((room) => vscode.postMessage({ type: "useDir", room }));
     window.DevTowerCrew.onReserve((floor, col) => vscode.postMessage({ type: "reserveRoom", floor, col }));
@@ -595,6 +597,7 @@
       if (window.DevTowerCrew) {
         window.DevTowerCrew.setBoards(m.boards || {});
         window.DevTowerCrew.setRooms(m.rooms || []);
+        if (window.DevTowerCrew.setUsedDir) window.DevTowerCrew.setUsedDir(m.usedDir);
       }
       pushCrew();
       renderPanel();

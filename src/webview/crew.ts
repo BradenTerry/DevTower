@@ -62,6 +62,7 @@ const ACCENTS = ["#ff6055", "#56c7ff", "#3ee089", "#ffb13d", "#b98cff", "#ff8fc7
 /** Desaturate + dim one persona color (hsl() or #hex) for the ghosted render of
  *  an external session — strips the chroma so it reads as gray, not "ours". */
 function ghostColor(c: string): string {
+  if (typeof c !== "string") return "#888888"; // never let a bad color throw in the draw loop
   const m = /^hsl\((\d+)\s+(\d+)%\s+(\d+)%\)$/.exec(c);
   if (m) return `hsl(${m[1]} 7% ${Math.round(+m[3] * 0.82)}%)`;
   const h = c.replace("#", "");
@@ -92,10 +93,14 @@ function persona(id: string) {
     shirt: `hsl(${hue} 45% 52%)`,
     shirtDark: `hsl(${hue} 48% 38%)`,
     pants: `hsl(${(hue + 200) % 360} 16% 30%)`,
-    skin: SKINS[(h >> 3) % SKINS.length],
-    hair: HAIRS[(h >> 5) % HAIRS.length],
-    acc: (h >> 7) % 4, // 0 none, 1 glasses, 2 cap, 3 headphones
-    accColor: ACCENTS[(h >> 9) % ACCENTS.length],
+    // unsigned shifts (>>>): `hash` fills all 32 bits, so a signed `>>` on a
+    // top-bit-set hash goes negative, and `negative % len` is negative — that
+    // indexed SKINS/HAIRS/ACCENTS as undefined, which crashed ghostColor() every
+    // frame for external sessions and froze the scene.
+    skin: SKINS[(h >>> 3) % SKINS.length],
+    hair: HAIRS[(h >>> 5) % HAIRS.length],
+    acc: (h >>> 7) % 4, // 0 none, 1 glasses, 2 cap, 3 headphones
+    accColor: ACCENTS[(h >>> 9) % ACCENTS.length],
   };
 }
 
@@ -476,7 +481,13 @@ class PixelCrew {
   private curInsetR = 0;
 
   private selectedId?: string;
+  /** building key whose "USE DIR" the user pressed: that room is the one the
+   *  Selected Directory view mirrors, so its button reads "SELECTED DIR". */
+  private usedDirRoom?: string;
   private onSelectCb: (id: string) => void = () => {};
+  /** fired when the user clicks OFF the selected agent (empty space or another
+   *  room), so the host can close that agent's stat panel. */
+  private onDeselectCb: () => void = () => {};
   /** fired when a room/building is clicked (even an empty one), so the host can
    *  point the Source Control panel at that worktree. room = building key. */
   private onPickRoomCb: (room: string) => void = () => {};
@@ -641,6 +652,7 @@ class PixelCrew {
   }
 
   onSelect(cb: (id: string) => void) { this.onSelectCb = cb; }
+  onDeselect(cb: () => void) { this.onDeselectCb = cb; }
   onPickRoom(cb: (room: string) => void) { this.onPickRoomCb = cb; }
   onUseDir(cb: (room: string) => void) { this.onUseDirCb = cb; }
   onReserve(cb: (floor: number, col: number) => void) { this.onReserveCb = cb; }
@@ -1419,6 +1431,14 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** Mark which room's worktree is mounted in the Selected Directory view, so
+   *  that room's button reads "SELECTED DIR" instead of "USE DIR". */
+  setUsedDir(room: string | undefined) {
+    if (this.usedDirRoom === room) return;
+    this.usedDirRoom = room;
+    this.invalidate();
+  }
+
   setSelected(id: string | undefined) {
     this.selectedId = id;
     // a freshly spawned dev you selected: ride along into their room
@@ -1450,6 +1470,36 @@ class PixelCrew {
     const fitW = (cw * 0.9) / this.focus.spanW;
     const fitH = (ch * 0.86) / this.focus.spanH;
     return clamp(Math.min(fitW, fitH) * this.zoomMul, 0.7, 14);
+  }
+
+  /** Screen-space rects for a room's top-row HUD controls (✕, + DEV, USE DIR).
+   *  Each is anchored to the room and sized against the LIVE zoom (cam.z), so the
+   *  controls live in world space: zoom out and they shrink with the room (you
+   *  zoom into the room to read them); zoom in and they grow. Shared by the
+   *  hit-test (pick) and the renderer so they never diverge. */
+  private topRects(r: Room): {
+    close: { x: number; y: number; w: number; h: number };
+    dev: { x: number; y: number; w: number; h: number };
+    useDir: { x: number; y: number; w: number; h: number; selected: boolean };
+  } {
+    const s = this.cam.z;
+    const top = r.baseY - ROOM_H + 2;
+    const h = 8 * s;
+    const selected = !!this.usedDirRoom && r.name === this.usedDirRoom;
+    const closeR = this.screenOf(r.x0 + ROOM_W - 2, top);
+    const devR = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, top);
+    const useR = this.screenOf(r.x0 + ROOM_W - DOOR_W - 18, top);
+    const closeW = 8 * s, devW = 16 * s, useW = (selected ? 48 : 28) * s;
+    return {
+      close: { x: closeR.x - closeW, y: closeR.y, w: closeW, h },
+      dev: { x: devR.x - devW, y: devR.y, w: devW, h },
+      useDir: { x: useR.x - useW, y: useR.y, w: useW, h, selected },
+    };
+  }
+
+  /** Screen-space point-in-rect test (mx,my are already in screen px). */
+  private hit(mx: number, my: number, b: { x: number; y: number; w: number; h: number }): boolean {
+    return mx > b.x && mx < b.x + b.w && my > b.y && my < b.y + b.h;
   }
 
   /* ============ LOOP ============ */
@@ -1888,15 +1938,18 @@ class PixelCrew {
     // directory; a worktree building's ✕ removes just that worktree.
     for (const r of this.rooms.values()) {
       if (r.built < 0.95) continue;
-      const base = r.baseY;
-      if (this.inRect(mx, my, r.x0 + ROOM_W - 10, base - ROOM_H + 2, 8, 8)) {
+      const tr = this.topRects(r);
+      if (this.hit(mx, my, tr.close)) {
         return r.isMain ? { removeBtn: r.island } : { removeWtBtn: r.name, island: r.island };
       }
-      if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 17, base - ROOM_H + 2, 16, 8)) {
+      if (this.hit(mx, my, tr.dev)) {
         return { addDev: { island: r.island, key: r.name } };
       }
-      // "USE DIR" sits just left of "+ DEV": point the Explorer at this worktree
-      if (this.inRect(mx, my, r.x0 + ROOM_W - DOOR_W - 46, base - ROOM_H + 2, 28, 8)) {
+      // "USE DIR" / "SELECTED DIR" sits just left of "+ DEV": mount this
+      // worktree in the Selected Directory view. The room already mounted shows a
+      // disabled "SELECTED DIR" — re-pressing it is a no-op, so it isn't clickable
+      // (no pointer, no hover) and falls through the hit-test.
+      if (!tr.useDir.selected && this.hit(mx, my, tr.useDir)) {
         return { useDir: r.name };
       }
       const btns = this.commitButtons(r);
@@ -1970,6 +2023,8 @@ class PixelCrew {
       this.onSelectCb(hit.agent);
       this.focusAgent(hit.agent); // zoom onto the dev you clicked
     } else if (hit.room) {
+      // clicking a room is clicking OFF any selected agent → close its stat panel
+      this.onDeselectCb();
       // mirror this building's worktree into the Source Control panel, even when
       // the room holds no agent
       this.onPickRoomCb(hit.room);
@@ -1983,8 +2038,9 @@ class PixelCrew {
       // leaving the PR billboard returns to the view we were at before flying in
       this.exitBillboard();
     } else {
-      // clicking empty space steps out one level: room / dev → its directory
-      // overview → the whole campus
+      // clicking empty space deselects (closes the agent stat panel) and steps
+      // out one focus level: room / dev → its directory overview → whole campus
+      this.onDeselectCb();
       const key = this.focusRoom_ ?? (this.focusAgentId ? this.toons.get(this.focusAgentId)?.bkey : undefined);
       const r = key ? this.rooms.get(key) : undefined;
       if (r) this.focusIslandView(r.island);
@@ -2200,28 +2256,31 @@ class PixelCrew {
     /* ---- screen-space pass ---- */
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = "center";
+    const hs = this.cam.z;
     for (const r of this.rooms.values()) {
       if (r.built < 0.95) continue;
-      const base = r.baseY;
-      const top = base - ROOM_H + 2; // shared top so + DEV and ✕ line up vertically
+      // top-row controls are world-anchored: sized from the live zoom so they
+      // shrink with the room when you zoom out (zoom in to read them)
+      const tr = this.topRects(r);
       // "+ DEV" on every room — drop an agent into this room's worktree
-      const d1 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 17, top);
-      const d2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 1, top + 8);
       const devHov = this.hov("addDev:" + r.name);
-      this.drawRoomButton(ctx, d1.x, d1.y, d2.x - d1.x, d2.y - d1.y, "+ DEV",
-        devHov ? "#aef5cf" : "#3ee089", `600 ${clamp(3.2 * this.cam.z, 7, 11)}px 'Martian Mono', monospace`, devHov);
-      // "USE DIR" just left of + DEV — point the Explorer at this room's worktree
-      const u1 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 46, top);
-      const u2 = this.screenOf(r.x0 + ROOM_W - DOOR_W - 18, top + 8);
+      this.drawRoomButton(ctx, tr.dev.x, tr.dev.y, tr.dev.w, tr.dev.h, "+ DEV",
+        devHov ? "#aef5cf" : "#3ee089", `600 ${clamp(3.2 * hs, 3, 11)}px 'Martian Mono', monospace`, devHov);
+      // "USE DIR" just left of + DEV — mount this room's worktree in the Selected
+      // Directory view. The room already mounted reads "SELECTED DIR" (green).
       const useHov = this.hov("useDir:" + r.name);
-      this.drawRoomButton(ctx, u1.x, u1.y, u2.x - u1.x, u2.y - u1.y, "USE DIR",
-        useHov ? "#cfe6ff" : "#5bb8ff", `600 ${clamp(3.0 * this.cam.z, 7, 10)}px 'Martian Mono', monospace`, useHov);
+      const useLabel = tr.useDir.selected ? "SELECTED DIR" : "USE DIR";
+      // the mounted room's button is disabled: muted grey text, no hover state
+      const useColor = tr.useDir.selected
+        ? "#6a7570"
+        : (useHov ? "#cfe6ff" : "#5bb8ff");
+      this.drawRoomButton(ctx, tr.useDir.x, tr.useDir.y, tr.useDir.w, tr.useDir.h, useLabel,
+        useColor, `600 ${clamp(3.0 * hs, 3, 10)}px 'Martian Mono', monospace`,
+        tr.useDir.selected ? false : useHov);
       // ✕ — main nukes the whole directory, a worktree removes just itself
-      const x1 = this.screenOf(r.x0 + ROOM_W - 10, top);
-      const x2 = this.screenOf(r.x0 + ROOM_W - 2, top + 8);
       const xHov = this.hov("remove:" + (r.isMain ? r.island : r.name));
-      this.drawRoomButton(ctx, x1.x, x1.y, x2.x - x1.x, x2.y - x1.y, "✕",
-        xHov ? "#ffd2ce" : "#ff6055", `bold ${clamp(2.8 * this.cam.z, 7, 10)}px monospace`, xHov);
+      this.drawRoomButton(ctx, tr.close.x, tr.close.y, tr.close.w, tr.close.h, "✕",
+        xHov ? "#ffd2ce" : "#ff6055", `bold ${clamp(2.8 * hs, 3, 10)}px monospace`, xHov);
     }
     // ghost labels: +building (create a worktree room) vs +island (reserve a dir)
     for (const g of this.ghosts) {
@@ -2235,9 +2294,11 @@ class PixelCrew {
       ctx.fillStyle = "rgba(140,150,156,0.6)";
       ctx.fillText(building ? "new branch room" : "pick a directory", s.x, s.y + 11);
     }
-    // toon labels + bubbles. Names stay a fixed, readable size (they do NOT scale
-    // with the zoom), but when devs converge on screen — zoomed out, or many in
-    // one room — their labels would pile into a colliding mess. So we DECLUTTER:
+    // toon labels + bubbles. Names are world-anchored: their font scales with the
+    // live zoom (capped at the old 9px) so they shrink with the room when you zoom
+    // out and you zoom in to read them. When devs converge on screen — zoomed out,
+    // or many in one room — their labels would pile into a colliding mess. So we
+    // DECLUTTER:
     // a name is drawn only if its box doesn't overlap one already drawn. The
     // selected dev is sorted first so it always wins and stays visible.
     const claimed: { x0: number; x1: number; y0: number; y1: number }[] = [];
@@ -2251,7 +2312,9 @@ class PixelCrew {
       const s = this.screenOf(tn.x, tn.base - tn.lift - 23);
       const st = tn.agent.state;
       const sel = tn.agent.id === this.selectedId;
-      ctx.font = "9px 'IBM Plex Mono', monospace";
+      const nameSize = clamp(3 * this.cam.z, 3, 9);
+      const nameFont = `${nameSize}px 'IBM Plex Mono', monospace`;
+      ctx.font = nameFont;
       const nw = ctx.measureText(tn.agent.name).width;
       // sub-agent badge sits to the LEFT of the name: [bot][count] gap name.
       // Reserve its width in the label box so the overlap test accounts for it.
@@ -2260,7 +2323,7 @@ class PixelCrew {
       if (subN) {
         ctx.font = "bold 8px 'IBM Plex Mono', monospace";
         badgeW = 8 /*icon*/ + 1 /*gap*/ + ctx.measureText(String(subN)).width + 3 /*gap to name*/;
-        ctx.font = "9px 'IBM Plex Mono', monospace";
+        ctx.font = nameFont;
       }
       const box = { x0: s.x - nw / 2 - 2 - badgeW, x1: s.x + nw / 2 + 2, y0: s.y - 18, y1: s.y - 6 };
       if (sel || !nameOverlaps(box)) {
@@ -2730,15 +2793,10 @@ class PixelCrew {
     ctx.fillRect(px + 2.2, base - 8, 1.4, 3.5);
     ctx.fillRect(px - 0.8, base - 7.5, 1.4, 3);
     // floor-standing decor only (a high wall poster used to live here too, but it
-    // collided with the full-wall task board, so it was removed)
-    const extra = r.decor % 2;
-    if (extra === 0) {
-      const wx = x + WB_W - 8;
-      ctx.fillStyle = "#cfd6da";
-      ctx.fillRect(wx, base - 12, 5, 10.5);
-      ctx.fillStyle = "#56c7ff";
-      ctx.fillRect(wx + 0.8, base - 15.5, 3.4, 4);
-    } else {
+    // collided with the full-wall task board, so it was removed; the water cooler
+    // that shared this slot was removed too). A small blinking server rack stands
+    // by the door on some rooms for variety.
+    if (r.decor % 2) {
       const sx = x + w - DOOR_W - 14;
       ctx.fillStyle = "#171c21";
       ctx.fillRect(sx, base - 16, 6, 14.5);
@@ -3321,11 +3379,12 @@ class PixelCrew {
   ) {
     const eFurn = clamp((r.built - 0.6) / 0.4, 0, 1);
     if (eFurn <= 0) return;
-    // stand the bin against the left wall, just in front of the bookshelf's near
-    // end (t0 = 0.4). It sits proud of the wall like the cabinet does, and is
-    // scaled down for the perspective at that depth.
-    const tShred = 0.34;
-    const s = 0.82; // perspective scale at this depth
+    // stand the bin against the left wall, nestled into the bookshelf's near end
+    // (t0 = 0.4) so it fills the corner gap rather than sitting forward of it. It
+    // sits proud of the wall like the cabinet does, scaled for the depth.
+    const tShred = 0.4;
+    const s = 1.0; // perspective scale at this depth (sized up to fill the gap)
+    const yaw = 0.16; // turn the unit toward the agents/desks out in the room (to the right)
     const floor = onWall(tShred, 1.0); // floor point on the left wall
     const d = 6 * (1 - tShred * 0.5); // protrusion toward the room (matches the shelf)
     const sx = floor.x + d;
@@ -3341,8 +3400,12 @@ class PixelCrew {
     ctx.globalAlpha = eFurn;
     ctx.translate(sx, base);
     ctx.scale(s, s); // draw at full pixel sizes, shrunk into the wall's perspective
-    ctx.fillStyle = "rgba(0,0,0,0.3)"; // contact shadow
+    ctx.fillStyle = "rgba(0,0,0,0.3)"; // contact shadow (cast flat on the floor, pre-yaw)
     ctx.fillRect(-1.5, -0.6, 12, 1.6);
+    // pivot the cabinet about its base so its front face turns toward the desks
+    ctx.translate(4.5, 0);
+    ctx.rotate(yaw);
+    ctx.translate(-4.5, 0);
     // bin body
     ctx.fillStyle = "#23282e";
     ctx.fillRect(0, -15, 9, 15);
@@ -3741,8 +3804,17 @@ class PixelCrew {
   setSelected(id: string | undefined) {
     this._instance?.setSelected(id);
   },
+  setUsedDir(room: string | undefined) {
+    this._instance?.setUsedDir(room);
+  },
   onSelect(cb: (id: string) => void) {
     this._instance?.onSelect(cb);
+  },
+  onDeselect(cb: () => void) {
+    this._instance?.onDeselect(cb);
+  },
+  onUseDir(cb: (room: string) => void) {
+    this._instance?.onUseDir(cb);
   },
   onReserve(cb: (floor: number) => void) {
     this._instance?.onReserve(cb);

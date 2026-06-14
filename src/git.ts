@@ -230,6 +230,30 @@ export async function stage(cwd: string, file: string): Promise<void> {
   await runGit(cwd, ["add", "--", file]);
 }
 
+/** Discard a file's working-tree changes (the SCM "Discard Changes" action). An
+ *  untracked file is deleted; a tracked file is restored from the index/HEAD.
+ *  The staged copy of a partially-staged file is left untouched. */
+export async function discard(cwd: string, file: GitFile): Promise<void> {
+  if (file.untracked) {
+    await fs.promises.rm(path.join(cwd, file.path), { force: true });
+    return;
+  }
+  await runGit(cwd, ["restore", "--worktree", "--", file.path]);
+}
+
+/** Discard working-tree changes under a pathspec (a file OR a directory): restore
+ *  tracked files and remove untracked files/dirs beneath it. The index (staged
+ *  changes) is left intact. `rel` is repo-relative; "." means the whole worktree. */
+export async function discardPath(cwd: string, rel: string): Promise<void> {
+  await runGit(cwd, ["restore", "--worktree", "--", rel]).catch(() => {});
+  await runGit(cwd, ["clean", "-fd", "--", rel]).catch(() => {});
+}
+
+/** Discard EVERY working-tree change under `cwd`. The index is left intact. */
+export async function discardAll(cwd: string): Promise<void> {
+  await discardPath(cwd, ".");
+}
+
 export async function unstage(cwd: string, file: string): Promise<void> {
   await runGit(cwd, ["reset", "-q", "HEAD", "--", file]);
 }
@@ -240,6 +264,117 @@ export async function stageAll(cwd: string): Promise<void> {
 
 export async function unstageAll(cwd: string): Promise<void> {
   await runGit(cwd, ["reset", "-q", "HEAD", "--"]);
+}
+
+/** Commit the staged index with `message`. `all` runs `commit -a` to also pick
+ *  up tracked-but-unstaged edits (never untracked files). `amend` replaces the
+ *  previous commit (`commit --amend`) instead of adding a new one. Throws on
+ *  failure (e.g. nothing to commit) with git's reason. */
+export async function commit(
+  cwd: string,
+  message: string,
+  all = false,
+  amend = false
+): Promise<void> {
+  const args = ["commit", "-m", message];
+  if (amend) args.splice(1, 0, "--amend");
+  if (all) args.splice(1, 0, "-a");
+  await runGit(cwd, args);
+}
+
+/** Pull the current branch (`git pull`), used by "Commit & Sync" to integrate
+ *  upstream before pushing. Throws git's reason on failure (e.g. conflicts). */
+export async function pull(cwd: string): Promise<void> {
+  await runGit(cwd, ["pull"]);
+}
+
+/** Push the current branch. Falls back to `push -u origin HEAD` on the first
+ *  push so the upstream is set. Throws git's reason if both fail. */
+export async function push(cwd: string): Promise<void> {
+  try {
+    await runGit(cwd, ["push"]);
+  } catch {
+    await runGit(cwd, ["push", "-u", "origin", "HEAD"]);
+  }
+}
+
+/** Fetch remote refs quietly so behind/ahead counts reflect upstream. */
+export async function fetch(cwd: string): Promise<void> {
+  await runGit(cwd, ["fetch", "--quiet"]);
+}
+
+export interface StashEntry {
+  /** the stash ref, e.g. "stash@{0}" */
+  ref: string;
+  /** the human description git prints after the ref */
+  message: string;
+}
+
+/** Parse `git stash list` text into {ref, message} rows. A line looks like
+ *  `stash@{0}: WIP on main: 1a2b3c subject`. Pure. */
+export function parseStashList(out: string): StashEntry[] {
+  const res: StashEntry[] = [];
+  for (const line of splitLines(out)) {
+    if (!line.trim()) continue;
+    const sep = line.indexOf(": ");
+    if (sep === -1) {
+      res.push({ ref: line.trim(), message: "" });
+    } else {
+      res.push({ ref: line.slice(0, sep).trim(), message: line.slice(sep + 2).trim() });
+    }
+  }
+  return res;
+}
+
+/** List the repo's stash entries (newest first), [] on error / no stashes. */
+export async function stashList(cwd: string): Promise<StashEntry[]> {
+  try {
+    return parseStashList(await runGit(cwd, ["stash", "list"]));
+  } catch {
+    return [];
+  }
+}
+
+/** Stash the working tree. Includes untracked files (`-u`) so a fresh file is
+ *  shelved too. Optional `message` labels the entry. Throws if there is nothing
+ *  to stash. */
+export async function stashSave(cwd: string, message?: string): Promise<void> {
+  const args = ["stash", "push", "-u"];
+  if (message) args.push("-m", message);
+  await runGit(cwd, args);
+}
+
+/** Re-apply a stash and drop it from the list. */
+export async function stashPop(cwd: string, ref: string): Promise<void> {
+  await runGit(cwd, ["stash", "pop", ref]);
+}
+
+/** Re-apply a stash, leaving it in the list. */
+export async function stashApply(cwd: string, ref: string): Promise<void> {
+  await runGit(cwd, ["stash", "apply", ref]);
+}
+
+/** Delete a stash without applying it. */
+export async function stashDrop(cwd: string, ref: string): Promise<void> {
+  await runGit(cwd, ["stash", "drop", ref]);
+}
+
+/** Append a file/dir to the worktree-root `.gitignore` (the same file VS Code's
+ *  Git "Add to .gitignore" writes). `rel` is the repo-relative path with forward
+ *  slashes; a directory gets a trailing "/". No-op if the entry is already there. */
+export async function addToGitignore(cwd: string, rel: string, isDir: boolean): Promise<void> {
+  const top = await topLevel(cwd).catch(() => cwd);
+  const entry = isDir ? rel.replace(/\/?$/, "/") : rel;
+  const file = path.join(top, ".gitignore");
+  let content = "";
+  try {
+    content = await fs.promises.readFile(file, "utf8");
+  } catch {
+    /* no .gitignore yet — it will be created */
+  }
+  if (splitLines(content).some((l) => l.trim() === entry)) return; // already ignored
+  const prefix = content && !content.endsWith("\n") ? "\n" : "";
+  await fs.promises.appendFile(file, prefix + entry + "\n");
 }
 
 /** Create a new worktree + branch off the repo at `dir`. Returns the worktree path. */

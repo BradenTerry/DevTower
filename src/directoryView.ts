@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { DevTowerStore } from "./store";
-import { resolveCwd, resolveDir } from "./git";
+import { resolveDir } from "./git";
 
 /**
  * "Selected Directory" — a plain file tree of the currently selected room's
@@ -36,17 +36,15 @@ export class DirectoryProvider implements vscode.TreeDataProvider<FsNode> {
   view?: vscode.TreeView<FsNode>;
 
   constructor(private store: DevTowerStore) {
-    // The selected room (focus) or agent decides which directory we show.
-    store.onDidChangeSelection(() => this.refresh());
+    // Only the explicit "USE DIR" button changes which directory we show, so the
+    // tree stays put while you click around rooms and agents.
     store.onDidChangeFocusWorktree(() => this.refresh());
   }
 
-  /** The worktree to list: an explicitly focused room wins, else the agent. */
+  /** The worktree to list: whichever room's "USE DIR" was last pressed. Selecting
+   *  an agent or clicking a room no longer changes it (it would shift constantly). */
   private cwd(): string | undefined {
-    const focused = resolveDir(this.store.getFocusedWorktree());
-    if (focused) return focused;
-    const agent = this.store.getSelected();
-    return agent ? resolveCwd(agent) : undefined;
+    return resolveDir(this.store.getFocusedWorktree());
   }
 
   refresh(): void {
@@ -55,7 +53,7 @@ export class DirectoryProvider implements vscode.TreeDataProvider<FsNode> {
       this.view.description = cwd ? path.basename(cwd) : undefined;
       this.view.message = cwd
         ? undefined
-        : "Select a room (or its USE DIR button) to browse its files here.";
+        : "Press a room's USE DIR button to browse its files here.";
     }
     this._onDidChange.fire(undefined);
   }
