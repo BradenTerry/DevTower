@@ -988,8 +988,10 @@ class PixelCrew {
       if (am !== bm) return am - bm;
       return treeName(a[0]) < treeName(b[0]) ? -1 : 1;
     });
-    // forget slot maps for worktrees that no longer have any agents
-    for (const k of [...this.seatSlots.keys()]) if (!byTree.has(k)) this.seatSlots.delete(k);
+    // NB: stale slot maps are pruned once per layout in layout() against ALL
+    // rooms' worktrees — never here. seatPlan runs per-room, so pruning against
+    // this single room's `byTree` would delete every OTHER room's slot map,
+    // wiping their sticky seats and reshuffling devs whenever any dev joins/leaves.
     const seats = new Map<string, { col: number; row: number }>();
     const groups: DeskGroup[] = [];
     let startCol = 0;
@@ -1356,6 +1358,12 @@ class PixelCrew {
     // 7. seat plan + cache each toon's seat; tick re-glues world coords so devs
     //    follow their building as the island collapses.
     const placed = new Set<string>();
+    // forget sticky slot maps for worktrees that no longer host any agent. Done
+    // once here against EVERY live worktree (seatPlan runs per-room and must not
+    // prune the global map against one room's worktrees — that wiped the others).
+    const liveTreeKeys = new Set<string>();
+    for (const a of this.agents) if (a.worktree && a.worktree.trim()) liveTreeKeys.add(a.worktree);
+    for (const k of [...this.seatSlots.keys()]) if (!liveTreeKeys.has(k)) this.seatSlots.delete(k);
     for (const room of this.rooms.values()) {
       room.plan = this.seatPlan(room.agents);
       room.agents.forEach((a, di) => {

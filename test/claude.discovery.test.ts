@@ -859,4 +859,81 @@ describe("ClaudeDiscovery binding", () => {
       fs.rmSync(other, { recursive: true, force: true });
     }
   });
+
+  // ---- owned-launch persistence: survive a window reload without ghosting ----
+
+  /** An in-memory stand-in for context.workspaceState, JSON-cloned on write so a
+   *  later mutation of the stored object can't leak (mirrors VS Code serializing). */
+  const fakePersist = () => {
+    const m = new Map<string, unknown>();
+    return {
+      get: <T,>(k: string, def: T): T => (m.has(k) ? (JSON.parse(JSON.stringify(m.get(k))) as T) : def),
+      set: (k: string, v: unknown) => void m.set(k, JSON.parse(JSON.stringify(v))),
+    };
+  };
+
+  /** discovery wired to the fake tree AND a persistence sink. */
+  const discoveryP = (store: DevTowerStore, counts: Record<string, number>, persist: ReturnType<typeof fakePersist>) =>
+    new ClaudeDiscovery(store, {
+      projectsRoot: root, liveCounts: live(counts), waitingDir,
+      successionDir: succDir, resumeDir, endedDir, persist,
+    });
+
+  it("a window reload re-adopts a launched dev as OWNED, not an external ghost", async () => {
+    const persist = fakePersist();
+    const uuid = randomUUID();
+
+    // session 1: launch a dev and bind it owned
+    const store1 = newStore();
+    const disc1 = discoveryP(store1, { [wt]: 1 }, persist);
+    placeholder(store1, "isle-a1", wt);
+    disc1.expectSession("isle-a1", uuid);
+    writeSession(wt, 0, uuid);
+    await disc1.refresh();
+    expect(store1.get("isle-a1")!.external).toBeFalsy();
+
+    // RELOAD: a fresh store + discovery (every in-memory tie wiped) sharing the
+    // persisted launches. Without restore() the lingering transcript would
+    // rediscover as cc-<uuid> external — the ghost. With it, the dev rebinds owned.
+    const store2 = newStore();
+    const disc2 = discoveryP(store2, { [wt]: 1 }, persist);
+    disc2.restore();
+    await disc2.refresh();
+
+    const ghost = "cc-" + uuid.slice(0, 8);
+    expect(store2.get(ghost)).toBeUndefined(); // no external twin
+    const a = store2.get("isle-a1")!;
+    expect(a).toBeTruthy();
+    expect(a.external).toBeFalsy(); // owned, not a ghost
+    expect(a.transcriptPath).toBe(path.join(proj, `${uuid}.jsonl`));
+    expect(store2.list()).toHaveLength(1);
+  });
+
+  it("retiring an owned dev (terminal closed) suppresses its transcript — no ghost, even across a reload", async () => {
+    const persist = fakePersist();
+    const uuid = randomUUID();
+
+    const store1 = newStore();
+    const disc1 = discoveryP(store1, { [wt]: 1 }, persist);
+    placeholder(store1, "isle-a1", wt);
+    disc1.expectSession("isle-a1", uuid);
+    writeSession(wt, 0, uuid);
+    await disc1.refresh();
+    expect(store1.get("isle-a1")).toBeTruthy();
+
+    // the operator closes the terminal → retire the owned dev. Its transcript
+    // lingers on disk but must not resurface as an external ghost on the next poll.
+    disc1.retireOwned("isle-a1");
+    expect(store1.get("isle-a1")).toBeUndefined();
+    await disc1.refresh();
+    expect(store1.list()).toHaveLength(0); // no cc-<uuid> ghost
+
+    // RELOAD: the retirement must persist, so the lingering transcript stays
+    // suppressed and the dev is NOT restored as a placeholder.
+    const store2 = newStore();
+    const disc2 = discoveryP(store2, { [wt]: 1 }, persist);
+    disc2.restore();
+    await disc2.refresh();
+    expect(store2.list()).toHaveLength(0);
+  });
 });

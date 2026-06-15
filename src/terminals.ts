@@ -13,6 +13,10 @@ import { dlog } from "./debugLog";
  */
 export class TerminalManager {
   private terminals = new Map<string, vscode.Terminal>();
+  /** Called when an OWNED dev's terminal closes (its claude process dies with the
+   *  PTY) so discovery can retire it now + suppress its transcript from
+   *  rediscovery, rather than leaving an orphan to resurface as a ghost. */
+  private onOwnedClose?: (agentId: string) => void;
 
   constructor(private store: DevTowerStore) {
     vscode.window.onDidCloseTerminal((t) => {
@@ -21,16 +25,26 @@ export class TerminalManager {
         this.terminals.delete(id);
         // A panel-created placeholder (no live Claude transcript yet) has nothing
         // else tracking it, so stopping its terminal means the operator dropped
-        // the agent — remove it from the tower. Discovered/adopted sessions
-        // (transcriptPath set) are left to ClaudeDiscovery, which removes them
-        // once the underlying process exits.
+        // the agent — remove it from the tower. An OWNED dev with a live transcript
+        // had its claude process killed with the PTY, so retire it deterministically
+        // (suppressing the orphan transcript so it can't resurface as a ghost) —
+        // this used to wait for a discovery poll that might never run before a
+        // reload. EXTERNAL sessions run in their own terminal, so closing DevTower's
+        // shell doesn't end them — left to discovery.
         const agent = this.store.get(id);
         const dropped = !!(agent && !agent.transcriptPath);
         dlog("terminal.closed", { agentId: id, droppedPlaceholder: dropped });
         if (dropped) this.store.remove(id);
+        else if (agent && !agent.external) this.onOwnedClose?.(id);
         break;
       }
     });
+  }
+
+  /** Wire the owned-dev close handler (discovery is constructed after this, so it
+   *  is injected here rather than via the constructor). */
+  setOwnedCloseHandler(cb: (agentId: string) => void): void {
+    this.onOwnedClose = cb;
   }
 
   private ensure(agentId: string): vscode.Terminal | undefined {

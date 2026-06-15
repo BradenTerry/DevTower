@@ -31,6 +31,26 @@ type LiveCounts =
   | { mode: "total"; total: number }
   | null;
 
+/** Identity of a session DevTower launched, persisted so a window reload can
+ *  re-adopt it as an OWNED dev instead of rediscovering its lingering transcript
+ *  as an external ghost. Keyed by the launched --session-id uuid (lowercased). */
+interface OwnedLaunch {
+  agentId: string;
+  name: string;
+  repo: string;
+  worktree: string;
+  branch: string;
+  launchId?: string;
+}
+
+/** A tiny key/value sink (workspaceState in the extension; a fake in tests) so
+ *  ClaudeDiscovery can persist owned/retired launches without depending on the
+ *  VS Code ExtensionContext directly. */
+interface LaunchPersist {
+  get<T>(key: string, def: T): T;
+  set(key: string, val: unknown): void;
+}
+
 /**
  * Discovers live Claude Code CLI sessions on this machine.
  *
@@ -125,8 +145,96 @@ export class ClaudeDiscovery {
       successionDir?: string;
       resumeDir?: string;
       endedDir?: string;
+      persist?: LaunchPersist;
     } = {}
   ) {}
+
+  private static readonly OWNED_KEY = "devtower.ownedLaunches";
+  private static readonly RETIRED_KEY = "devtower.retiredLaunches";
+
+  /** session uuid (lc) → identity of a dev DevTower launched, mirrored to
+   *  persistence so it survives a reload. */
+  private loadOwned(): Record<string, OwnedLaunch> {
+    return this.deps.persist?.get<Record<string, OwnedLaunch>>(ClaudeDiscovery.OWNED_KEY, {}) ?? {};
+  }
+  private saveOwned(map: Record<string, OwnedLaunch>): void {
+    void this.deps.persist?.set(ClaudeDiscovery.OWNED_KEY, map);
+  }
+  private saveRetired(): void {
+    void this.deps.persist?.set(ClaudeDiscovery.RETIRED_KEY, Object.fromEntries(this.retiredSessions));
+  }
+
+  /** Re-seed in-memory state from persistence at activate, BEFORE the first
+   *  refresh. A reload wipes the store and every in-memory tie, so a session
+   *  DevTower launched would otherwise be rediscovered as an external ghost.
+   *  Recreate each still-owned session's placeholder + pin so the deterministic
+   *  bind re-adopts it as owned; seed retired uuids so a closed dev's lingering
+   *  transcript stays suppressed across the reload too. */
+  restore(): void {
+    if (!this.deps.persist) return;
+    const retired = this.deps.persist.get<Record<string, number>>(ClaudeDiscovery.RETIRED_KEY, {});
+    for (const [lc, ts] of Object.entries(retired)) {
+      if (Date.now() - ts <= ClaudeDiscovery.RETIRED_MAX_AGE_MS) this.retiredSessions.set(lc, ts);
+    }
+    const owned = this.loadOwned();
+    let restored = 0;
+    for (const [uuid, o] of Object.entries(owned)) {
+      // a session we already retired must not be resurrected as a placeholder
+      if (this.retiredSessions.has(uuid)) continue;
+      if (this.store.get(o.agentId)) continue; // already present (defensive)
+      this.store.apply({
+        id: o.agentId,
+        name: o.name,
+        model: "—",
+        repo: o.repo,
+        worktree: o.worktree,
+        branch: o.branch,
+        state: "idle",
+        task: "Reconnecting after reload…",
+        elapsed: "restored",
+        launchId: o.launchId,
+      });
+      // pin the launched uuid to this placeholder so the deterministic bind
+      // (case 1) re-adopts the lingering transcript as owned, not external.
+      this.expecting.set(uuid, o.agentId);
+      restored++;
+    }
+    if (restored || this.retiredSessions.size) {
+      dlog("discovery.restore", { restored, retired: this.retiredSessions.size });
+    }
+  }
+
+  /** The operator closed an OWNED dev's terminal (its claude process dies with
+   *  the PTY) — retire it deterministically NOW rather than waiting for a poll
+   *  that may never run before a reload. Removes the dev, suppresses its session
+   *  from rediscovery (so the lingering transcript can't resurface as a ghost),
+   *  and drops every tie + its persisted ownership. External agents run in their
+   *  own terminal, so closing DevTower's shell doesn't end them — left alone. */
+  retireOwned(agentId: string): void {
+    const a = this.store.get(agentId);
+    if (!a || a.external) return;
+    const uuids = new Set<string>();
+    if (a.transcriptPath) uuids.add(path.basename(a.transcriptPath, ".jsonl").toLowerCase());
+    if (a.launchId) uuids.add(a.launchId.toLowerCase());
+    for (const sid of [...this.expecting].filter(([, v]) => v === agentId).map(([k]) => k)) uuids.add(sid.toLowerCase());
+    for (const u of uuids) this.retiredSessions.set(u, Date.now());
+    this.saveRetired();
+    // drop persisted ownership for this dev so a reload can't restore it
+    const owned = this.loadOwned();
+    let changed = false;
+    for (const u of [...uuids]) if (owned[u]) { delete owned[u]; changed = true; }
+    for (const [u, o] of Object.entries(owned)) if (o.agentId === agentId) { delete owned[u]; changed = true; }
+    if (changed) this.saveOwned(owned);
+    // forget every in-memory tie to this dev/session
+    this.mine.delete(agentId);
+    this.keptMtime.delete(agentId);
+    this.launchPending.delete(agentId);
+    this.cdPending.delete(agentId);
+    for (const [k, v] of [...this.expecting]) if (v === agentId) this.expecting.delete(k);
+    for (const [k, v] of [...this.adopted]) if (v === agentId) this.adopted.delete(k);
+    dlog("discovery.terminalClose.retire", { agent: agentId, sessions: [...uuids] });
+    this.store.remove(agentId);
+  }
 
   /** Record that an agent was sent `/cd <dir>`. The move is NOT applied until a
    *  scan sees the transcript report `dir` as the live cwd — only then is the
@@ -145,7 +253,19 @@ export class ClaudeDiscovery {
     this.launchPending.set(agentId, Date.now());
     // a pinned --session-id lets discovery bind THIS exact transcript to THIS
     // placeholder, so multiple placeholders in one worktree never cross-wire
-    if (sessionId) this.expecting.set(sessionId, agentId);
+    if (sessionId) {
+      this.expecting.set(sessionId, agentId);
+      // persist the launch immediately so a reload that lands BEFORE the first
+      // transcript is written (or before the first poll) can still restore this
+      // dev as owned rather than meeting its session later as an external ghost.
+      const a = this.store.get(agentId);
+      const lc = sessionId.toLowerCase();
+      if (a && this.deps.persist && !this.retiredSessions.has(lc)) {
+        const owned = this.loadOwned();
+        owned[lc] = { agentId, name: a.name, repo: a.repo, worktree: a.worktree, branch: a.branch, launchId: lc };
+        this.saveOwned(owned);
+      }
+    }
     dlog("discovery.expectSession", { agentId, sessionId });
   }
 
@@ -882,6 +1002,29 @@ export class ClaudeDiscovery {
       }
     }
     this.lastTie = tie;
+    // Mirror owned launches + retired sessions to persistence so a window reload
+    // re-adopts live owned devs (restore()) instead of rediscovering them as
+    // external ghosts, and keeps a closed dev suppressed across the reload.
+    if (this.deps.persist) {
+      const owned = this.loadOwned();
+      const liveAgents = new Set(this.store.list().map((a) => a.id));
+      const pinned = new Set(this.expecting.values());
+      // drop entries whose dev is gone (genuinely retired) and not still pending
+      for (const [u, o] of Object.entries(owned)) {
+        if (!liveAgents.has(o.agentId) && !pinned.has(o.agentId)) delete owned[u];
+        else if (this.retiredSessions.has(u)) delete owned[u];
+      }
+      // (re)record each owned dev under its CURRENT session uuid, one per agent
+      for (const a of this.store.list()) {
+        if (a.external) continue;
+        const uuid = a.transcriptPath ? path.basename(a.transcriptPath, ".jsonl").toLowerCase() : a.launchId?.toLowerCase();
+        if (!uuid || this.retiredSessions.has(uuid)) continue;
+        for (const [u, o] of Object.entries(owned)) if (o.agentId === a.id && u !== uuid) delete owned[u];
+        owned[uuid] = { agentId: a.id, name: a.name, repo: a.repo, worktree: a.worktree, branch: a.branch, launchId: a.launchId };
+      }
+      this.saveOwned(owned);
+      this.saveRetired();
+    }
     dlog("discovery.refresh", {
       found: found.length,
       present: [...present],

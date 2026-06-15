@@ -18,7 +18,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const terminals = new TerminalManager(store);
   const diffProvider = new DiffProvider(store);
   const prs = new PrService(store);
-  const discovery = new ClaudeDiscovery(store);
+  const discovery = new ClaudeDiscovery(store, {
+    // persist owned/retired launches in workspace state so a window reload
+    // re-adopts live devs as owned instead of resurrecting them as ghosts
+    persist: {
+      get: (key, def) => context.workspaceState.get(key, def),
+      set: (key, val) => void context.workspaceState.update(key, val),
+    },
+  });
+  // an owned dev's terminal closing retires it (kills the orphan transcript)
+  terminals.setOwnedCloseHandler((id) => discovery.retireOwned(id));
   // DevTower authenticates to GitHub with a PAT the user adds in the settings
   // page (stored in SecretStorage); initialize the secret-backed auth + cache
   initGithubAuth(context);
@@ -35,6 +44,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const cfg = vscode.workspace.getConfiguration("devtower");
   // discover real Claude CLI sessions (there is no mock data)
   if (cfg.get<boolean>("discoverClaudeSessions", true)) {
+    // re-seed owned/retired launches from the last session BEFORE the first scan,
+    // so a launched dev rebinds as owned instead of surfacing as an external ghost
+    discovery.restore();
     await discovery.refresh().catch((e) => { elog("discovery.activate", { message: String(e), stack: (e as any)?.stack }); return 0; });
     discovery.start(cfg.get<number>("pollIntervalMs", 8_000));
   }
