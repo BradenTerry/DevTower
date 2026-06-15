@@ -1,8 +1,11 @@
 // Capture for the marketplace "ethernet" GIF (media/agent-stream.gif): an agent
-// edits its working tree and the change streams up the network cable to the
-// room board, where the UNSTAGED column updates live. Frames a single room,
-// settles the dev at its desk, then pushes a board update whose unstaged counts
-// differ — which fires a cable beam (emitPacket) carrying the new snapshot.
+// runs a full git turn at its desk and every step streams up the network cable
+// to the room board, where the matching column updates live. The sequence walks
+// the whole flow so the marketplace shows all the interactions:
+//   edit a file → stage → commit → push → open a PR
+// Each local change (working tree / staged / commit / unpushed) fires a cable
+// beam (emitPacket) carrying the new snapshot; the PR opening is an external
+// event, so it flashes the PR cell without a beam.
 //
 // Run, then assemble the GIF:
 //   npm run screenshots -- -g agent-stream
@@ -21,24 +24,27 @@ const HTML = path.join(__dirname, ".harness.html");
 
 const room = { name: "ATLAS-WEB", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "feat/diff-viewer" }] };
 const agent = { id: "a1", name: "Nova", state: "active", repo: "ATLAS-WEB", model: "opus-4.8", worktree: "/repo", branch: "feat/diff-viewer", skills: ["code-review"], contextTokens: 96_000, elapsed: "18m" };
-// shared board fields; only the unstaged columns change between the two posts.
-const base = {
-  branch: "feat/diff-viewer", base: "main",
-  staged: 3, stagedFiles: [], stagedAdd: 120, stagedDel: 18,
-  ahead: 4, unpushed: 0, behind: 0, committedAdd: 540, committedDel: 96,
-  commits: [
-    { sha: "c4", subject: "Wire diff viewer into panel" },
-    { sha: "c3", subject: "Render hunks with line stats" },
-    { sha: "c2", subject: "Parse unified diff" },
-    { sha: "c1", subject: "Scaffold diff viewer" },
-  ],
-  prReady: true,
-  pr: { number: 142, title: "Live diff viewer panel", url: "https://github.com/acme/x/pull/142", draft: false, checks: "pass", checksPass: 5, checksFailed: 0, checksRunning: 0, checksTotal: 5, review: "approved", approvals: 2, changesRequested: 0, reviewersPending: 0, comments: 1 },
-};
-const before = { ...base, modified: 0, modifiedFiles: [], unstagedAdd: 0, unstagedDel: 0 };
-const after = { ...base, modified: 2, modifiedFiles: [], unstagedAdd: 18, unstagedDel: 4 };
+// One worktree walking the full git turn. Each constant below is the board as it
+// looks after the labelled step; the harness posts them in order and the canvas
+// beams the delta up the cable.
+const branch = { branch: "feat/diff-viewer", base: "main", behind: 0 };
+// 0) clean tree on a fresh branch, no PR yet
+const clean = { ...branch, modified: 0, modifiedFiles: [], unstagedAdd: 0, unstagedDel: 0, staged: 0, stagedFiles: [], stagedAdd: 0, stagedDel: 0, ahead: 0, unpushed: 0, committedAdd: 0, committedDel: 0, commits: [], prReady: true };
+// 1) edit a file → UNSTAGED appears
+const edit1 = { ...clean, modified: 1, unstagedAdd: 14, unstagedDel: 3 };
+// 2) git add → the churn moves UNSTAGED → STAGED
+const staged = { ...clean, modified: 0, staged: 1, stagedAdd: 14, stagedDel: 3 };
+// 3) git commit → STAGED clears, COMMITS gains one ahead + unpushed
+const committed = { ...clean, ahead: 1, unpushed: 1, committedAdd: 14, committedDel: 3, commits: [{ sha: "c1", subject: "Wire diff viewer into panel" }] };
+// 4) git push → unpushed drains to 0
+const pushed = { ...committed, unpushed: 0 };
+// 5a) open a PR → board shows the "checking…" spinner first
+const prChecking = { ...pushed, prReady: false };
+// 5b) the PR lands on the board with its checks/review
+const prOpen = { ...pushed, pr: { number: 142, title: "Live diff viewer panel", url: "https://github.com/acme/x/pull/142", draft: false, checks: "pass", checksPass: 5, checksFailed: 0, checksRunning: 0, checksTotal: 5, review: "approved", approvals: 2, changesRequested: 0, reviewersPending: 0, comments: 1 } };
 
 test("capture: agent-stream", async ({ page }) => {
+  test.setTimeout(120_000); // the full git-turn capture runs ~160 frames
   fs.rmSync(FRAMES, { recursive: true, force: true });
   fs.mkdirSync(FRAMES, { recursive: true });
   fs.writeFileSync(HTML, harnessHtml(), "utf8");
@@ -49,9 +55,9 @@ test("capture: agent-stream", async ({ page }) => {
 
   await page.evaluate((d) => {
     window.postMessage({ type: "config", eco: false }, "*"); // eco off so the cable beam animates
-    window.postMessage({ type: "state", agents: [d.agent], rooms: [d.room], boards: { "/repo": d.before } }, "*");
+    window.postMessage({ type: "state", agents: [d.agent], rooms: [d.room], boards: { "/repo": d.clean } }, "*");
     window.postMessage({ type: "prs", crew: [], review: [], connected: true }, "*");
-  }, { agent, room, before });
+  }, { agent, room, clean });
   await page.evaluate(() => (document as any).fonts?.ready);
 
   // frame the room (desk + cable + board all in view) and wait for Nova to sit
@@ -71,12 +77,18 @@ test("capture: agent-stream", async ({ page }) => {
 
   let f = 0;
   const shot = async () => page.screenshot({ path: path.join(FRAMES, `frame-${String(f++).padStart(3, "0")}.png`) });
+  // capture `frames` screenshots, ~33ms apart, while the sim keeps animating
+  const beat = async (frames: number, wait = 33) => { for (let i = 0; i < frames; i++) { await shot(); await page.waitForTimeout(wait); } };
+  const post = (board: any) => page.evaluate((d) => window.postMessage({ type: "state", agents: [d.agent], rooms: [d.room], boards: { "/repo": d.board } }, "*"), { agent, room, board });
 
-  for (let i = 0; i < 5; i++) { await shot(); await page.waitForTimeout(40); } // a beat at rest
-  // the agent edits: push the changed board → fires the cable beam carrying it
-  await page.evaluate((d) => window.postMessage({ type: "state", agents: [d.agent], rooms: [d.room], boards: { "/repo": d.after } }, "*"), { agent, room, after });
-  for (let i = 0; i < 44; i++) { await shot(); await page.waitForTimeout(33); } // beam travels + UNSTAGED flips
-  for (let i = 0; i < 6; i++) { await shot(); await page.waitForTimeout(40); } // settle
+  await beat(6, 40);                 // a beat at rest on the clean tree
+  await post(edit1);     await beat(34); // edit a file       → UNSTAGED beam
+  await post(staged);    await beat(32); // git add           → UNSTAGED → STAGED
+  await post(committed); await beat(34); // git commit        → STAGED → COMMITS
+  await post(pushed);    await beat(32); // git push          → unpushed drains
+  await post(prChecking); await beat(16); // open PR          → "checking…" spinner
+  await post(prOpen);    await beat(30); // PR lands on the board
+  await beat(6, 40);                 // settle
 
   console.log(`wrote ${f} frames to ${FRAMES}`);
 });

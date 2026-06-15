@@ -4,7 +4,7 @@
 
 A pixel office tower (VS Code extension) for your coding agents. Each repo is a cutaway **room** whose worktrees stack into a tower, floor by floor. Live **Claude Code CLI sessions are auto-discovered** from `~/.claude/projects` and appear as pixel devs at their desks. Reserve empty cells for directories and spawn new agents into **git worktrees** or the project dir. Diffs open in the **native** VS Code diff editor; each agent gets a **native** integrated terminal rooted in its worktree; pull requests show on an in-scene **PR board** and you can dispatch a reviewer agent straight from a PR row.
 
-![Inside a room: the cutaway board shows the worktree's branch, unstaged / staged / commit counts (with +/- line stats and a synced indicator), and the PR cell - #142 with its checks and review status.](media/room.png)
+![An agent runs a full git turn at its desk: it edits a file, stages, commits, pushes, then opens a PR. Each step streams up the network cable to the room's board, where the UNSTAGED, STAGED, COMMITS and PR cells update live.](media/agent-stream.gif)
 
 > DevTower is an early **Preview** release on the VS Code Marketplace. See [Releasing](#releasing).
 

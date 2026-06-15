@@ -648,7 +648,7 @@ class PixelCrew {
       if (!this.drag.active) {
         const hit = this.pick(e);
         const clickable = !!(hit.agent || hit.room || hit.ghost || hit.addDev || hit.useDir || hit.removeBtn ||
-          hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom || hit.openPrUrl);
+          hit.removeWtBtn || hit.openPrUrl);
         this.container.style.cursor = clickable ? "pointer" : "default";
         const hk = this.hoverKeyOf(hit);
         if (hk !== this.hoverKey) { this.hoverKey = hk; this.invalidate(); } // repaint the highlight
@@ -1876,7 +1876,7 @@ class PixelCrew {
     }
     for (let i = this.packets.length - 1; i >= 0; i--) {
       const p = this.packets[i];
-      p.t += dt * 0.55; // slow travel so the run along the cable is easy to follow
+      p.t += dt * 0.825; // travel speed along the cable (1.5x); still slow enough to follow
       const e = clamp(p.t, 0, 1); // negative t (staggered start) holds at the source
       if (p.path && p.path.length >= 2) {
         // ride the cable: computer → floor → screen, eased by arc length
@@ -2131,9 +2131,6 @@ class PixelCrew {
     useDir?: string; // building key → point this window's Explorer at the worktree
     removeBtn?: string; // island (nuke)
     removeWtBtn?: string; // building key (worktree path)
-    pushRoom?: string; // building key → push local commits
-    pullRoom?: string; // building key → pull upstream commits
-    fetchRoom?: string; // building key → fetch remote refs (refresh behind/ahead)
     openPrUrl?: string; // ↗ on a room board → open the PR on GitHub
   } {
     const rect = this.canvas.getBoundingClientRect();
@@ -2158,10 +2155,6 @@ class PixelCrew {
       if (!tr.useDir.selected && this.hit(mx, my, tr.useDir)) {
         return { useDir: r.name };
       }
-      const btns = this.commitButtons(r);
-      if (btns.push && this.inRect(mx, my, btns.push.x, btns.push.y, btns.push.w, btns.push.h)) return { pushRoom: r.name };
-      if (btns.pull && this.inRect(mx, my, btns.pull.x, btns.pull.y, btns.pull.w, btns.pull.h)) return { pullRoom: r.name };
-      if (btns.fetch && this.inRect(mx, my, btns.fetch.x, btns.fetch.y, btns.fetch.w, btns.fetch.h)) return { fetchRoom: r.name };
       const prb = this.prOpenButton(r);
       if (prb && this.inRect(mx, my, prb.x, prb.y, prb.w, prb.h)) return { openPrUrl: prb.url };
     }
@@ -2196,9 +2189,6 @@ class PixelCrew {
     if (h.useDir) return "useDir:" + h.useDir;
     if (h.removeBtn) return "remove:" + h.removeBtn;
     if (h.removeWtBtn) return "remove:" + h.removeWtBtn;
-    if (h.fetchRoom) return "fetch:" + h.fetchRoom;
-    if (h.pushRoom) return "push:" + h.pushRoom;
-    if (h.pullRoom) return "pull:" + h.pullRoom;
     return null;
   }
 
@@ -2210,9 +2200,6 @@ class PixelCrew {
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
     if (hit.openPrUrl) { this.onOpenPrCb(hit.openPrUrl); }
-    else if (hit.fetchRoom) { this.setBusy("fetch:" + hit.fetchRoom); this.onFetchCb(hit.fetchRoom); }
-    else if (hit.pushRoom) { this.setBusy("push:" + hit.pushRoom); this.syncSuppress.set(hit.pushRoom, Date.now()); this.onPushCb(hit.pushRoom); }
-    else if (hit.pullRoom) { this.setBusy("pull:" + hit.pullRoom); this.syncSuppress.set(hit.pullRoom, Date.now()); this.onPullCb(hit.pullRoom); }
     else if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
     else if (hit.removeBtn) this.onRemoveRoomCb(hit.removeBtn);
     else if (hit.addDev) this.onAddDevCb(hit.addDev.island, hit.addDev.key);
@@ -2544,7 +2531,7 @@ class PixelCrew {
       if (sel || !nameOverlaps(box)) {
         claimed.push(box);
         const ext = tn.agent.external;
-        const nameColor = sel ? "#ffb13d" : ext ? "rgba(150,162,170,0.7)" : "rgba(230,238,240,0.88)";
+        const nameColor = sel ? "#ffb13d" : ext ? "rgba(150,162,170,0.7)" : "#ffffff";
         ctx.fillStyle = nameColor;
         ctx.fillText(tn.agent.name, s.x, s.y - 8);
         if (subN) this.drawSubagentBadge(s.x - nw / 2 - 3, s.y, subN, nameColor);
@@ -3015,15 +3002,14 @@ class PixelCrew {
   /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
    *  plus live git stats (files changed, lines +/-). It glows when the worktree's
    *  files change (see the packets fired from the desks in tick). */
-  /** Buttons in the bottom band of the COMMITS cell, shared by the renderer and
-   *  the hit-test so they always agree. `push` (↑) appears when there are local
-   *  commits to push, `pull` (↓) when the branch is behind upstream, and `fetch`
-   *  (↻) is always available to refresh behind/ahead from the remote. Geometry
-   *  must mirror drawBoard's cell layout. `synced` flags the all-clear state. */
+  /** Layout for the read-only indicators in the bottom band of the COMMITS cell.
+   *  `push` (↑) shows when there are local commits ahead of upstream, `pull` (↓)
+   *  when the branch is behind. These are status glyphs, not buttons — there's
+   *  no hit-test or hover. Geometry must mirror drawBoard's cell layout.
+   *  `synced` flags the all-clear state (nothing ahead or behind). */
   private commitButtons(r: Room): {
     push?: { x: number; y: number; w: number; h: number };
     pull?: { x: number; y: number; w: number; h: number };
-    fetch?: { x: number; y: number; w: number; h: number };
     synced?: boolean;
   } {
     const bd = r.boardShown ?? r.board;
@@ -3036,14 +3022,12 @@ class PixelCrew {
     const gitR = innerR - prW - 4;
     const cw = (gitR - innerL) / 3;
     const cx = innerL + 2 * cw; // COMMITS cell
-    const cwIn = cw - 4;
     const y = b.y + b.h - 8.5, h = 7.5, slot = 8.5;
     let lx = cx - 0.5;
     const push = bd.unpushed > 0 ? { x: lx, y, w: slot, h } : undefined;
     if (push) lx += slot;
     const pull = bd.behind > 0 ? { x: lx, y, w: slot, h } : undefined;
-    const fetch = { x: cx + cwIn - 6.5, y, w: 7, h };
-    return { push, pull, fetch, synced: !push && !pull };
+    return { push, pull, synced: !push && !pull };
   }
 
   /** Rect of the open-in-GitHub (↗) button in a room's board PR cell, plus the
@@ -3298,60 +3282,25 @@ class PixelCrew {
       ctx.fillStyle = "#ff6055";
       this.drawRoll(ctx, cx + ctx.measureText(plus).width + 3, bodyTop + 16, `${pfx}.del`, `-${c.del}`, 3.6, r);
       churnBar(cx, bodyTop + 18.5, cwIn, c.add, c.del);
-      // COMMITS cell bottom band: push (↑), pull (↓) and fetch (↻) controls
+      // COMMITS cell bottom band: read-only ahead (↑) / behind (↓) indicators
       if (i === 2) {
         const btns = this.commitButtons(r);
         const sy = bodyBot - 1.5; // shared baseline for the row
         ctx.textAlign = "left";
-        // a faint rounded tint behind whichever control the cursor is over
-        const hoverTint = (rc: { x: number; y: number; w: number; h: number }, color: string) => {
-          ctx.fillStyle = color;
-          ctx.fillRect(rc.x - 0.5, rc.y, rc.w + 1, rc.h);
-        };
-        // a spinner centred in a control's rect while its action is in flight
-        const spin = (rc: { x: number; y: number; w: number; h: number }, color: string) =>
-          this.drawSpinner(ctx, rc.x + rc.w / 2, rc.y + rc.h / 2, 1.8, color);
         if (btns.push) {
-          const hv = this.hov("push:" + r.name);
-          if (hv) hoverTint(btns.push, "rgba(255,177,61,0.22)");
-          if (this.busy.has("push:" + r.name)) {
-            spin(btns.push, "#ffb13d");
-          } else {
-            ctx.fillStyle = hv ? "#ffd9a3" : "#ffb13d"; // up = push local commits upstream
-            ctx.font = "bold 4px 'Martian Mono', monospace";
-            ctx.fillText(`↑${bd.unpushed}`, btns.push.x + 0.5, sy);
-          }
+          ctx.fillStyle = "#ffb13d"; // up = local commits ahead of upstream
+          ctx.font = "bold 4px 'Martian Mono', monospace";
+          ctx.fillText(`↑${bd.unpushed}`, btns.push.x + 0.5, sy);
         }
         if (btns.pull) {
-          const hv = this.hov("pull:" + r.name);
-          if (hv) hoverTint(btns.pull, "rgba(86,199,255,0.22)");
-          if (this.busy.has("pull:" + r.name)) {
-            spin(btns.pull, "#56c7ff");
-          } else {
-            ctx.fillStyle = hv ? "#a9e2ff" : "#56c7ff"; // down = pull upstream commits
-            ctx.font = "bold 4px 'Martian Mono', monospace";
-            ctx.fillText(`↓${bd.behind}`, btns.pull.x + 0.5, sy);
-          }
+          ctx.fillStyle = "#56c7ff"; // down = commits behind upstream
+          ctx.font = "bold 4px 'Martian Mono', monospace";
+          ctx.fillText(`↓${bd.behind}`, btns.pull.x + 0.5, sy);
         }
-        if (btns.synced && !this.busy.has("fetch:" + r.name)) {
+        if (btns.synced) {
           ctx.fillStyle = "rgba(120,200,255,0.5)";
           ctx.font = "3px 'IBM Plex Mono', monospace";
           ctx.fillText("synced", cx, sy);
-        }
-        if (btns.fetch) {
-          const hv = this.hov("fetch:" + r.name);
-          if (hv) hoverTint(btns.fetch, "rgba(120,200,255,0.22)");
-          if (this.busy.has("fetch:" + r.name)) {
-            spin(btns.fetch, "#9fd0f0");
-          } else {
-            // refresh = fetch remote refs; drawn bold + centred on the SAME baseline
-            // as ↑/↓ so it matches them instead of sitting small and off-line
-            ctx.fillStyle = hv ? "#cfecff" : "rgba(120,200,255,0.8)";
-            ctx.font = "bold 4px 'Martian Mono', monospace";
-            ctx.textAlign = "center";
-            ctx.fillText("↻", btns.fetch.x + btns.fetch.w / 2, sy);
-            ctx.textAlign = "left";
-          }
         }
       }
     });
