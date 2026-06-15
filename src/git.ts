@@ -577,7 +577,15 @@ export async function branchSummary(cwd: string, forkBase?: string): Promise<Bra
     const [bh, ah] = lr.split(/\s+/).map((n) => parseInt(n, 10) || 0);
     behind = bh; unpushed = ah;
   } catch {
-    unpushed = ahead; // no upstream → all branch commits are unpushed local work
+    // No upstream (e.g. the branch's remote was deleted after its PR merged).
+    // "Unpushed" then means commits not on ANY origin ref, NOT commits ahead of
+    // base: a merged branch's commits live under origin/main, so this is 0 and
+    // the TV stops showing a phantom "to push". Only genuinely-never-pushed
+    // local work counts here.
+    unpushed = parseInt(
+      (await runGit(cwd, ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"]).catch(() => "0")).trim(),
+      10,
+    ) || 0;
   }
   return {
     modified: st.unstaged.length,
