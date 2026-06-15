@@ -46,6 +46,12 @@ To see PRs and checks, add a GitHub token in **Settings** (the ⚙ gear, top rig
 
 See [FEATURES.md](FEATURES.md) for the full capability map and the data-core / presentation split.
 
+## Mini view (compact popout)
+
+Beside the canvas tower, DevTower can open a **mini view**: a dense, DOM-table popout that shows the same live data without the scene. Open it with the popout button in the tower's HUD, or jump straight to it from the Command Palette -> **DevTower: Open Mini View**. It drills **Projects -> Worktrees -> Agents**, with **All agents** and **All PRs** tabs, per-branch git stats (committed / staged / unstaged with ahead-behind), and PR/CI status. From the list you can add projects and worktrees, spawn or remove agents, view or chat with an agent, switch the selected directory, and jump straight to a PR's detail. It runs off the **same real-time feed** as the tower, so it stays in sync - and it works on its own when you want a compact panel instead of the full scene.
+
+![The DevTower mini view: a compact table that drills projects, worktrees, and agents, with All-agents and All-PRs tabs, per-branch git stats, and PR status.](media/shot-mini.png)
+
 ## Files: browse, move, delete, diff
 
 The two trees in the **◆ DevTower** activity-bar container turn the focused worktree into a place you can actually work, without opening a second window:

@@ -15,5 +15,6 @@ screenshots/out/
 screenshots/.harness.html
 screenshots/.harness.leave.html
 screenshots/.harness.transfer.html
+screenshots/.mini-harness.html
 screenshots/.scm-mock.html
 test-results/

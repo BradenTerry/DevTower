@@ -85,6 +85,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("devtower.openConsole", () =>
       ConsolePanel.createOrShow(context, store, terminals, prs, discovery)
     ),
+    vscode.commands.registerCommand("devtower.openMini", () =>
+      // open straight to the compact popout. Reuse the live tower if one exists
+      // (so it isn't re-revealed/refocused); otherwise create it to back the data.
+      (ConsolePanel.current ?? ConsolePanel.createOrShow(context, store, terminals, prs, discovery)).openMini()
+    ),
     vscode.commands.registerCommand("devtower.installHooks", () =>
       ConsolePanel.createOrShow(context, store, terminals, prs, discovery).openSettings("hooks")
     ),

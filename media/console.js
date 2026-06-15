@@ -759,7 +759,7 @@
       <div class="p-actions">
         ${a.external
           ? `<div class="pa ext-note" title="This session runs outside DevTower — manage it in its own terminal">⌗ Runs in its own session</div>`
-          : `<button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>`}
+          : `<button class="pa primary" data-tool="terminal">⌗ Chat</button>`}
         ${a.external ? "" : `<button class="pa danger" data-tool="sendHome">⌂ Send Home</button>`}
       </div>`;
 
@@ -791,6 +791,8 @@
   /* ---------- global wiring ---------- */
   $("#settingsbtn").onclick = openSettings;
   $("#lbbtn").onclick = () => (leaderboardOpen() ? closeLeaderboard() : openLeaderboard());
+  const popout = $("#popoutbtn");
+  if (popout) popout.onclick = () => vscode.postMessage({ type: "popout" });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {

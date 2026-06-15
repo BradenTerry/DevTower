@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { ClaudeDiscovery } from "../src/claude";
+import { ClaudeDiscovery, parseLiveSessionIds } from "../src/claude";
 import { DevTowerStore } from "../src/store";
 
 /**
@@ -975,5 +975,38 @@ describe("ClaudeDiscovery binding", () => {
     disc2.restore();
     await disc2.refresh();
     expect(store2.list()).toHaveLength(0);
+  });
+});
+
+describe("parseLiveSessionIds (live-process argv → bound session uuids)", () => {
+  const A = "6d52d2fc-2811-4121-bbe1-867e3a6ad469";
+  const B = "56a0d565-9af6-453a-8f89-70a0614e180b";
+
+  it("captures a fresh launch's --session-id", () => {
+    expect([...parseLiveSessionIds(`claude --session-id ${B}`)]).toEqual([B]);
+  });
+
+  it("captures a RESUMED session's --resume uuid (the phantom-ghost fix)", () => {
+    // A resumed process was previously invisible to the pin set, so its live slot
+    // got spent on a stale sibling transcript and it stayed wrongly retired.
+    expect([...parseLiveSessionIds(`claude --resume ${A}`)]).toEqual([A]);
+  });
+
+  it("captures the short -r resume form", () => {
+    expect([...parseLiveSessionIds(`claude -r ${A}`)]).toEqual([A]);
+  });
+
+  it("accepts --flag=uuid as well as space-separated", () => {
+    expect([...parseLiveSessionIds(`claude --session-id=${B}`)]).toEqual([B]);
+  });
+
+  it("collects every live process's uuid across the ps dump, lowercased", () => {
+    const dump = `claude --resume ${A.toUpperCase()}\nnode foo\nclaude --session-id ${B}`;
+    expect(parseLiveSessionIds(dump)).toEqual(new Set([A, B]));
+  });
+
+  it("yields nothing for a bare claude or --continue (no uuid to pin)", () => {
+    expect(parseLiveSessionIds("claude").size).toBe(0);
+    expect(parseLiveSessionIds("claude --continue").size).toBe(0);
   });
 });
