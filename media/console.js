@@ -121,6 +121,20 @@
     $("#devtower-count").textContent = agents.length;
   }
 
+  // The selected directory (the room a USE DIR click mounted), shown under the
+  // telemetry pill. Long paths are truncated from the LEFT with a leading … so
+  // the meaningful tail (the worktree folder) stays visible; full path on hover.
+  function renderSelDir(dir) {
+    const wrap = $("#seldir");
+    const el = $("#seldir-path");
+    if (!wrap || !el) return;
+    if (!dir) { wrap.hidden = true; el.textContent = ""; wrap.removeAttribute("title"); return; }
+    const MAX = 44;
+    wrap.hidden = false;
+    wrap.title = dir;
+    el.textContent = dir.length > MAX ? "…" + dir.slice(dir.length - (MAX - 1)) : dir;
+  }
+
   /* ---------- plan usage meters (5h / weekly) ---------- */
   function fmtReset(ts) {
     if (!ts) return "";
@@ -809,6 +823,7 @@
       agents = m.agents || [];
       if (m.selectedId && panelOpen) selectedId = m.selectedId;
       renderTelemetry();
+      renderSelDir(m.selectedDir);
       if (window.DevTowerCrew) {
         window.DevTowerCrew.setBoards(m.boards || {});
         window.DevTowerCrew.setRooms(m.rooms || []);

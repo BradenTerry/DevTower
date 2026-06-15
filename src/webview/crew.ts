@@ -2008,7 +2008,7 @@ class PixelCrew {
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
       const seatable = tn.agent.state === "active" || tn.agent.state === "idle" || tn.agent.state === "complete";
-      tn.sitting = seatable && !tn.entering && !tn.errand && !tn.shred && !tn.transfer && Math.abs(dx) <= 1;
+      tn.sitting = seatable && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.transfer && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
       // (lift -> 0) whenever walking, entering, or leaving. A dev AT the bookshelf
       // (fetching a book, or returning one on /clear) steps back to SHELF_LIFT so it

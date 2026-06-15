@@ -73,25 +73,36 @@ demonstrate the result, not just describe it:
 ### Put the media in the PR description
 
 The before/after must be embedded in the **PR description body** so it can be
-viewed without checking anything out. Reliable, scriptable steps:
+viewed in the PR diff view without checking anything out. **Do NOT commit the
+screenshots into git** - they are attached to the PR description instead, so the
+repo and `.vsix` stay clean.
 
-1. Save the captures under `docs/screenshots/<branch-or-feature>/` and commit
-   them on the PR branch.
-2. Reference them in the PR body with their raw URLs so they render inline:
-   `![before](https://raw.githubusercontent.com/BradenTerry/DevTower/<branch>/docs/screenshots/<feature>/before.png)`
-3. Lay them out side by side, for example:
+GitHub stores images dragged or pasted into a PR/issue body on its own
+attachment CDN (`https://github.com/user-attachments/assets/<id>`); the file
+never lands in the branch. There is no `gh`/API call that uploads to that CDN -
+the upload happens in the browser (or by pasting into the web editor), so the
+flow is:
+
+1. Capture the before/after locally (PNG for static changes, GIF for motion -
+   animations, transitions, beams, elevator cars). Keep them OUT of git: write
+   them somewhere ignored (e.g. `screenshots/out/`), never under `docs/` or
+   `media/`.
+2. In the PR description editor, **drag-and-drop or paste each image**. GitHub
+   uploads it and inserts a `https://github.com/user-attachments/assets/...`
+   URL. (If a human is driving, hand them the local files to drop in.)
+3. Lay them out side by side using those attachment URLs:
 
    ```markdown
    ## Before / After
    | Before | After |
    | --- | --- |
-   | ![before](<raw-url>/before.png) | ![after](<raw-url>/after.png) |
+   | ![before](https://github.com/user-attachments/assets/<id-before>) | ![after](https://github.com/user-attachments/assets/<id-after>) |
    ```
 
-   For an animated change, swap the `.png` for a `.gif`.
+   For an animated change, attach a `.gif` the same way.
 
-Set or update the PR body with `gh pr edit <num> --body-file <file>` (or
-`gh pr create --body-file <file>`).
+Once the attachment URLs exist, set or update the body with
+`gh pr edit <num> --body-file <file>` (or `gh pr create --body-file <file>`).
 
 A UI PR without a before/after in its description is incomplete.
 
