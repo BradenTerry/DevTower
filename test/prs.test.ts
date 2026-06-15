@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { rollupChecks, checkCounts, reviewCounts, mapDecision, PR_CHASE_DELAYS_MS } from "../src/prs";
+import { rollupChecks, checkCounts, reviewCounts, mapDecision, PR_CHASE_DELAYS_MS, MERGED_CELEBRATE_MS } from "../src/prs";
 
 // gh CLI JSON → display state. Pure mapping/aggregation; OS-independent but core
 // to what the PR board shows, so worth pinning down.
@@ -76,6 +76,16 @@ describe("PR_CHASE_DELAYS_MS", () => {
     expect(PR_CHASE_DELAYS_MS.length).toBeLessThanOrEqual(6);
     const total = PR_CHASE_DELAYS_MS.reduce((a, b) => a + b, 0);
     expect(total).toBeLessThanOrEqual(15_000); // whole chase well under the 60s idle tick
+  });
+});
+
+describe("MERGED_CELEBRATE_MS", () => {
+  // A merged PR lingers on the board only long enough for the merge to register on
+  // the TV, then clears. Long enough to outlast a couple of idle polls (~60s each)
+  // so it is actually seen; short enough that the room doesn't sit on a stale PR.
+  it("outlasts a couple idle polls but stays transient", () => {
+    expect(MERGED_CELEBRATE_MS).toBeGreaterThanOrEqual(2 * 60_000);
+    expect(MERGED_CELEBRATE_MS).toBeLessThanOrEqual(15 * 60_000);
   });
 });
 

@@ -60,6 +60,8 @@ interface BoardData {
     changesRequested: number;
     reviewersPending: number;
     comments: number;
+    /** PR was merged: the board shows a brief MERGED badge before it clears. */
+    merged?: boolean;
   };
 }
 
@@ -129,7 +131,10 @@ export class ConsolePanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")],
       }
     );
-    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "devtower.svg");
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(context.extensionUri, "media", "devtower-light.svg"),
+      dark: vscode.Uri.joinPath(context.extensionUri, "media", "devtower-dark.svg"),
+    };
     ConsolePanel.current = new ConsolePanel(panel, context, store, terminals, prs, discovery);
     return ConsolePanel.current;
   }
@@ -1004,7 +1009,7 @@ export class ConsolePanel {
                 checksRunning: pr.checksRunning, checksTotal: pr.checksTotal,
                 review: pr.review, approvals: pr.approvals,
                 changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
-                comments: pr.comments,
+                comments: pr.comments, merged: pr.merged,
               }
             : undefined,
         });
