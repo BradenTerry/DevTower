@@ -226,6 +226,61 @@
         "command": "devtower.stashDrop",
         "title": "DevTower: Drop Stash",
         "icon": "$(trash)"
+      },
+      {
+        "command": "devtower.scmCommit",
+        "title": "Commit",
+        "icon": "$(check)"
+      },
+      {
+        "command": "devtower.scmStage",
+        "title": "Stage Changes",
+        "icon": "$(add)"
+      },
+      {
+        "command": "devtower.scmUnstage",
+        "title": "Unstage Changes",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "devtower.scmDiscard",
+        "title": "Discard Changes",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "devtower.scmStageAll",
+        "title": "Stage All Changes",
+        "icon": "$(add)"
+      },
+      {
+        "command": "devtower.scmUnstageAll",
+        "title": "Unstage All Changes",
+        "icon": "$(remove)"
+      },
+      {
+        "command": "devtower.scmStash",
+        "title": "Stash Changes",
+        "icon": "$(archive)"
+      },
+      {
+        "command": "devtower.scmPush",
+        "title": "Push",
+        "icon": "$(repo-push)"
+      },
+      {
+        "command": "devtower.scmPull",
+        "title": "Pull",
+        "icon": "$(repo-pull)"
+      },
+      {
+        "command": "devtower.scmFetch",
+        "title": "Fetch",
+        "icon": "$(sync)"
+      },
+      {
+        "command": "devtower.scmRefresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
       }
     ],
     "submenus": [
@@ -478,7 +533,119 @@
           "group": "1_stash@3"
         }
       ],
+      "scm/title": [
+        {
+          "command": "devtower.scmCommit",
+          "when": "scmProvider == devtower",
+          "group": "navigation@1"
+        },
+        {
+          "command": "devtower.scmRefresh",
+          "when": "scmProvider == devtower",
+          "group": "navigation@2"
+        },
+        {
+          "command": "devtower.scmStageAll",
+          "when": "scmProvider == devtower",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "devtower.scmUnstageAll",
+          "when": "scmProvider == devtower",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "devtower.scmStash",
+          "when": "scmProvider == devtower",
+          "group": "2_main@1"
+        },
+        {
+          "command": "devtower.scmPush",
+          "when": "scmProvider == devtower",
+          "group": "2_main@2"
+        },
+        {
+          "command": "devtower.scmPull",
+          "when": "scmProvider == devtower",
+          "group": "2_main@3"
+        },
+        {
+          "command": "devtower.scmFetch",
+          "when": "scmProvider == devtower",
+          "group": "2_main@4"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "devtower.scmDiscard",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "inline@1"
+        },
+        {
+          "command": "devtower.scmStage",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "inline@2"
+        },
+        {
+          "command": "devtower.scmUnstage",
+          "when": "scmProvider == devtower && scmResourceGroup == staged",
+          "group": "inline@1"
+        },
+        {
+          "command": "devtower.scmDiscard",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "devtower.scmStage",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "devtower.scmUnstage",
+          "when": "scmProvider == devtower && scmResourceGroup == staged",
+          "group": "1_modification@1"
+        }
+      ],
+      "scm/resourceGroup/context": [
+        {
+          "command": "devtower.scmStageAll",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "inline@1"
+        },
+        {
+          "command": "devtower.scmUnstageAll",
+          "when": "scmProvider == devtower && scmResourceGroup == staged",
+          "group": "inline@1"
+        },
+        {
+          "command": "devtower.scmStageAll",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "devtower.scmUnstageAll",
+          "when": "scmProvider == devtower && scmResourceGroup == staged",
+          "group": "1_modification@1"
+        }
+      ],
       "commandPalette": [
+        {
+          "command": "devtower.scmStage",
+          "when": "false"
+        },
+        {
+          "command": "devtower.scmUnstage",
+          "when": "false"
+        },
+        {
+          "command": "devtower.scmDiscard",
+          "when": "false"
+        },
+        {
+          "command": "devtower.scmCommit",
+          "when": "false"
+        },
         {
           "command": "devtower.openFileDiff",
           "when": "false"
