@@ -119,12 +119,14 @@ const DESK_W = 32; // column pitch (desk-to-desk spacing); furniture itself is ~
 const DOOR_W = 18;
 // Bookshelf under the left window: a dev walks here to pick up a "skill" book
 // (one per skill it uses) and carries it back to stack on its desk.
-const SHELF_REACH = 16; // world x (from room left) a dev stands at to fetch a book
-// At the shelf the dev steps BACK into the room (a render-only lift, like the
-// back desk row) so it stands up against the bookshelf on the back-left wall
-// rather than down at the front beside the shredder — otherwise returning a book
-// reads as feeding it into the shredder. Most of the back-row depth (DEPTH_Y).
-const SHELF_LIFT = 16;
+const SHELF_REACH = 20; // world x (from room left) a dev stands at to fetch a book
+// At the shelf the dev steps a little BACK into the room (a render-only lift) so
+// it stands clear of the front shredder — otherwise returning a book reads as
+// feeding it into the shredder. The lift stays small (far short of the full
+// back-row depth, DEPTH_Y) so the dev stands on the floor IN FRONT of the
+// bookshelf, to the right, rather than riding up into the spines and reading as
+// standing on the shelf itself.
+const SHELF_LIFT = 7;
 const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
 // Paper shredder against the left wall, just in front of the bookshelf's near
 // end: when a session is /cleared the dev carries its stack of context papers

@@ -1160,7 +1160,6 @@ export class ConsolePanel {
         if (cwd && (await isRepo(cwd))) {
           if (act === "stageAll") await stageAll(cwd);
           else await unstageAll(cwd);
-          vscode.commands.executeCommand("devtower.refreshChanges");
           await this.postChanges(id);
         }
         break;
@@ -1205,7 +1204,6 @@ export class ConsolePanel {
     }
     if (staging) await stage(cwd, path);
     else await unstage(cwd, path);
-    vscode.commands.executeCommand("devtower.refreshChanges");
     await this.postChanges(id);
   }
 
@@ -1365,7 +1363,6 @@ export class ConsolePanel {
     </div>
     <div class="spacer"></div>
     <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
-    <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">🔋</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
   </header>
 

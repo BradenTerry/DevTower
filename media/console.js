@@ -767,16 +767,8 @@
   function applyEco(on) {
     eco = !!on;
     if (window.DevTowerCrew) window.DevTowerCrew.setEco(eco);
-    $("#ecobtn").classList.toggle("on", eco);
-    $("#ecobtn").title = eco
-      ? "Efficiency mode on — click to disable"
-      : "Efficiency mode off — click to reduce animation/CPU";
   }
   applyEco(false);
-  $("#ecobtn").onclick = () => {
-    applyEco(!eco);
-    vscode.postMessage({ type: "setEco", on: eco });
-  };
 
   /* ---------- global wiring ---------- */
   $("#settingsbtn").onclick = openSettings;

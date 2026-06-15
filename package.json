@@ -37,32 +37,11 @@
     "onStartupFinished"
   ],
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "devtower",
-          "title": "DevTower",
-          "icon": "media/devtower.svg"
-        },
-        {
-          "id": "devtower-changes",
-          "title": "DevTower Changes",
-          "icon": "media/changes.svg"
-        }
-      ]
-    },
     "views": {
-      "devtower": [
+      "explorer": [
         {
           "id": "devtower.directory",
-          "name": "Selected Directory",
-          "type": "tree"
-        }
-      ],
-      "devtower-changes": [
-        {
-          "id": "devtower.changes",
-          "name": "Changes",
+          "name": "DevTower",
           "type": "tree"
         }
       ]
@@ -91,64 +70,6 @@
         "title": "DevTower: Open Error Log"
       },
       {
-        "command": "devtower.refreshChanges",
-        "title": "DevTower: Refresh Changes",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "devtower.openFileDiff",
-        "title": "DevTower: Open File Diff"
-      },
-      {
-        "command": "devtower.stageFile",
-        "title": "Stage Changes",
-        "icon": "$(add)"
-      },
-      {
-        "command": "devtower.unstageFile",
-        "title": "Unstage Changes",
-        "icon": "$(remove)"
-      },
-      {
-        "command": "devtower.stageAll",
-        "title": "Stage All Changes",
-        "icon": "$(add)"
-      },
-      {
-        "command": "devtower.unstageAll",
-        "title": "Unstage All Changes",
-        "icon": "$(remove)"
-      },
-      {
-        "command": "devtower.discardFile",
-        "title": "Discard Changes",
-        "icon": "$(discard)"
-      },
-      {
-        "command": "devtower.discardAll",
-        "title": "Discard All Changes",
-        "icon": "$(discard)"
-      },
-      {
-        "command": "devtower.stageDir",
-        "title": "Stage Changes",
-        "icon": "$(add)"
-      },
-      {
-        "command": "devtower.unstageDir",
-        "title": "Unstage Changes",
-        "icon": "$(remove)"
-      },
-      {
-        "command": "devtower.discardDir",
-        "title": "Discard Changes",
-        "icon": "$(discard)"
-      },
-      {
-        "command": "devtower.addToGitignore",
-        "title": "Add to .gitignore"
-      },
-      {
         "command": "devtower.refreshDirectory",
         "title": "DevTower: Refresh Selected Directory",
         "icon": "$(refresh)"
@@ -161,71 +82,6 @@
       {
         "command": "devtower.resetFilePrompts",
         "title": "DevTower: Reset File Prompt Confirmations"
-      },
-      {
-        "command": "devtower.changesViewAsTree",
-        "title": "DevTower: View Changes as Tree",
-        "icon": "$(list-tree)"
-      },
-      {
-        "command": "devtower.changesViewAsList",
-        "title": "DevTower: View Changes as List",
-        "icon": "$(list-flat)"
-      },
-      {
-        "command": "devtower.commit",
-        "title": "Commit",
-        "icon": "$(check)"
-      },
-      {
-        "command": "devtower.commitAmend",
-        "title": "Commit (Amend)",
-        "icon": "$(check)"
-      },
-      {
-        "command": "devtower.commitPush",
-        "title": "Commit & Push",
-        "icon": "$(arrow-up)"
-      },
-      {
-        "command": "devtower.commitSync",
-        "title": "Commit & Sync",
-        "icon": "$(sync)"
-      },
-      {
-        "command": "devtower.collapseChanges",
-        "title": "Collapse All",
-        "icon": "$(collapse-all)"
-      },
-      {
-        "command": "devtower.push",
-        "title": "DevTower: Push",
-        "icon": "$(repo-push)"
-      },
-      {
-        "command": "devtower.fetch",
-        "title": "DevTower: Fetch",
-        "icon": "$(cloud-download)"
-      },
-      {
-        "command": "devtower.stash",
-        "title": "DevTower: Stash Changes",
-        "icon": "$(archive)"
-      },
-      {
-        "command": "devtower.stashPop",
-        "title": "DevTower: Pop Stash",
-        "icon": "$(arrow-up)"
-      },
-      {
-        "command": "devtower.stashApply",
-        "title": "DevTower: Apply Stash",
-        "icon": "$(diff-added)"
-      },
-      {
-        "command": "devtower.stashDrop",
-        "title": "DevTower: Drop Stash",
-        "icon": "$(trash)"
       },
       {
         "command": "devtower.scmCommit",
@@ -288,32 +144,7 @@
         "icon": "$(git-branch)"
       }
     ],
-    "submenus": [
-      {
-        "id": "devtower.commitMenu",
-        "label": "Commit",
-        "icon": "$(check)"
-      }
-    ],
     "menus": {
-      "devtower.commitMenu": [
-        {
-          "command": "devtower.commit",
-          "group": "1_commit@1"
-        },
-        {
-          "command": "devtower.commitAmend",
-          "group": "1_commit@2"
-        },
-        {
-          "command": "devtower.commitPush",
-          "group": "2_remote@1"
-        },
-        {
-          "command": "devtower.commitSync",
-          "group": "2_remote@2"
-        }
-      ],
       "view/title": [
         {
           "command": "devtower.openConsole",
@@ -324,56 +155,6 @@
           "command": "devtower.refreshDirectory",
           "when": "view == devtower.directory",
           "group": "navigation@2"
-        },
-        {
-          "command": "devtower.changesViewAsTree",
-          "when": "view == devtower.changes && devtower.changesView == flat",
-          "group": "navigation@0"
-        },
-        {
-          "command": "devtower.changesViewAsList",
-          "when": "view == devtower.changes && devtower.changesView == tree",
-          "group": "navigation@0"
-        },
-        {
-          "command": "devtower.stageAll",
-          "when": "view == devtower.changes",
-          "group": "navigation@1"
-        },
-        {
-          "command": "devtower.unstageAll",
-          "when": "view == devtower.changes",
-          "group": "navigation@2"
-        },
-        {
-          "submenu": "devtower.commitMenu",
-          "when": "view == devtower.changes",
-          "group": "navigation@3"
-        },
-        {
-          "command": "devtower.push",
-          "when": "view == devtower.changes",
-          "group": "navigation@4"
-        },
-        {
-          "command": "devtower.fetch",
-          "when": "view == devtower.changes",
-          "group": "navigation@5"
-        },
-        {
-          "command": "devtower.stash",
-          "when": "view == devtower.changes",
-          "group": "navigation@6"
-        },
-        {
-          "command": "devtower.refreshChanges",
-          "when": "view == devtower.changes",
-          "group": "navigation@7"
-        },
-        {
-          "command": "devtower.collapseChanges",
-          "when": "view == devtower.changes",
-          "group": "navigation@8"
         }
       ],
       "view/item/context": [
@@ -386,156 +167,6 @@
           "command": "devtower.deleteFile",
           "when": "view == devtower.directory && viewItem == dir",
           "group": "9_delete@1"
-        },
-        {
-          "command": "devtower.discardFile",
-          "when": "view == devtower.changes && viewItem == unstaged",
-          "group": "inline@1"
-        },
-        {
-          "command": "devtower.stageFile",
-          "when": "view == devtower.changes && viewItem == unstaged",
-          "group": "inline@2"
-        },
-        {
-          "command": "devtower.unstageFile",
-          "when": "view == devtower.changes && viewItem == staged",
-          "group": "inline@2"
-        },
-        {
-          "command": "devtower.discardAll",
-          "when": "view == devtower.changes && viewItem == group-unstaged",
-          "group": "inline@1"
-        },
-        {
-          "command": "devtower.stageAll",
-          "when": "view == devtower.changes && viewItem == group-unstaged",
-          "group": "inline@2"
-        },
-        {
-          "command": "devtower.unstageAll",
-          "when": "view == devtower.changes && viewItem == group-staged",
-          "group": "inline@2"
-        },
-        {
-          "command": "devtower.discardAll",
-          "when": "view == devtower.changes && viewItem == group-unstaged",
-          "group": "1_modification@1"
-        },
-        {
-          "command": "devtower.stageAll",
-          "when": "view == devtower.changes && viewItem == group-unstaged",
-          "group": "1_modification@2"
-        },
-        {
-          "command": "devtower.collapseChanges",
-          "when": "view == devtower.changes && viewItem == group-unstaged",
-          "group": "9_view@1"
-        },
-        {
-          "command": "devtower.unstageAll",
-          "when": "view == devtower.changes && viewItem == group-staged",
-          "group": "1_modification@1"
-        },
-        {
-          "command": "devtower.collapseChanges",
-          "when": "view == devtower.changes && viewItem == group-staged",
-          "group": "9_view@1"
-        },
-        {
-          "command": "devtower.stageFile",
-          "when": "view == devtower.changes && viewItem == unstaged",
-          "group": "1_modification@2"
-        },
-        {
-          "command": "devtower.discardFile",
-          "when": "view == devtower.changes && viewItem == unstaged",
-          "group": "1_modification@1"
-        },
-        {
-          "command": "devtower.unstageFile",
-          "when": "view == devtower.changes && viewItem == staged",
-          "group": "1_modification@1"
-        },
-        {
-          "command": "devtower.discardDir",
-          "when": "view == devtower.changes && viewItem == dir-unstaged",
-          "group": "inline@1"
-        },
-        {
-          "command": "devtower.stageDir",
-          "when": "view == devtower.changes && viewItem == dir-unstaged",
-          "group": "inline@2"
-        },
-        {
-          "command": "devtower.unstageDir",
-          "when": "view == devtower.changes && viewItem == dir-staged",
-          "group": "inline@2"
-        },
-        {
-          "command": "devtower.stageDir",
-          "when": "view == devtower.changes && viewItem == dir-unstaged",
-          "group": "1_modification@2"
-        },
-        {
-          "command": "devtower.discardDir",
-          "when": "view == devtower.changes && viewItem == dir-unstaged",
-          "group": "1_modification@1"
-        },
-        {
-          "command": "devtower.unstageDir",
-          "when": "view == devtower.changes && viewItem == dir-staged",
-          "group": "1_modification@1"
-        },
-        {
-          "command": "devtower.addToGitignore",
-          "when": "view == devtower.changes && viewItem == unstaged",
-          "group": "9_gitignore@1"
-        },
-        {
-          "command": "devtower.addToGitignore",
-          "when": "view == devtower.changes && viewItem == staged",
-          "group": "9_gitignore@1"
-        },
-        {
-          "command": "devtower.addToGitignore",
-          "when": "view == devtower.changes && viewItem == dir-unstaged",
-          "group": "9_gitignore@1"
-        },
-        {
-          "command": "devtower.addToGitignore",
-          "when": "view == devtower.changes && viewItem == dir-staged",
-          "group": "9_gitignore@1"
-        },
-        {
-          "command": "devtower.stashPop",
-          "when": "view == devtower.changes && viewItem == stash",
-          "group": "inline@1"
-        },
-        {
-          "command": "devtower.stashApply",
-          "when": "view == devtower.changes && viewItem == stash",
-          "group": "inline@2"
-        },
-        {
-          "command": "devtower.stashDrop",
-          "when": "view == devtower.changes && viewItem == stash",
-          "group": "inline@3"
-        },
-        {
-          "command": "devtower.stashPop",
-          "when": "view == devtower.changes && viewItem == stash",
-          "group": "1_stash@1"
-        },
-        {
-          "command": "devtower.stashApply",
-          "when": "view == devtower.changes && viewItem == stash",
-          "group": "1_stash@2"
-        },
-        {
-          "command": "devtower.stashDrop",
-          "when": "view == devtower.changes && viewItem == stash",
-          "group": "1_stash@3"
         }
       ],
       "scm/title": [
@@ -649,54 +280,6 @@
         },
         {
           "command": "devtower.scmCommit",
-          "when": "false"
-        },
-        {
-          "command": "devtower.openFileDiff",
-          "when": "false"
-        },
-        {
-          "command": "devtower.stageFile",
-          "when": "false"
-        },
-        {
-          "command": "devtower.unstageFile",
-          "when": "false"
-        },
-        {
-          "command": "devtower.discardFile",
-          "when": "false"
-        },
-        {
-          "command": "devtower.stageDir",
-          "when": "false"
-        },
-        {
-          "command": "devtower.unstageDir",
-          "when": "false"
-        },
-        {
-          "command": "devtower.discardDir",
-          "when": "false"
-        },
-        {
-          "command": "devtower.addToGitignore",
-          "when": "false"
-        },
-        {
-          "command": "devtower.stashPop",
-          "when": "false"
-        },
-        {
-          "command": "devtower.stashApply",
-          "when": "false"
-        },
-        {
-          "command": "devtower.stashDrop",
-          "when": "false"
-        },
-        {
-          "command": "devtower.collapseChanges",
           "when": "false"
         },
         {
