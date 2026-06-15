@@ -575,9 +575,11 @@
       ${dbgLogExists ? `
       <div class="s-hookbar">
         <button class="s-actbtn" id="s-debug-view">View log</button>
+        <button class="s-actbtn" id="s-debug-folder">Open folder</button>
         <button class="s-actbtn" id="s-debug-clear">Clear log</button>
       </div>
-      <div class="s-note">A captured log is on disk. It stays available to view even with logging off.</div>`
+      <div class="s-note">A captured log is on disk${dbgArchives ? ` plus ${dbgArchives} rotated archive${dbgArchives === 1 ? "" : "s"}` : ""}.
+        The log rotates automatically as it grows; clearing removes the log and all its archives. It stays available to view even with logging off.</div>`
       : `<p class="s-note">No log captured yet. Turn logging on to start recording.</p>`}`;
   }
 
@@ -667,6 +669,8 @@
     // the host echoes the new on-disk state back via the config message.
     const dbgView = $("#s-debug-view", s);
     if (dbgView) dbgView.onclick = () => vscode.postMessage({ type: "viewDebugLog" });
+    const dbgFolder = $("#s-debug-folder", s);
+    if (dbgFolder) dbgFolder.onclick = () => vscode.postMessage({ type: "openLogFolder" });
     const dbgClear = $("#s-debug-clear", s);
     if (dbgClear) dbgClear.onclick = () => vscode.postMessage({ type: "clearDebugLog" });
 
@@ -792,6 +796,7 @@
   let eco = false;
   let debug = false; // devtower.debugLog; arrives via the "config" message
   let dbgLogExists = false; // whether a captured log is on disk (config message)
+  let dbgArchives = 0; // number of rotated archive files on disk (config message)
   function applyEco(on) {
     eco = !!on;
     if (window.DevTowerCrew) window.DevTowerCrew.setEco(eco);
@@ -861,6 +866,7 @@
       applyEco(!!m.eco); // saved efficiency-mode preference (default off)
       debug = !!m.debug; // authoritative devtower.debugLog state from the host
       dbgLogExists = !!m.debugLogExists; // a captured log is on disk
+      dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk
       if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug); // mirror into the scene
       if (settingsOpen()) renderSettings(); // reflect an external toggle live
       if (Array.isArray(m.reviewSkills) && m.reviewSkills.length) reviewSkills = m.reviewSkills;
