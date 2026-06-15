@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers } from "./hooks";
 import { dlog, elog } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -145,6 +145,7 @@ export class ClaudeDiscovery {
       successionDir?: string;
       resumeDir?: string;
       endedDir?: string;
+      activeDir?: string;
       persist?: LaunchPersist;
     } = {}
   ) {}
@@ -1047,6 +1048,11 @@ export class ClaudeDiscovery {
     // when a session is parked on a permission/input prompt. A marker newer than
     // the transcript mtime means the session hasn't moved since → still waiting.
     const markers = await readWaitingMarkers(this.deps.waitingDir);
+    // hook-backed "just resumed": SessionStart(resume) drops a marker the instant
+    // a session is reopened. Reopening writes nothing to the transcript until the
+    // first prompt, so without this a resumed dev keeps its stale mtime and reads
+    // idle while you read/type. Folded into activity time below so it reads active.
+    const active = await readActiveMarkers(this.deps.activeDir);
     // the Task tool's per-session store lives beside `projects/` under `tasks/`
     const tasksRoot = this.deps.tasksRoot ?? path.join(root, "..", "tasks");
 
@@ -1072,7 +1078,13 @@ export class ClaudeDiscovery {
         // mtime until the sub-agent returns. A genuinely blocked sub-agent isn't
         // writing, so its mtime stays behind the marker and the hand holds.
         const tasks = await readTasks(tasksRoot, sessionId);
-        const activityMtime = Math.max(st.mtimeMs, await newestSubMtime(pdir, sessionId));
+        // newest of: transcript mtime, any blocking sub-agent's writes, and a
+        // fresh resume marker (a reopened session that hasn't written yet).
+        const activityMtime = Math.max(
+          st.mtimeMs,
+          await newestSubMtime(pdir, sessionId),
+          active.get(sessionId)?.ts ?? 0,
+        );
         const age = now - activityMtime;
         // a fresh Notification marker overrides everything: the harness told us
         // this session is parked. Once it resumes, activity advances past the
