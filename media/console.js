@@ -840,6 +840,7 @@
           ? `<div class="pa ext-note" title="This session runs outside DevTower — manage it in its own terminal">⌗ Runs in its own session</div>`
           : `<button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>`}
         ${prFor(a.id) ? `<button class="pa" data-tool="pr">⇄ PR</button>` : ""}
+        ${a.external ? "" : `<button class="pa danger" data-tool="sendHome">⌂ Send Home</button>`}
       </div>`;
 
     // wiring
