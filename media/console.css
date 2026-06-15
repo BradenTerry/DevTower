@@ -599,7 +599,7 @@ button{ font-family:inherit; }
   padding:2px 7px; border-radius:999px; white-space:nowrap;
 }
 
-.p-actions{ display:flex; gap:7px; padding:12px 18px; border-bottom:1px solid var(--edge-soft); }
+.p-actions{ display:flex; flex-wrap:wrap; gap:7px; padding:12px 18px; border-bottom:1px solid var(--edge-soft); }
 .pa{
   flex:1; cursor:pointer; text-align:center; border:1px solid var(--edge); background:transparent;
   font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase;
@@ -608,6 +608,10 @@ button{ font-family:inherit; }
 .pa:hover{ border-color:var(--text-faint); color:var(--text); background:var(--glass-2); }
 .pa.primary{ color:var(--on-amber); background:var(--amber); border-color:var(--amber); font-weight:700; }
 .pa.primary:hover{ filter:brightness(1.1); }
+/* Send Home: a destructive action, so it sits on its own full-width row below
+   the Claude terminal button and reads red (fills red on hover) */
+.pa.danger{ flex-basis:100%; color:var(--error); border-color:color-mix(in srgb,var(--error) 50%,transparent); }
+.pa.danger:hover{ color:#fff; background:var(--error); border-color:var(--error); filter:none; }
 /* external session: an info chip, not an actionable button */
 .pa.ext-note{ cursor:default; border-style:dashed; color:var(--text-faint); }
 .pa.ext-note:hover{ border-color:var(--edge); color:var(--text-faint); background:transparent; }

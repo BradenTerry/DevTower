@@ -1285,6 +1285,22 @@ export class ConsolePanel {
       case "terminal":
         this.terminals.reveal(id);
         break;
+      case "sendHome": {
+        // confirm, then close the dev's Claude terminal (kills its process) and
+        // retire it from the tower. retireOwned also suppresses its transcript so
+        // it can't resurface as an external ghost on the next poll or a reload.
+        const agent = this.store.get(id);
+        if (!agent || agent.external) break;
+        const confirm = await vscode.window.showWarningMessage(
+          `Send ${agent.name} home? This closes its Claude terminal and removes it from the tower.`,
+          { modal: true },
+          "Send Home"
+        );
+        if (confirm !== "Send Home") break;
+        this.terminals.disposeAgent(id);
+        this.discovery?.retireOwned(id);
+        break;
+      }
       case "diff":
         await this.openDiffFor(id);
         break;
