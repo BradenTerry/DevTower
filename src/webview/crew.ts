@@ -120,6 +120,11 @@ const DOOR_W = 18;
 // Bookshelf under the left window: a dev walks here to pick up a "skill" book
 // (one per skill it uses) and carries it back to stack on its desk.
 const SHELF_REACH = 16; // world x (from room left) a dev stands at to fetch a book
+// At the shelf the dev steps BACK into the room (a render-only lift, like the
+// back desk row) so it stands up against the bookshelf on the back-left wall
+// rather than down at the front beside the shredder — otherwise returning a book
+// reads as feeding it into the shredder. Most of the back-row depth (DEPTH_Y).
+const SHELF_LIFT = 16;
 const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
 // Paper shredder against the left wall, just in front of the bookshelf's near
 // end: when a session is /cleared the dev carries its stack of context papers
@@ -1990,10 +1995,15 @@ class PixelCrew {
       const seatable = tn.agent.state === "active" || tn.agent.state === "idle" || tn.agent.state === "complete";
       tn.sitting = seatable && !tn.entering && !tn.errand && !tn.shred && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
-      // (lift -> 0) whenever walking, entering, leaving, or off on a book
-      // errand (so the dev rides the near floor to the shelf and back)
+      // (lift -> 0) whenever walking, entering, or leaving. A dev AT the bookshelf
+      // (fetching a book, or returning one on /clear) steps back to SHELF_LIFT so it
+      // reads as standing at the shelf on the back-left wall, clear of the front
+      // shredder — but the /clear papers leg keeps it forward at the shredder.
+      const atShelf =
+        (!!tn.errand && tn.errand.phase !== "back") ||
+        (!!tn.shred && (tn.shred.phase === "shelf" || tn.shred.phase === "place"));
       const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred;
-      const targetLift = atDesk ? tn.row * ROW_DY : 0;
+      const targetLift = atDesk ? tn.row * ROW_DY : atShelf ? SHELF_LIFT : 0;
       tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
     }
     // advance book errands now that this frame's walk has been applied: arrive at
