@@ -48,7 +48,13 @@ type LiveCounts =
 export class ClaudeDiscovery {
   private timer?: ReturnType<typeof setInterval>;
   private mine = new Set<string>(); // agent ids this service created
-  private branchCache = new Map<string, string>();
+  // cwd → its git branch, with the time we read it. A short TTL is essential: a
+  // dev that switches branches mid-session (e.g. `git checkout -b feature/...`)
+  // must have its displayed branch — and the branch the PR board queries for it —
+  // follow within a poll, not stay pinned to whatever it was at first sight (which
+  // left a just-opened PR off the board until the slow poller caught up).
+  private branchCache = new Map<string, { branch: string; at: number }>();
+  private static readonly BRANCH_TTL_MS = 5_000;
   // agent id → directory it was just told to /cd into (+ when), held until the
   // transcript reports the new cwd so the toon doesn't snap back meanwhile. The
   // timestamp bounds the hold: a /cd that fails or is declined never reports the
@@ -695,10 +701,13 @@ export class ClaudeDiscovery {
         }
       }
       const cdConfirmed = cdRoom !== undefined || (pend !== undefined && cwd === pend.dir);
-      let branch = this.branchCache.get(cwd);
-      if (branch === undefined) {
+      const cachedBranch = this.branchCache.get(cwd);
+      let branch: string;
+      if (cachedBranch && Date.now() - cachedBranch.at < ClaudeDiscovery.BRANCH_TTL_MS) {
+        branch = cachedBranch.branch;
+      } else {
         branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
-        this.branchCache.set(cwd, branch);
+        this.branchCache.set(cwd, { branch, at: Date.now() });
       }
       // a /clear succession rebinding onto an EXTERNAL dev must keep it external
       // (it's still an outside session); only an owned placeholder adoption flips
@@ -889,15 +898,20 @@ export class ClaudeDiscovery {
         const marker = markers.get(sessionId);
         const waitingByHook = !!marker && marker.ts > activityMtime;
         if (marker && !waitingByHook) clearMarker(sessionId, this.deps.waitingDir);
-        // otherwise: waiting ONLY when the assistant actually asked something; a
-        // turn that ends in a statement is just done → idle (off the clock)
+        // otherwise: a session mid-turn (a tool in flight, or an owed reply) is
+        // WORKING even if the transcript has been silent past the freshness window
+        // — a long build/test or a long model turn must not read as idle. Only a
+        // turn that ENDS in a statement is done → idle; one ending in a question is
+        // waiting on the human.
         const state: AgentState = waitingByHook
           ? "waiting"
           : age < 120_000
             ? "active"
-            : meta.lastRole === "assistant" && meta.question
-              ? "waiting"
-              : "idle";
+            : meta.working
+              ? "active"
+              : meta.lastRole === "assistant" && meta.question
+                ? "waiting"
+                : "idle";
         out.push({
           id: "cc-" + fn.slice(0, 8),
           sessionId,
@@ -989,7 +1003,7 @@ export async function newestSubMtime(projectDir: string, sessionId: string): Pro
 export async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; prCreatedAt?: number }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; working?: boolean; prCreatedAt?: number }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -1120,6 +1134,14 @@ export async function readMeta(
     let lastRole: string | undefined;
     let task: string | undefined;
     let lastAssistantText: string | undefined;
+    // is the session mid-turn (working) rather than parked? The NEWEST real record
+    // tells us: a `user` turn means a tool_result or prompt just landed and the
+    // agent owes a reply; an `assistant` turn carrying a tool_use block means a
+    // tool is in flight (no result has been written after it). Both mean WORKING
+    // even when no byte has hit the transcript for a while — a long-running tool
+    // (build/test) or a long model turn would otherwise read as idle (feet up).
+    let working = false;
+    let sawNewest = false;
     const lines = tail.split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
       const t = lines[i].trim();
@@ -1128,6 +1150,12 @@ export async function readMeta(
         const rec = JSON.parse(t);
         const role = rec.type ?? rec.message?.role;
         if (role === "user" || role === "assistant") {
+          if (!sawNewest) {
+            sawNewest = true;
+            const c = rec.message?.content ?? rec.content;
+            const hasToolUse = Array.isArray(c) && c.some((b: any) => b?.type === "tool_use");
+            working = role === "user" || hasToolUse;
+          }
           if (!lastRole) lastRole = role;
           // first (= newest, scanning backwards) real assistant turn wins;
           // skip sidechain sub-agent turns and the streaming partial at the tail
@@ -1170,7 +1198,7 @@ export async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents, prCreatedAt: prCreatedAt || undefined };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents, working, prCreatedAt: prCreatedAt || undefined };
   } finally {
     await fh.close();
   }
