@@ -49,6 +49,11 @@ for (const sc of SCENARIOS) {
       await page.evaluate((name) => (window as any).DevTowerCrew.focusIsland(name), (sc as any).focusIsland);
     }
 
+    // optionally pull back to the fit-all overview (every island in frame)
+    if ((sc as any).overview) {
+      await page.evaluate(() => (window as any).DevTowerCrew?.clearFocus?.());
+    }
+
     // optionally open the settings overlay seeded with mock capabilities
     if ((sc as any).settings) {
       await page.evaluate((st) => {

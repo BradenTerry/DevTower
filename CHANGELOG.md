@@ -7,6 +7,12 @@ are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases
 
 ## [Unreleased]
 
+### Removed
+
+- The central **"Branches & PRs" billboard**, its HUD ⇄ zoom button, and the **Review Dispatch**
+  modal. Per-worktree PR status (number, checks, review) still shows on each room's board. The
+  branch/PR board will return as a dedicated feature in a later release.
+
 ## [0.5.0] - 2026-06-13
 
 ### Added

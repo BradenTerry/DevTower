@@ -14,7 +14,7 @@ Running several coding agents means several worktrees, each in its own directory
 
 DevTower collapses it into **a single view**. Every repo and worktree is a room in one campus and every live session a dev at a desk, so you watch **multiple directories and worktrees at once - without switching windows**: who is active, who is blocked waiting on you, who finished or errored, each branch's unstaged / staged / commit counts, and each PR's checks and review status. Click a dev to act, click a room to focus its crew, and the diff or terminal you need opens in place.
 
-![The campus at a glance: the top-left telemetry strip counts run / wait / err / crew across every room, the PRs-to-review billboard lists PRs that want your eyes, and each room's board shows its branch and change counts - all without leaving this window.](media/shot-campus.png)
+![The campus at a glance: the top-left telemetry strip counts run / wait / err / crew across every room, and each room's board shows its branch, change counts, and open-PR status - all without leaving this window.](media/shot-campus.png)
 
 ## Run it
 
@@ -42,7 +42,7 @@ To see PRs and checks, add a GitHub token in **Settings** (the ⚙ gear, top rig
 
 - **Changes view** (native tree in the ◆ DevTower activity-bar): the selected agent's files split into **Staged Changes** and **Changes**, inline stage (`+`) / unstage (`-`), stage all / unstage all, and click-to-diff (native HEAD <-> working tree).
 - **File viewer** (the *Selected Directory* tree): browse and open **any** file in the focused room's worktree, not just changed ones - editable, in this window, without touching your workspace folders. **Drag a file or folder onto another folder to move it**, or **right-click -> Delete** (sent to the OS Trash). Each action confirms once and offers **"don't ask again"** (reset later with **DevTower: Reset File Prompt Confirmations**). Press a room's **USE DIR** button to point the viewer at that worktree.
-- **PR board + review dispatch**: per-worktree PRs (checks + review status) via `gh`, a standalone "PRs to review" billboard for review-requested PRs, and a Review Dispatch modal that spawns a reviewer agent in an isolated worktree with selected skills/effort/instructions.
+- **PR status on every board**: per-worktree pull requests via `gh`, with the open PR's number, title, CI checks, and review status shown right on each room's board (and a disconnected placeholder when no GitHub token is set).
 
 See [FEATURES.md](FEATURES.md) for the full capability map and the data-core / presentation split.
 
@@ -69,7 +69,7 @@ DevTower drives your existing CLIs; it makes no network calls of its own (git/gh
 | **VS Code** 1.85+ | required | host |
 | **git** | required | Changes view, native diffs, `git worktree add`, per-room push/pull/fetch |
 | **claude** ([Claude Code](https://claude.com/claude-code) CLI) | required for live agents | spawning/resuming sessions in terminals (`devtower.claudeCommand`); session discovery reads `~/.claude/projects` transcripts |
-| **gh** ([GitHub CLI](https://cli.github.com)) | optional | PR board, review-requested billboard, review dispatch, PR view/checkout (DevTower never creates PRs). Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
+| **gh** ([GitHub CLI](https://cli.github.com)) | optional | Per-worktree PR status on each board, PR view/checkout (DevTower never creates PRs). Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
 | **ps** / **lsof** (macOS / Linux) | optional | phantom-session filter - show only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower instead counts running `claude` processes tower-wide via WMI (`Get-CimInstance Win32_Process`) and caps shown sessions to that many, newest-first; if even that is unavailable it falls back to a 15-min freshness window |
 
 What it accesses currently:
