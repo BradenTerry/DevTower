@@ -48,9 +48,15 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
   let curCwd: string | undefined;
   let curLabel = "changes";
 
-  /** The active worktree: a room explicitly focused in the tower wins, else the
-   *  selected agent's checkout — matching the changes tree's resolution. */
+  /** The active worktree. The Selected Directory view's sticky dir (set by a
+   *  room's USE DIR) wins, so Source Control always mirrors the directory the
+   *  user explicitly mounted and never drifts to another branch when an agent is
+   *  selected — that select clears focusedWorktree but NOT selectedDir, which is
+   *  exactly how the two used to diverge. Falls back to a focused room / the
+   *  selected agent only before anything has been mounted. */
   const resolveCurrent = (): { cwd?: string; label: string } => {
+    const sticky = resolveDir(store.getSelectedDir());
+    if (sticky) return { cwd: sticky, label: path.basename(sticky) };
     const focused = resolveDir(store.getFocusedWorktree());
     const agent: Agent | undefined = store.getSelected();
     const cwd = focused ?? (agent ? resolveCwd(agent) : undefined);
@@ -136,6 +142,9 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
     store.onChange(() => void sync()),
     store.onDidChangeSelection(() => void sync()),
     store.onDidChangeFocusWorktree(() => void sync()),
+    // the sticky Selected Directory mount drives the mirror, so re-sync (branch
+    // placeholder + file list) whenever USE DIR points it at a new worktree
+    store.onDidChangeSelectedDir(() => void sync()),
 
     vscode.commands.registerCommand("devtower.scmOpenDiff", (cwd: string, f: GitFile, label: string) =>
       openGitFileDiff(cwd, f, label || "changes")
