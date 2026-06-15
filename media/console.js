@@ -51,6 +51,11 @@
     window.DevTowerCrew.onAssignReview((pr) => openReviewDispatch(pr));
     window.DevTowerCrew.onRefreshPrs(() => vscode.postMessage({ type: "refreshPrs" }));
     window.DevTowerCrew.onOpenPr((url) => vscode.postMessage({ type: "action", act: "openPr", url }));
+    if (window.DevTowerCrew.onSendBranchToWorktree) {
+      window.DevTowerCrew.onSendBranchToWorktree((repo, branch) =>
+        vscode.postMessage({ type: "sendBranchToWorktree", repo, branch })
+      );
+    }
     if (DevTowerCrew.onDebug) DevTowerCrew.onDebug((event, data) => vscode.postMessage({ type: "debug", event, data }));
     window.DevTowerCrew.start();
   }
@@ -920,10 +925,11 @@
         if (window.DevTowerCrew.setPrLoading) window.DevTowerCrew.setPrLoading(!!m.loading); // first poll → spinner
         const branches = [...prs.crew, ...prs.review].map((p) => p.branch).filter(Boolean);
         window.DevTowerCrew.setPrBranches(branches);
-        // feed the central billboard the PRs waiting on the operator's review
-        window.DevTowerCrew.setReviewPrs(prs.review.map((p) => ({
-          number: p.number, repo: p.repo, title: p.title, branch: p.branch, url: p.url,
-        })));
+        // feed the central billboard the grouped branch board (one group per repo,
+        // one row per branch) plus the viewer login that powers the "me" filters
+        if (window.DevTowerCrew.setBranchBoard) {
+          window.DevTowerCrew.setBranchBoard(Array.isArray(m.repos) ? m.repos : [], m.viewer);
+        }
       }
     } else if (m.type === "usage") {
       renderUsage(m.usage);

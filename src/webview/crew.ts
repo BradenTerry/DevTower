@@ -222,8 +222,22 @@ const ISLAND_GAP = 1; // empty columns between adjacent islands
 const PLINTH_H = 22; // front-face height of the island pedestal (below ground)
 const PLINTH_APRON = 8; // depth of the pedestal's top surface tilting toward us
 const PLINTH_OV = 9; // how far the pedestal splays out past the tower on each side
-// central "PRs to review" billboard sitting to the left of the campus
-const BB_W = 138, BB_HEADER = 16, BB_ROW = 20, BB_MAX = 6, BB_GAP = 56;
+// central "Branches & PRs" billboard sitting to the left of the campus
+const BB_W = 348, BB_HEADER = 16, BB_GAP = 56;
+const BB_TAB_H = 15; // Branches / PRs tab bar
+const BB_SUB_H = 13; // Branches sub-tab row (Overview / Yours / Active / Stale / All)
+const BB_DD_H = 20, BB_DD_GAP = 4; // PR filter dropdowns
+const BB_CTRL_ROWS = 2; // controls band holds two rows (4+3 dropdowns / sub-tabs + search)
+const BB_CTRL_H = BB_CTRL_ROWS * BB_DD_H + (BB_CTRL_ROWS - 1) * BB_DD_GAP + 6; // fixed controls height
+const BB_OPT_H = 13; // option-row height inside an open dropdown menu
+const BB_MENU_MAX = 8; // max option rows shown in an open menu (search narrows the rest)
+// GitHub: "Active" = committed within 3 months; "Stale" = no commits in 3 months.
+const BB_STALE_MS = 90 * 24 * 3600 * 1000;
+const BB_GROUP_H = 15; // repo group sub-header height
+const BB_ROW = 22; // branch row height (two text lines) — the fixed virtual-row size
+const BB_VIEW_ROWS = 5; // rows the fixed scroll viewport shows before scrolling
+const BB_VIEW_H = BB_VIEW_ROWS * BB_ROW; // fixed viewport height (panel never resizes)
+const BB_SB_W = 3; // scrollbar track width
 
 interface Particle {
   x: number; y: number; vx: number; vy: number;
@@ -305,6 +319,126 @@ interface BoardData {
     reviewersPending: number;
     comments: number;
   };
+}
+
+/** One open PR attached to a branch row on the Branches & PRs billboard. Mirrors
+ *  the host-side BranchPr (src/prs.ts) — kept as a local shape so this browser
+ *  bundle never imports node code. */
+interface BranchPr {
+  number: number;
+  url: string;
+  title: string;
+  isDraft: boolean;
+  checks: "pass" | "fail" | "pending" | "none";
+  checksPass: number;
+  checksFailed: number;
+  checksRunning: number;
+  checksTotal: number;
+  review: "approved" | "changes" | "required" | "none";
+  approvals: number;
+  changesRequested: number;
+  reviewersPending: number;
+  comments: number;
+  author?: string;
+  isMine: boolean;
+  reviewRequestedFromMe: boolean;
+  updatedAt?: string;
+  createdAt?: string;
+  assignees: string[];
+  labels: string[];
+  milestone?: string;
+  projects: string[];
+}
+/** One branch row under a repo group. */
+interface BranchRow {
+  branch: string;
+  repo: string; // owner/repo (matches its group)
+  isDefault: boolean;
+  hasWorktree: boolean; // already checked out locally → no send action
+  pr?: BranchPr;
+  updatedAt?: string; // ISO tip-commit date (or the PR's updatedAt)
+  mine: boolean; // tip commit authored by the local git user
+  ahead: number; // commits ahead of the default branch
+  behind: number; // commits behind the default branch
+}
+/** A repository group on the billboard: its default-branch build badge + rows. */
+interface RepoGroup {
+  repo: string; // owner/repo
+  shortName: string; // island label, used by the host to resolve a directory
+  defaultBranch: string;
+  main: { checks: "pass" | "fail" | "pending" | "none"; pass: number; fail: number; running: number; total: number };
+  branches: BranchRow[];
+}
+
+/** The billboard has two tabs, mirroring GitHub's Branches page and PR list. */
+type BoardTab = "branches" | "prs";
+/** Branch sub-tabs, mirroring GitHub's branch list views. */
+type BranchSubTab = "overview" | "yours" | "active" | "stale" | "all";
+const BRANCH_SUBTABS: { key: BranchSubTab; label: string }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "yours", label: "Yours" },
+  { key: "active", label: "Active" },
+  { key: "stale", label: "Stale" },
+  { key: "all", label: "All" },
+];
+/** PR-tab filter dropdowns, modeled on GitHub's PR filter bar (author:, label:,
+ *  project:, milestone:, review:, assignee:, sort:). All are ANDed; only Label is
+ *  multi-select. */
+type DDKey = "author" | "label" | "projects" | "milestone" | "reviews" | "assignee" | "sort";
+interface FilterOption { value: string; label: string }
+/** Dropdowns whose options are dynamic entities → they get a search-in-menu box. */
+const DD_ENTITY: Partial<Record<DDKey, boolean>> = { author: true, label: true, projects: true, milestone: true, assignee: true };
+/** review: + review-requested:@me, folded into one menu like GitHub's Reviews. */
+const REVIEWS_OPTIONS: FilterOption[] = [
+  { value: "", label: "Any" },
+  { value: "reviewme", label: "Awaiting review from you" },
+  { value: "approved", label: "Approved" },
+  { value: "changes", label: "Changes requested" },
+  { value: "required", label: "Review required" },
+  { value: "none", label: "No review" },
+];
+/** sort: order for the PR list. */
+const SORT_OPTIONS: FilterOption[] = [
+  { value: "updated", label: "Recently updated" },
+  { value: "least-updated", label: "Least recently updated" },
+  { value: "newest", label: "Newest" },
+  { value: "oldest", label: "Oldest" },
+  { value: "most-commented", label: "Most commented" },
+  { value: "least-commented", label: "Least commented" },
+];
+
+interface Rect { x: number; y: number; w: number; h: number }
+/** Resolved layout of the Branches & PRs billboard, shared by draw + hit-test.
+ *  The panel is a FIXED size; group/branch rows live inside a scroll viewport and
+ *  are virtualized — only items intersecting the viewport carry `visible: true`.
+ *  Row `y`/`send`/`open` are already scroll-adjusted (absolute screen-world). */
+interface BillboardGeom {
+  x: number; top: number; w: number; bodyH: number; headerH: number; surfaceY: number;
+  refresh: Rect;
+  tab: BoardTab;
+  /** Branches / PRs tab bar. */
+  tabs: { key: BoardTab; label: string; rect: Rect; active: boolean }[];
+  /** Branch sub-tabs (branches mode): Overview / Yours / Active / Stale / All. */
+  subTabs: { key: BranchSubTab; label: string; rect: Rect; active: boolean }[];
+  /** PR filter dropdowns (prs mode): Author / Label / Projects / Milestone /
+   *  Reviews / Assignee / Sort. */
+  dropdowns: { key: DDKey; label: string; valueLabel: string; rect: Rect; open: boolean; active: boolean }[];
+  /** The branch search box (branches mode). */
+  searchBox?: Rect;
+  /** The open dropdown's option menu, drawn as an overlay on top of the rows. A
+   *  `searchRect` (entity dropdowns) filters its options; `multi` selects many. */
+  openMenu?: { key: DDKey; rect: Rect; multi: boolean; searchRect?: Rect; options: { value: string; label: string; rect: Rect; selected: boolean }[] };
+  /** The fixed scroll viewport the rows are clipped to. */
+  viewport: Rect;
+  /** Repo group sub-headers (with their main-build badge). */
+  groups: { group: RepoGroup; y: number; visible: boolean }[];
+  /** Branch rows under the groups, each with optional send / open sub-rects. */
+  rows: { group: RepoGroup; row: BranchRow; y: number; visible: boolean; send?: Rect; open?: Rect }[];
+  /** Scrollbar track + thumb, present only when the content overflows. */
+  scrollbar?: { track: Rect; thumb: Rect };
+  visibleTotal: number; // rows matching the active filter
+  showChips: boolean; // false in the loading / disconnected placeholder states
+  emptyLine?: string; // a centered line under the chips when nothing matches
 }
 
 /** An island: one repo/directory hosting a contiguous cluster of buildings. */
@@ -501,9 +635,27 @@ class PixelCrew {
     panX: number; panY: number; zoomMul: number;
   } = null;
   private prBranches = new Set<string>(); // branches (lowercased) with an open PR
-  // review-requested PRs shown on the central billboard (left of the campus);
-  // clicking a row opens the dispatch modal to assign a reviewer to it
-  private reviewPrs: { number: number; repo: string; title: string; branch?: string; url?: string }[] = [];
+  // grouped branch board shown on the central billboard (left of the campus):
+  // one repo group per tracked island, one row per branch, open-PR data attached
+  private repos: RepoGroup[] = [];
+  private viewer?: string; // authenticated GitHub login, for the "Me" author option
+  private boardTab: BoardTab = "branches"; // Branches / PRs tab
+  private branchSubTab: BranchSubTab = "overview"; // Branches sub-tab
+  private branchSearch = ""; // Branches search box text
+  // PR-tab filter dropdowns, ANDed. "" = Any. "@me"/"@none" are special sentinels.
+  private prAuthorFilter = ""; // author:
+  private prLabels = new Set<string>(); // label: (multi-select; "@none" = unlabeled)
+  private prProjectFilter = ""; // project:
+  private prMilestoneFilter = ""; // milestone:
+  private prReviewsFilter = ""; // review:
+  private prAssigneeFilter = ""; // assignee:
+  private prSort = "updated"; // sort:
+  private openDropdown: DDKey | null = null; // which PR dropdown menu is expanded
+  private menuSearch = ""; // search-in-menu text for the open entity dropdown
+  // which text input has keyboard focus (the branch search box, or the open menu's
+  // search field), so keystrokes route to the right place
+  private bbInput: "branchSearch" | "menuSearch" | null = null;
+  private boardScroll = 0; // px the row viewport is scrolled (fixed-size, virtualized)
   // null = not yet known (startup); false = no GitHub token, show the disconnected
   // placeholder instead of an empty/"nothing awaiting" state
   private githubConnected: boolean | null = null;
@@ -587,6 +739,9 @@ class PixelCrew {
   private onAssignReviewCb: (pr: { number: number; repo: string; title: string; branch?: string; url?: string }) => void = () => {};
   private onRefreshPrsCb: () => void = () => {};
   private onOpenPrCb: (url: string) => void = () => {};
+  // a branch row's "send to worktree" glyph → create a worktree on that branch.
+  // carries the repo's shortName (host resolves it to a directory) + branch.
+  private onSendBranchToWorktreeCb: (repoShortName: string, branch: string) => void = () => {};
   // debug event sink (forwarded to the extension's debug log when enabled)
   private onDebugCb: (event: string, data?: unknown) => void = () => {};
   private debugOn = false;
@@ -665,7 +820,8 @@ class PixelCrew {
         const hit = this.pick(e);
         const clickable = !!(hit.agent || hit.room || hit.ghost || hit.addDev || hit.useDir || hit.removeBtn ||
           hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom || hit.openPrUrl ||
-          hit.billboardRefresh || hit.reviewPr || hit.billboardZoom);
+          hit.billboardRefresh || hit.reviewPr || hit.billboardZoom || hit.ddToggle || hit.ddOption ||
+          hit.boardTabSel || hit.branchSub || hit.sendBranch || hit.searchFocus || hit.menuSearchFocus);
         this.container.style.cursor = clickable ? "pointer" : "default";
         const hk = this.hoverKeyOf(hit);
         if (hk !== this.hoverKey) { this.hoverKey = hk; this.invalidate(); } // repaint the highlight
@@ -722,11 +878,24 @@ class PixelCrew {
       "wheel",
       (e) => {
         e.preventDefault();
+        // over the scrollable branch board → scroll its rows instead of zooming
+        const rect = this.canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+        const bb = this.billboardGeom();
+        if (bb.showChips && bb.scrollbar &&
+            this.inRect(mx, my, bb.viewport.x, bb.viewport.y, bb.viewport.w, bb.viewport.h)) {
+          this.scrollBranchBoard(e.deltaY * 0.6);
+          return;
+        }
         this.zoomMul = clamp(this.zoomMul * (1 - e.deltaY * 0.0012), 0.35, 4);
         this.invalidate();
       },
       { passive: false }
     );
+    // keystrokes feed the focused billboard text input (branch search / menu search)
+    document.addEventListener("keydown", (e) => {
+      if (this.handleBoardKey(e)) e.preventDefault();
+    });
   }
 
   onSelect(cb: (id: string) => void) { this.onSelectCb = cb; }
@@ -749,6 +918,7 @@ class PixelCrew {
   }
   onRefreshPrs(cb: () => void) { this.onRefreshPrsCb = cb; }
   onOpenPr(cb: (url: string) => void) { this.onOpenPrCb = cb; }
+  onSendBranchToWorktree(cb: (repoShortName: string, branch: string) => void) { this.onSendBranchToWorktreeCb = cb; }
   onDebug(cb: (event: string, data?: unknown) => void) { this.onDebugCb = cb; }
   setDebug(on: boolean) { this.debugOn = on; }
   /** Emit a scene debug event (no-op unless devtower.debugLog is on). */
@@ -798,30 +968,399 @@ class PixelCrew {
     this.invalidate();
   }
 
-  /** Review-requested PRs listed on the central billboard. */
-  setReviewPrs(prs: { number: number; repo: string; title: string; branch?: string; url?: string }[]) {
-    this.reviewPrs = Array.isArray(prs) ? prs : [];
+  /** Feed the grouped branch board (one group per tracked repo, one row per
+   *  branch) and the authenticated viewer login for the "me" filters. */
+  setBranchBoard(repos: RepoGroup[], viewer?: string) {
+    this.repos = Array.isArray(repos) ? repos : [];
+    this.viewer = viewer || undefined;
     this.layout(); // bounds depend on the billboard so the overview frames it
   }
 
-  /** Geometry for the review billboard, shared by draw + pick. Null when empty. */
-  private billboardGeom(): { x: number; top: number; w: number; bodyH: number; headerH: number; rowH: number; rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number; open: { x: number; y: number; w: number; h: number } }[]; surfaceY: number; extra: number; refresh: { x: number; y: number; w: number; h: number } } {
-    // always present, always listing its PRs (or an empty-state line); clicking
-    // it flies the camera in rather than expanding in place
-    const n = Math.min(this.reviewPrs.length, BB_MAX);
-    const x = this.campusMinX - BB_GAP - BB_W;
-    const surfaceY = floorBase(0) + SLAB;
-    const bodyH = BB_HEADER + Math.max(n, 1) * BB_ROW + 5;
-    const top = surfaceY - 40 - bodyH;
-    const rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number; open: { x: number; y: number; w: number; h: number } }[] = [];
-    for (let i = 0; i < n; i++) {
-      const y = top + BB_HEADER + i * BB_ROW;
-      rows.push({ pr: this.reviewPrs[i], y, open: { x: x + BB_W - 13, y: y + BB_ROW - 12, w: 10, h: 10 } });
+  /** Switch the Branches / PRs tab. */
+  setBoardTab(tab: BoardTab) {
+    if (this.boardTab === tab) return;
+    this.boardTab = tab;
+    this.openDropdown = null; this.bbInput = null; this.menuSearch = "";
+    this.boardScroll = 0;
+    this.layout();
+  }
+
+  /** Switch the Branches sub-tab (Overview / Yours / Active / Stale / All). */
+  setBranchSubTab(key: BranchSubTab) {
+    if (this.branchSubTab === key) return;
+    this.branchSubTab = key;
+    this.boardScroll = 0;
+    this.layout();
+  }
+
+  /** Focus the Branches search box (so keystrokes type into it). */
+  focusBranchSearch() {
+    this.openDropdown = null; this.menuSearch = "";
+    this.bbInput = "branchSearch";
+    this.invalidate();
+  }
+
+  /** Pick a value in a PR filter dropdown. Label is multi-select (toggle, menu
+   *  stays open); the rest are single-select (set + close). */
+  setBranchDropdown(key: DDKey, value: string) {
+    if (key === "label") {
+      if (value === "@none") {
+        if (this.prLabels.has("@none")) this.prLabels.delete("@none");
+        else { this.prLabels.clear(); this.prLabels.add("@none"); }
+      } else {
+        this.prLabels.delete("@none");
+        if (this.prLabels.has(value)) this.prLabels.delete(value); else this.prLabels.add(value);
+      }
+      this.boardScroll = 0;
+      this.layout(); // keep the menu open for further multi-select
+      return;
     }
+    if (key === "author") this.prAuthorFilter = value;
+    else if (key === "projects") this.prProjectFilter = value;
+    else if (key === "milestone") this.prMilestoneFilter = value;
+    else if (key === "reviews") this.prReviewsFilter = value;
+    else if (key === "assignee") this.prAssigneeFilter = value;
+    else this.prSort = value;
+    this.openDropdown = null; this.bbInput = null; this.menuSearch = "";
+    this.boardScroll = 0;
+    this.layout();
+  }
+
+  /** Expand / collapse a PR filter dropdown's option menu. Entity menus auto-focus
+   *  their search field. */
+  toggleBranchDropdown(key: DDKey) {
+    if (this.openDropdown === key) { this.openDropdown = null; this.bbInput = null; }
+    else { this.openDropdown = key; this.bbInput = DD_ENTITY[key] ? "menuSearch" : null; }
+    this.menuSearch = "";
+    this.invalidate();
+  }
+
+  /** Collapse any open dropdown menu (e.g. a click elsewhere). */
+  closeBranchDropdown() {
+    if (this.openDropdown !== null) { this.openDropdown = null; this.menuSearch = ""; if (this.bbInput === "menuSearch") this.bbInput = null; this.invalidate(); }
+  }
+
+  /** Route a keystroke into the focused text input (branch search / menu search).
+   *  Returns true if it was consumed. */
+  handleBoardKey(e: KeyboardEvent): boolean {
+    if (!this.bbInput) return false;
+    const isMenu = this.bbInput === "menuSearch";
+    let str = isMenu ? this.menuSearch : this.branchSearch;
+    if (e.key === "Escape") { if (isMenu) this.closeBranchDropdown(); else { this.bbInput = null; this.invalidate(); } return true; }
+    if (e.key === "Enter") { this.bbInput = isMenu ? this.bbInput : null; this.invalidate(); return true; }
+    if (e.key === "Backspace") str = str.slice(0, -1);
+    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) str += e.key;
+    else return false;
+    if (isMenu) this.menuSearch = str; else this.branchSearch = str;
+    this.boardScroll = 0;
+    this.layout();
+    return true;
+  }
+
+  /** Distinct entity options for a dropdown: Any (unless suppressed), a "none"
+   *  sentinel, Me (logins), then each distinct value from the loaded PRs. */
+  private entityOptions(pick: (pr: BranchPr) => string[], cfg: { any?: boolean; me?: boolean; noneLabel?: string }): FilterOption[] {
+    const out: FilterOption[] = [];
+    if (cfg.any !== false) out.push({ value: "", label: "Any" });
+    if (cfg.noneLabel) out.push({ value: "@none", label: cfg.noneLabel });
+    if (cfg.me && this.viewer) out.push({ value: "@me", label: "Me" });
+    const seen = new Set<string>();
+    for (const g of this.repos) for (const b of g.branches) {
+      if (!b.pr) continue;
+      for (const v of pick(b.pr)) if (v && v !== this.viewer && !seen.has(v)) { seen.add(v); out.push({ value: v, label: v }); }
+    }
+    return out;
+  }
+  private ddOptions(key: DDKey): FilterOption[] {
+    switch (key) {
+      case "author": return this.entityOptions((p) => (p.author ? [p.author] : []), { me: true });
+      case "assignee": return this.entityOptions((p) => p.assignees, { me: true, noneLabel: "Assigned to nobody" });
+      case "label": return this.entityOptions((p) => p.labels, { any: false, noneLabel: "Unlabeled" });
+      case "projects": return this.entityOptions((p) => p.projects, { noneLabel: "No project" });
+      case "milestone": return this.entityOptions((p) => (p.milestone ? [p.milestone] : []), { noneLabel: "No milestone" });
+      case "reviews": return REVIEWS_OPTIONS;
+      case "sort": return SORT_OPTIONS;
+    }
+  }
+  /** ddOptions filtered by the in-menu search text. */
+  private menuOptions(key: DDKey): FilterOption[] {
+    const q = this.menuSearch.trim().toLowerCase();
+    const all = this.ddOptions(key);
+    return q ? all.filter((o) => o.label.toLowerCase().includes(q)) : all;
+  }
+  private ddValue(key: DDKey): string {
+    switch (key) {
+      case "author": return this.prAuthorFilter;
+      case "projects": return this.prProjectFilter;
+      case "milestone": return this.prMilestoneFilter;
+      case "reviews": return this.prReviewsFilter;
+      case "assignee": return this.prAssigneeFilter;
+      case "sort": return this.prSort;
+      case "label": return ""; // multi — tracked in prLabels
+    }
+  }
+  private ddSelected(key: DDKey, value: string): boolean {
+    return key === "label" ? this.prLabels.has(value) : this.ddValue(key) === value;
+  }
+  private ddActive(key: DDKey): boolean {
+    if (key === "label") return this.prLabels.size > 0;
+    if (key === "sort") return this.prSort !== "updated";
+    return this.ddValue(key) !== "";
+  }
+  private ddValueLabel(key: DDKey): string {
+    if (key === "label") {
+      if (this.prLabels.size === 0) return "Any";
+      if (this.prLabels.has("@none")) return "Unlabeled";
+      return this.prLabels.size === 1 ? [...this.prLabels][0] : `${this.prLabels.size} labels`;
+    }
+    const v = this.ddValue(key);
+    return this.ddOptions(key).find((o) => o.value === v)?.label ?? (v || "Any");
+  }
+
+  /** Age of a branch's last activity in ms (Infinity when unknown). */
+  private branchAge(iso?: string): number {
+    if (!iso) return Infinity;
+    const t = Date.parse(iso);
+    return isNaN(t) ? Infinity : Math.max(0, Date.now() - t);
+  }
+  /** A short "updated N ago" label for the branch's tip-commit date. */
+  private relTime(iso?: string): string {
+    const ms = this.branchAge(iso);
+    if (!isFinite(ms)) return "—";
+    const s = ms / 1000;
+    if (s < 60) return "now";
+    const m = s / 60; if (m < 60) return `${Math.floor(m)}m`;
+    const h = m / 60; if (h < 24) return `${Math.floor(h)}h`;
+    const d = h / 24; if (d < 7) return `${Math.floor(d)}d`;
+    const wk = d / 7; if (wk < 5) return `${Math.floor(wk)}w`;
+    const mo = d / 30; if (mo < 12) return `${Math.floor(mo)}mo`;
+    return `${Math.floor(d / 365)}y`;
+  }
+
+  /** Whether a branch row belongs to the active Branches sub-tab (GitHub: Active =
+   *  committed within 3 months; Stale = no commits in 3 months; Yours/Active/Stale
+   *  exclude the default branch). Also honors the search box. */
+  private branchInSubTab(row: BranchRow): boolean {
+    if (this.branchSearch && !row.branch.toLowerCase().includes(this.branchSearch.toLowerCase())) return false;
+    const age = this.branchAge(row.updatedAt);
+    switch (this.branchSubTab) {
+      case "all": return true;
+      case "yours": return row.mine && !row.isDefault;
+      case "active": return !row.isDefault && age <= BB_STALE_MS;
+      case "stale": return !row.isDefault && isFinite(age) && age > BB_STALE_MS;
+      case "overview": return row.isDefault || (row.mine && !row.isDefault) || age <= BB_STALE_MS;
+    }
+  }
+  /** Sort branch rows: Stale = oldest first; otherwise default pinned, then most
+   *  recently updated first. */
+  private sortBranchRows(rows: BranchRow[]): BranchRow[] {
+    const t = (r: BranchRow) => Date.parse(r.updatedAt || "") || 0;
+    if (this.branchSubTab === "stale") return [...rows].sort((a, b) => t(a) - t(b));
+    return [...rows].sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0) || t(b) - t(a));
+  }
+
+  /** Whether a PR row passes the PR-tab filter dropdowns (ANDed). Branchless rows
+   *  are excluded (the PRs tab lists open PRs only). */
+  private prVisible(row: BranchRow): boolean {
+    const pr = row.pr;
+    if (!pr) return false;
+    if (this.prAuthorFilter) {
+      const want = this.prAuthorFilter === "@me" ? this.viewer : this.prAuthorFilter;
+      if (pr.author !== want) return false;
+    }
+    if (this.prAssigneeFilter) {
+      if (this.prAssigneeFilter === "@none") { if (pr.assignees.length) return false; }
+      else { const want = this.prAssigneeFilter === "@me" ? this.viewer : this.prAssigneeFilter; if (!want || !pr.assignees.includes(want)) return false; }
+    }
+    if (this.prLabels.size) {
+      if (this.prLabels.has("@none")) { if (pr.labels.length) return false; }
+      else { for (const l of this.prLabels) if (!pr.labels.includes(l)) return false; } // AND
+    }
+    if (this.prProjectFilter) {
+      if (this.prProjectFilter === "@none") { if (pr.projects.length) return false; }
+      else if (!pr.projects.includes(this.prProjectFilter)) return false;
+    }
+    if (this.prMilestoneFilter) {
+      if (this.prMilestoneFilter === "@none") { if (pr.milestone) return false; }
+      else if (pr.milestone !== this.prMilestoneFilter) return false;
+    }
+    const rf = this.prReviewsFilter;
+    if (rf === "reviewme") { if (!pr.reviewRequestedFromMe) return false; }
+    else if (rf) { if (pr.review !== rf) return false; }
+    return true;
+  }
+  /** Sort PR rows per the Sort dropdown. */
+  private sortPrRows(rows: BranchRow[]): BranchRow[] {
+    const upd = (r: BranchRow) => Date.parse(r.pr?.updatedAt || r.updatedAt || "") || 0;
+    const cre = (r: BranchRow) => Date.parse(r.pr?.createdAt || "") || r.pr?.number || 0;
+    const cmt = (r: BranchRow) => r.pr?.comments || 0;
+    const by = this.prSort;
+    return [...rows].sort((a, b) =>
+      by === "least-updated" ? upd(a) - upd(b)
+      : by === "newest" ? cre(b) - cre(a)
+      : by === "oldest" ? cre(a) - cre(b)
+      : by === "most-commented" ? cmt(b) - cmt(a)
+      : by === "least-commented" ? cmt(a) - cmt(b)
+      : upd(b) - upd(a)); // recently updated (default)
+  }
+
+  /** Scroll the row viewport by `dy` px, clamped. Returns true if it moved (so the
+   *  wheel handler knows to consume the event instead of zooming). */
+  scrollBranchBoard(dy: number): boolean {
+    const bb = this.billboardGeom();
+    if (!bb.scrollbar) return false; // nothing to scroll
+    const before = this.boardScroll;
+    this.boardScroll = clamp(this.boardScroll + dy, 0, this.bbMaxScroll);
+    if (this.boardScroll !== before) { this.invalidate(); return true; }
+    return false;
+  }
+  private bbMaxScroll = 0; // last computed max scroll, for the wheel handler's clamp
+
+  /** Resolved billboard layout, shared by draw + hit-test. Always returns a frame
+   *  (even disconnected / loading / empty) so the panel is a stable landmark. The
+   *  panel is a FIXED size; rows live in a scroll viewport and are virtualized. */
+  private billboardGeom(): BillboardGeom {
+    const x = this.campusMinX - BB_GAP - BB_W;
+    const w = BB_W;
+    const surfaceY = floorBase(0) + SLAB;
+    const tab = this.boardTab;
+    const prs = tab === "prs";
+
+    const loading = this.prLoading && this.repos.length === 0;
+    const disconnected = this.githubConnected === false;
+    const showChips = !disconnected && !loading; // "show filters + rows" state
+
+    // filter each repo group's rows for the active tab/sub-tab; drop empty groups
+    const filtered: { g: RepoGroup; rows: BranchRow[] }[] = [];
+    let visibleTotal = 0;
+    for (const g of this.repos) {
+      let grows = g.branches.filter((r) => (prs ? this.prVisible(r) : this.branchInSubTab(r)));
+      grows = prs ? this.sortPrRows(grows) : this.sortBranchRows(grows);
+      if (grows.length === 0) continue;
+      filtered.push({ g, rows: grows });
+      visibleTotal += grows.length;
+    }
+    const shownRows = filtered.reduce((a, p) => a + p.rows.length, 0);
+    const contentH = filtered.length * BB_GROUP_H + shownRows * BB_ROW;
+
+    const emptyLine = showChips && shownRows === 0
+      ? (this.repos.length === 0 ? "no repositories tracked"
+        : prs ? "no open PRs match"
+        : this.branchSubTab === "yours" ? "no branches by you"
+        : this.branchSubTab === "stale" ? "no stale branches"
+        : this.branchSubTab === "active" ? "no active branches" : "no branches")
+      : undefined;
+
+    // FIXED panel height — header + tab bar + controls + viewport. Never resizes.
+    const bodyH = showChips ? BB_HEADER + BB_TAB_H + BB_CTRL_H + BB_VIEW_H + 5 : BB_HEADER + 48;
+    const top = surfaceY - 40 - bodyH;
+    const tabsTop = top + BB_HEADER;
+    const ctrlTop = tabsTop + BB_TAB_H;
+
+    // Branches / PRs tab bar (two equal segments)
+    const tabs: BillboardGeom["tabs"] = [];
+    const subTabs: BillboardGeom["subTabs"] = [];
+    const dropdowns: BillboardGeom["dropdowns"] = [];
+    let searchBox: Rect | undefined;
+    const ddX = x + 6, ddW = w - 12;
+    const row1Y = ctrlTop + 3, row2Y = ctrlTop + 3 + BB_DD_H + BB_DD_GAP;
+    if (showChips) {
+      const tw = (w - 12) / 2;
+      (["branches", "prs"] as BoardTab[]).forEach((key, i) => {
+        tabs.push({ key, label: key === "branches" ? "Branches" : "PRs",
+          rect: { x: x + 6 + i * tw, y: tabsTop + 1, w: tw, h: BB_TAB_H - 2 }, active: tab === key });
+      });
+      if (prs) {
+        // PR filter dropdowns across two rows: Author/Label/Projects/Milestone, then Reviews/Assignee/Sort
+        const DD_LABELS: Record<DDKey, string> = { author: "Author", label: "Label", projects: "Projects", milestone: "Milestone", reviews: "Reviews", assignee: "Assignee", sort: "Sort" };
+        const layRow = (keys: DDKey[], ry: number) => {
+          const bw = (ddW - (keys.length - 1) * BB_DD_GAP) / keys.length;
+          keys.forEach((key, i) => dropdowns.push({
+            key, label: DD_LABELS[key], valueLabel: this.ddValueLabel(key), active: this.ddActive(key),
+            rect: { x: ddX + i * (bw + BB_DD_GAP), y: ry, w: bw, h: BB_DD_H }, open: this.openDropdown === key,
+          }));
+        };
+        layRow(["author", "label", "projects", "milestone"], row1Y);
+        layRow(["reviews", "assignee", "sort"], row2Y);
+      } else {
+        // Branches: sub-tabs row + search box row
+        const sTop = row1Y + (BB_DD_H - BB_SUB_H) / 2;
+        const sw = (ddW - (BRANCH_SUBTABS.length - 1) * BB_DD_GAP) / BRANCH_SUBTABS.length;
+        BRANCH_SUBTABS.forEach((s, i) => {
+          subTabs.push({ key: s.key, label: s.label,
+            rect: { x: ddX + i * (sw + BB_DD_GAP), y: sTop, w: sw, h: BB_SUB_H }, active: this.branchSubTab === s.key });
+        });
+        searchBox = { x: ddX, y: row2Y, w: ddW, h: BB_DD_H };
+      }
+    }
+
+    // the fixed scroll viewport the rows are clipped to
+    const viewTop = ctrlTop + BB_CTRL_H;
+    const viewport: Rect = { x, y: viewTop, w, h: showChips ? BB_VIEW_H : 0 };
+    const maxScroll = Math.max(0, contentH - BB_VIEW_H);
+    this.bbMaxScroll = maxScroll;
+    const scroll = clamp(this.boardScroll, 0, maxScroll);
+
+    // lay groups + rows out in content space, then offset by -scroll into the
+    // viewport; mark only those intersecting the viewport `visible` (virtualized)
+    const groups: BillboardGeom["groups"] = [];
+    const rows: BillboardGeom["rows"] = [];
+    const inView = (yy: number, h: number) => yy + h > viewport.y && yy < viewport.y + viewport.h;
+    let cy = viewTop - scroll;
+    for (const p of filtered) {
+      groups.push({ group: p.g, y: cy, visible: inView(cy, BB_GROUP_H) });
+      cy += BB_GROUP_H;
+      for (const row of p.rows) {
+        const visible = inView(cy, BB_ROW);
+        const rightX = x + w - 14;
+        let glyphX = rightX;
+        let open: Rect | undefined;
+        let send: Rect | undefined;
+        if (row.pr?.url) { open = { x: glyphX, y: cy + 6, w: 10, h: 10 }; glyphX -= 13; }
+        if (!prs && !row.hasWorktree) { send = { x: glyphX, y: cy + 6, w: 10, h: 10 }; } // send only on the Branches tab
+        rows.push({ group: p.g, row, y: cy, visible, send, open });
+        cy += BB_ROW;
+      }
+    }
+
+    let scrollbar: BillboardGeom["scrollbar"];
+    if (showChips && maxScroll > 0) {
+      const track: Rect = { x: x + w - BB_SB_W - 1, y: viewport.y + 1, w: BB_SB_W, h: viewport.h - 2 };
+      const thumbH = Math.max(12, (BB_VIEW_H / contentH) * track.h);
+      const thumbY = track.y + (scroll / maxScroll) * (track.h - thumbH);
+      scrollbar = { track, thumb: { x: track.x, y: thumbY, w: track.w, h: thumbH } };
+    }
+
+    // the open dropdown's option menu, drawn last as an overlay over the rows.
+    // Entity menus get a search field; options are search-filtered + capped.
+    let openMenu: BillboardGeom["openMenu"];
+    if (showChips && prs && this.openDropdown) {
+      const dd = dropdowns.find((d) => d.key === this.openDropdown);
+      if (dd) {
+        const isEntity = !!DD_ENTITY[dd.key];
+        const shown = this.menuOptions(dd.key).slice(0, BB_MENU_MAX);
+        // the menu is wider than its (narrow) button so option labels fit, clamped
+        // to stay inside the panel
+        const menuW = Math.min(w - 12, Math.max(dd.rect.w, 150));
+        const menuX = Math.min(dd.rect.x, x + w - 6 - menuW);
+        const menuTop = dd.rect.y + dd.rect.h + 1;
+        let oy = menuTop;
+        let searchRect: Rect | undefined;
+        if (isEntity) { searchRect = { x: menuX, y: oy, w: menuW, h: BB_OPT_H }; oy += BB_OPT_H; }
+        const options = shown.map((o, i) => ({
+          value: o.value, label: o.label,
+          rect: { x: menuX, y: oy + i * BB_OPT_H, w: menuW, h: BB_OPT_H },
+          selected: this.ddSelected(dd.key, o.value),
+        }));
+        const menuH = (isEntity ? BB_OPT_H : 0) + shown.length * BB_OPT_H;
+        openMenu = { key: dd.key, rect: { x: menuX, y: menuTop, w: menuW, h: menuH }, multi: dd.key === "label", searchRect, options };
+      }
+    }
+
     return {
-      x, top, w: BB_W, bodyH, headerH: BB_HEADER, rows, rowH: BB_ROW, surfaceY,
-      extra: this.reviewPrs.length - n,
-      refresh: { x: x + BB_W - 14, y: top + 3, w: 11, h: 11 },
+      x, top, w, bodyH, headerH: BB_HEADER, surfaceY,
+      refresh: { x: x + w - 14, y: top + 3, w: 11, h: 11 },
+      tab, tabs, subTabs, dropdowns, searchBox, openMenu, viewport, groups, rows, scrollbar, visibleTotal, showChips, emptyLine,
     };
   }
 
@@ -1878,6 +2417,10 @@ class PixelCrew {
       if (tn.tapAt !== undefined && this.frame - tn.tapAt < 8) return false;
       const s = tn.agent.state;
       if (s === "active" || s === "waiting") return false;
+      // a no-longer-working dev still holding fetched books hasn't run its
+      // put-down yet; keep the loop alive one more tick so it sets them on the
+      // desk, otherwise the loop can park before tick() fires and strand the read
+      if (tn.booksInHand > 0) return false;
     }
     return true;
   }
@@ -2239,20 +2782,62 @@ class PixelCrew {
     pullRoom?: string; // building key → pull upstream commits
     fetchRoom?: string; // building key → fetch remote refs (refresh behind/ahead)
     reviewPr?: { number: number; repo: string; title: string; branch?: string; url?: string };
-    billboardRefresh?: boolean; // ↻ on the review sign
-    billboardZoom?: boolean; // click the sign body → fly the camera to it
+    billboardRefresh?: boolean; // ↻ on the branch board
+    billboardZoom?: boolean; // click the board body → fly the camera to it
     openPrUrl?: string; // ↗ on a row → open the PR on GitHub
+    ddToggle?: DDKey; // a filter dropdown header → expand / collapse it
+    ddOption?: { key: DDKey; value: string }; // a dropdown menu option → select it
+    ddClose?: boolean; // a click that should just dismiss the open dropdown menu
+    boardTabSel?: BoardTab; // a Branches / PRs tab → switch tab
+    branchSub?: BranchSubTab; // a Branches sub-tab → switch sub-tab
+    searchFocus?: boolean; // the Branches search box → focus it
+    menuSearchFocus?: boolean; // the open menu's search field → focus it
+    sendBranch?: { repoShortName: string; branch: string }; // + → worktree on a branch
   } {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
 
-    // review billboard: refresh button → rows → anywhere else zooms to the sign
+    // branch board: refresh → tab bar → (open menu options) → dropdowns / sub-tabs
+    // → row controls → row body (assign reviewer) → anywhere else zooms to the board
     const bb = this.billboardGeom();
     {
       if (this.inRect(mx, my, bb.refresh.x, bb.refresh.y, bb.refresh.w, bb.refresh.h)) return { billboardRefresh: true };
-      for (const { pr, y, open } of bb.rows) {
-        if (pr.url && this.inRect(mx, my, open.x, open.y, open.w, open.h)) return { openPrUrl: pr.url };
-        if (this.inRect(mx, my, bb.x, y, bb.w, bb.rowH)) return { reviewPr: pr };
+      for (const t of bb.tabs) {
+        if (this.inRect(mx, my, t.rect.x, t.rect.y, t.rect.w, t.rect.h)) return { boardTabSel: t.key };
+      }
+      // an open dropdown menu captures clicks first (search field, options, else dismiss)
+      if (bb.openMenu) {
+        if (bb.openMenu.searchRect && this.inRect(mx, my, bb.openMenu.searchRect.x, bb.openMenu.searchRect.y, bb.openMenu.searchRect.w, bb.openMenu.searchRect.h)) return { menuSearchFocus: true };
+        for (const o of bb.openMenu.options) {
+          if (this.inRect(mx, my, o.rect.x, o.rect.y, o.rect.w, o.rect.h)) return { ddOption: { key: bb.openMenu.key, value: o.value } };
+        }
+        // clicking the open header toggles it shut; anywhere else dismisses it
+        const dd = bb.dropdowns.find((d) => d.key === bb.openMenu!.key);
+        if (dd && this.inRect(mx, my, dd.rect.x, dd.rect.y, dd.rect.w, dd.rect.h)) return { ddToggle: dd.key };
+        return { ddClose: true };
+      }
+      for (const d of bb.dropdowns) {
+        if (this.inRect(mx, my, d.rect.x, d.rect.y, d.rect.w, d.rect.h)) return { ddToggle: d.key };
+      }
+      for (const s of bb.subTabs) {
+        if (this.inRect(mx, my, s.rect.x, s.rect.y, s.rect.w, s.rect.h)) return { branchSub: s.key };
+      }
+      if (bb.searchBox && this.inRect(mx, my, bb.searchBox.x, bb.searchBox.y, bb.searchBox.w, bb.searchBox.h)) return { searchFocus: true };
+      // row controls live in the scroll viewport: only hit visible rows, and only
+      // when the click is inside the viewport (so a row scrolled under the filters
+      // or below the frame can't be clicked through the clip)
+      const inVp = this.inRect(mx, my, bb.viewport.x, bb.viewport.y, bb.viewport.w, bb.viewport.h);
+      if (inVp) {
+        for (const { group, row, y, visible, send, open } of bb.rows) {
+          if (!visible) continue;
+          if (send && this.inRect(mx, my, send.x, send.y, send.w, send.h)) {
+            return { sendBranch: { repoShortName: group.shortName, branch: row.branch } };
+          }
+          if (open && row.pr?.url && this.inRect(mx, my, open.x, open.y, open.w, open.h)) return { openPrUrl: row.pr.url };
+          if (row.pr && this.inRect(mx, my, bb.x, y, bb.w, BB_ROW)) {
+            return { reviewPr: { number: row.pr.number, repo: row.repo, title: row.pr.title, branch: row.branch, url: row.pr.url } };
+          }
+        }
       }
       if (this.inRect(mx, my, bb.x, bb.top, bb.w, bb.bodyH)) return { billboardZoom: true };
     }
@@ -2310,6 +2895,12 @@ class PixelCrew {
    *  can highlight whatever the cursor is hovering. null = not a button. */
   private hoverKeyOf(h: ReturnType<PixelCrew["pick"]>): string | null {
     if (h.billboardRefresh) return "bbRefresh";
+    if (h.boardTabSel) return "bbtab:" + h.boardTabSel;
+    if (h.branchSub) return "bbsub:" + h.branchSub;
+    if (h.searchFocus) return "bbsearch";
+    if (h.ddToggle) return "bbdd:" + h.ddToggle;
+    if (h.ddOption) return "bbopt:" + h.ddOption.key + ":" + h.ddOption.value;
+    if (h.sendBranch) return "bbsend:" + h.sendBranch.repoShortName + ":" + h.sendBranch.branch;
     if (h.openPrUrl) return "openpr:" + h.openPrUrl;
     if (h.addDev) return "addDev:" + h.addDev.key;
     if (h.useDir) return "useDir:" + h.useDir;
@@ -2329,6 +2920,14 @@ class PixelCrew {
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
     if (hit.billboardRefresh) { this.setBusy("bbRefresh"); this.onRefreshPrsCb(); }
+    else if (hit.boardTabSel) { this.closeBranchDropdown(); this.setBoardTab(hit.boardTabSel); }
+    else if (hit.branchSub) { this.setBranchSubTab(hit.branchSub); }
+    else if (hit.searchFocus) { this.focusBranchSearch(); }
+    else if (hit.menuSearchFocus) { /* already focused when the menu opened */ }
+    else if (hit.ddOption) { this.setBranchDropdown(hit.ddOption.key, hit.ddOption.value); }
+    else if (hit.ddToggle) { this.toggleBranchDropdown(hit.ddToggle); }
+    else if (hit.ddClose) { this.closeBranchDropdown(); }
+    else if (hit.sendBranch) { this.setBusy("bbsend:" + hit.sendBranch.repoShortName + ":" + hit.sendBranch.branch); this.onSendBranchToWorktreeCb(hit.sendBranch.repoShortName, hit.sendBranch.branch); }
     else if (hit.openPrUrl) { this.onOpenPrCb(hit.openPrUrl); }
     else if (hit.billboardZoom) { this.focusBillboard(); }
     else if (hit.reviewPr) { this.onAssignReviewCb(hit.reviewPr); }
@@ -2450,7 +3049,7 @@ class PixelCrew {
     for (const isl of this.islands.values()) this.drawIslandPlatform(ctx, isl);
 
     // central "PRs to review" billboard, standing to the left of the campus
-    this.drawReviewBillboard(ctx);
+    this.drawBranchBoard(ctx);
 
     // rooms back layer
     for (const r of this.rooms.values()) this.drawRoomBack(ctx, r);
@@ -2943,11 +3542,48 @@ class PixelCrew {
     return s.slice(0, lo).trimEnd() + "…";
   }
 
-  /** The standalone signboard listing review-requested PRs. Each row is a tap
-   *  target (see pick → reviewPr) that opens the dispatch modal for that PR. */
-  private drawReviewBillboard(ctx: CanvasRenderingContext2D) {
+  /** Color for a rolled-up check / build state. */
+  private checkColor(s: "pass" | "fail" | "pending" | "none"): string {
+    return s === "pass" ? "#3ee089" : s === "fail" ? "#ff6055" : s === "pending" ? "#ffb13d" : TEXT.muted;
+  }
+
+  /** Draw a compact check rollup (Np✓ Nf✗ + pulsing running dot) at (sx,py).
+   *  Returns the advanced x cursor. */
+  private drawChecksInline(ctx: CanvasRenderingContext2D, pr: BranchPr, sx: number, py: number): number {
+    if (pr.checksTotal <= 0) return sx;
+    ctx.font = "bold 6px 'Martian Mono', monospace";
+    if (pr.checksPass > 0) { ctx.fillStyle = "#3ee089"; const t = `${pr.checksPass}✓`; ctx.fillText(t, sx, py); sx += ctx.measureText(t).width + 3; }
+    if (pr.checksFailed > 0) { ctx.fillStyle = "#ff6055"; const t = `${pr.checksFailed}✗`; ctx.fillText(t, sx, py); sx += ctx.measureText(t).width + 3; }
+    if (pr.checksRunning > 0) {
+      const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+      ctx.globalAlpha = pa; ctx.fillStyle = "#ffb13d";
+      ctx.beginPath(); ctx.arc(sx + 1.4, py - 1.3, 1.4, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1; ctx.fillStyle = "#ffb13d";
+      ctx.fillText(`${pr.checksRunning}`, sx + 3.6, py); sx += 3.6 + ctx.measureText(`${pr.checksRunning}`).width + 3;
+    }
+    return sx;
+  }
+
+  /** Draw a compact review state (✓N approved / ✗N changes / ◷N requested) at
+   *  (sx,py), stopping before `limitX`. Returns the advanced x cursor. */
+  private drawReviewInline(ctx: CanvasRenderingContext2D, pr: BranchPr, sx: number, py: number, limitX: number): number {
+    ctx.font = "6px 'IBM Plex Mono', monospace";
+    const seg = (label: string, on: string) => {
+      if (sx > limitX - 4) return;
+      ctx.fillStyle = on; ctx.fillText(label, sx, py); sx += ctx.measureText(label).width + 3;
+    };
+    if (pr.review === "approved") seg(`✓${pr.approvals}`, "#3ee089");
+    else if (pr.review === "changes") seg(`✗${pr.changesRequested}`, "#ff6055");
+    else if (pr.reviewersPending > 0) seg(`◷${pr.reviewersPending}`, "#56c7ff");
+    return sx;
+  }
+
+  /** The Branches & PRs billboard: filter chips, repo groups (each with a
+   *  default-branch build badge), and one row per branch with its open-PR state,
+   *  send-to-worktree (+) and open-on-GitHub (↗) controls. */
+  private drawBranchBoard(ctx: CanvasRenderingContext2D) {
     const bb = this.billboardGeom();
-    const { x, top, w, bodyH, headerH, rows, surfaceY, extra, refresh } = bb;
+    const { x, top, w, bodyH, headerH, surfaceY, refresh, tabs, subTabs, dropdowns, groups, rows, viewport } = bb;
     const legTop = top + bodyH;
     // two posts down to the ground + a soft contact shadow
     ctx.fillStyle = "#3a2c1d";
@@ -2963,16 +3599,17 @@ class PixelCrew {
     ctx.strokeStyle = "#2b3a47";
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, top + 0.5, w - 1, bodyH - 1);
-    // header band: chevron + title + count + refresh
+    // header band: title + count + refresh
     ctx.fillStyle = "#1d2a36";
     ctx.fillRect(x, top, w, headerH);
     ctx.fillStyle = "#ffb13d";
     ctx.font = "700 8px 'Martian Mono', monospace";
     ctx.textAlign = "left";
-    ctx.fillText("⌕ PRs TO REVIEW", x + 6, top + 11);
-    ctx.fillStyle = "rgba(255,177,61,0.6)"; // PR count, left of the refresh glyph
+    ctx.fillText("⎇ BRANCHES & PRs", x + 6, top + 11);
+    ctx.fillStyle = "rgba(255,177,61,0.6)"; // visible-branch count, left of refresh
+    ctx.font = "6px 'IBM Plex Mono', monospace";
     ctx.textAlign = "right";
-    ctx.fillText(String(this.reviewPrs.length), x + w - 19, top + 11);
+    ctx.fillText(String(bb.visibleTotal), x + w - 19, top + 11);
     // refresh button (spins while a PR refresh it kicked off is in flight)
     const bbRefHov = this.hov("bbRefresh");
     ctx.fillStyle = bbRefHov ? "rgba(255,177,61,0.22)" : "rgba(255,255,255,0.06)"; // hover tint
@@ -2985,44 +3622,236 @@ class PixelCrew {
       ctx.textAlign = "center";
       ctx.fillText("↻", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
     }
-    // PR rows
+
+    // Branches / PRs tab bar (segmented, underlined when active)
+    for (const t of tabs) {
+      const hov = this.hov("bbtab:" + t.key);
+      const r = t.rect;
+      ctx.fillStyle = t.active ? "rgba(255,177,61,0.16)" : hov ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)";
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      if (t.active) { ctx.fillStyle = "#ffb13d"; ctx.fillRect(r.x, r.y + r.h - 1.5, r.w, 1.5); }
+      ctx.fillStyle = t.active ? "#ffce85" : hov ? "#e3ecf1" : TEXT.muted;
+      ctx.font = "700 7px 'Martian Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(t.label, r.x + r.w / 2, r.y + r.h - 4);
+    }
     ctx.textAlign = "left";
-    for (const { pr, y, open } of rows) {
-      ctx.fillStyle = "rgba(255,255,255,0.06)"; // separator
-      ctx.fillRect(x + 4, y, w - 8, 0.6);
-      ctx.fillStyle = "#7fb8df"; // PR number
-      ctx.font = "600 7px 'IBM Plex Mono', monospace";
-      ctx.fillText(`#${pr.number}`, x + 6, y + 9);
-      ctx.fillStyle = TEXT.muted; // repo (right of number)
+
+    if (bb.tab === "prs") {
+      // PR filter dropdowns — compact buttons, category label on top, value below
+      for (const d of dropdowns) {
+        const hov = this.hov("bbdd:" + d.key);
+        const set = d.active;
+        const r = d.rect;
+        ctx.fillStyle = d.open ? "rgba(255,177,61,0.22)" : hov ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.05)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeStyle = d.open || set ? "#ffb13d" : "#2b3a47";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+        ctx.textAlign = "left";
+        ctx.font = "700 5px 'Martian Mono', monospace";
+        ctx.fillStyle = set ? "rgba(255,206,133,0.7)" : TEXT.muted;
+        ctx.fillText(d.label.toUpperCase(), r.x + 5, r.y + 8);
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = set ? "#ffce85" : "#c4d0d8";
+        ctx.fillText(this.fitText(ctx, d.valueLabel, r.w - 12), r.x + 5, r.y + r.h - 4);
+        ctx.fillStyle = hov || d.open ? "#ffb13d" : TEXT.muted;
+        ctx.textAlign = "right";
+        ctx.fillText(d.open ? "▴" : "▾", r.x + r.w - 3, r.y + r.h - 4);
+        ctx.textAlign = "left";
+      }
+    } else {
+      // Branches sub-tabs (Overview / Yours / Active / Stale / All) — pill row
+      for (const s of subTabs) {
+        const hov = this.hov("bbsub:" + s.key);
+        const r = s.rect;
+        ctx.fillStyle = s.active ? "rgba(255,177,61,0.22)" : hov ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.05)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        if (s.active) { ctx.strokeStyle = "#ffb13d"; ctx.lineWidth = 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1); }
+        ctx.fillStyle = s.active ? "#ffce85" : hov ? "#e3ecf1" : TEXT.muted;
+        ctx.font = "700 6px 'Martian Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(s.label, r.x + r.w / 2, r.y + r.h - 3.5);
+      }
+      // Branches search box
+      if (bb.searchBox) {
+        const r = bb.searchBox;
+        const focused = this.bbInput === "branchSearch";
+        const hov = this.hov("bbsearch");
+        ctx.fillStyle = "rgba(255,255,255,0.05)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeStyle = focused ? "#ffb13d" : hov ? "#3a4a57" : "#2b3a47";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+        ctx.textAlign = "left";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = TEXT.muted;
+        ctx.fillText("⌕", r.x + 5, r.y + r.h - 6);
+        const txt = this.branchSearch || (focused ? "" : "Search branches");
+        ctx.fillStyle = this.branchSearch ? "#e3ecf1" : "rgba(150,162,170,0.55)";
+        const caret = focused && this.frame % 16 < 8 ? "│" : "";
+        ctx.fillText(this.fitText(ctx, txt, r.w - 22) + caret, r.x + 13, r.y + r.h - 6);
+      }
+    }
+    ctx.textAlign = "left";
+
+    // rows + group headers live inside the fixed scroll viewport — clip so a
+    // partially-scrolled row never spills over the filters or the panel frame
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(viewport.x, viewport.y, viewport.w, viewport.h);
+    ctx.clip();
+
+    // repo group sub-headers + their main-build badge (virtualized: skip off-view)
+    for (const { group, y, visible } of groups) {
+      if (!visible) continue;
+      ctx.fillStyle = "rgba(255,255,255,0.045)";
+      ctx.fillRect(x + 2, y, w - 4, BB_GROUP_H);
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fillRect(x + 2, y, w - 4, 0.6);
+      ctx.fillStyle = TEXT.heading;
+      ctx.font = "700 7px 'Martian Mono', monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(this.fitText(ctx, group.repo, w * 0.62), x + 6, y + 10);
+      // main build badge, right-aligned: colored dot + counts (none → neutral, no counts)
+      const m = group.main;
+      const col = this.checkColor(m.checks);
+      const label = m.total > 0 ? `${m.pass}/${m.total}` : "—";
       ctx.font = "6px 'IBM Plex Mono', monospace";
       ctx.textAlign = "right";
-      ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.45), x + w - 6, y + 9);
-      ctx.textAlign = "left";
-      ctx.fillStyle = "rgba(230,238,240,0.9)"; // title
-      ctx.font = "7px 'IBM Plex Mono', monospace";
-      ctx.fillText(this.fitText(ctx, pr.title || "", w - 30), x + 6, y + 17);
-      // open-in-GitHub button (↗)
-      const aHov = !!pr.url && this.hov("openpr:" + pr.url);
-      ctx.fillStyle = aHov ? "rgba(127,184,223,0.42)" : "rgba(127,184,223,0.18)"; // accent chip, brighter on hover
-      ctx.fillRect(open.x, open.y, open.w, open.h);
-      ctx.fillStyle = aHov ? "#d6ecfb" : "#9fd0f0"; // brighter accent arrow
-      ctx.font = "bold 8px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = m.checks === "none" ? TEXT.muted : col;
+      ctx.fillText(label, x + w - 7, y + 10);
+      const lw = ctx.measureText(label).width;
+      if (m.checks === "pending") {
+        const pa = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+        ctx.globalAlpha = pa;
+      }
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(x + w - 9 - lw - 3, y + 7.4, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // rows (virtualized: skip off-view). Branch-centric on the Branches tab,
+    // PR-centric on the PRs tab.
+    ctx.textAlign = "left";
+    for (const { group, row, y, visible, send, open } of rows) {
+      if (!visible) continue;
+      const pr = row.pr;
+      ctx.fillStyle = "rgba(255,255,255,0.05)"; // separator
+      ctx.fillRect(x + 4, y, w - 8, 0.6);
+      const glyphLeft = send ? send.x : open ? open.x : x + w - 6;
+
+      if (bb.tab === "prs" && pr) {
+        // PR row — line 1: #num + title; line 2: author + checks + review
+        ctx.textAlign = "left";
+        ctx.font = "600 6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "#7fb8df";
+        const num = `#${pr.number}`;
+        ctx.fillText(num, x + 6, y + 9);
+        const numW = ctx.measureText(num).width + 4;
+        ctx.fillStyle = pr.isDraft ? "#9aa6ad" : "#e3ecf1";
+        ctx.font = "600 7px 'IBM Plex Mono', monospace";
+        ctx.fillText(this.fitText(ctx, pr.title || row.branch, glyphLeft - 4 - (x + 6 + numW)), x + 6 + numW, y + 9);
+        // line 2
+        let sx = x + 6;
+        if (pr.author) {
+          ctx.font = "6px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = pr.isMine ? "#ffce85" : TEXT.muted;
+          const a = this.fitText(ctx, pr.author, w * 0.3);
+          ctx.fillText(a, sx, y + 18); sx += ctx.measureText(a).width + 5;
+        }
+        sx = this.drawChecksInline(ctx, pr, sx, y + 18);
+        sx = this.drawReviewInline(ctx, pr, sx, y + 18, glyphLeft);
+        if (pr.reviewRequestedFromMe && sx < glyphLeft - 14) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = "#c58fff";
+          ctx.fillText("◉you", sx, y + 18);
+        }
+      } else {
+        // Branch row — line 1: branch + updated; line 2: state / checks / behind-ahead / #PR
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        const upd = this.relTime(row.updatedAt);
+        const updW = row.updatedAt ? ctx.measureText(upd).width + 4 : 0;
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#e3ecf1";
+        ctx.font = "600 7px 'IBM Plex Mono', monospace";
+        ctx.fillText(this.fitText(ctx, row.branch, glyphLeft - 4 - updW - (x + 6)), x + 6, y + 9);
+        if (row.updatedAt) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = TEXT.muted;
+          ctx.textAlign = "right"; ctx.fillText(upd, glyphLeft - 4, y + 9); ctx.textAlign = "left";
+        }
+        // line 2
+        let sx = x + 6;
+        if (row.isDefault) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = "#7fd0a4";
+          ctx.fillText("default", sx, y + 18); sx += ctx.measureText("default").width + 6;
+        } else if (row.hasWorktree) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = "#7fd0a4";
+          ctx.fillText("● worktree", sx, y + 18); sx += ctx.measureText("● worktree").width + 6;
+        }
+        if (pr) sx = this.drawChecksInline(ctx, pr, sx, y + 18);
+        if ((row.ahead || row.behind) && sx < glyphLeft - 28) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = TEXT.muted;
+          const ab = `↓${row.behind} ↑${row.ahead}`;
+          ctx.fillText(ab, sx, y + 18); sx += ctx.measureText(ab).width + 6;
+        }
+        if (pr && sx < glyphLeft - 14) {
+          ctx.font = "600 6px 'IBM Plex Mono', monospace"; ctx.fillStyle = "#7fb8df";
+          ctx.fillText(`#${pr.number}`, sx, y + 18);
+        }
+      }
+      // send-to-worktree (+) — only when not already checked out locally
+      if (send) {
+        const hov = this.hov("bbsend:" + group.shortName + ":" + row.branch);
+        ctx.fillStyle = hov ? "rgba(62,224,137,0.4)" : "rgba(62,224,137,0.16)";
+        ctx.fillRect(send.x, send.y, send.w, send.h);
+        ctx.fillStyle = hov ? "#aef0c9" : "#6fd0a4";
+        ctx.font = "bold 9px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("+", send.x + send.w / 2, send.y + send.h - 2.4);
+        ctx.textAlign = "left";
+      }
+      // open-on-GitHub (↗) — only when the branch has a PR
+      if (open && pr?.url) {
+        const hov = this.hov("openpr:" + pr.url);
+        ctx.fillStyle = hov ? "rgba(127,184,223,0.42)" : "rgba(127,184,223,0.18)";
+        ctx.fillRect(open.x, open.y, open.w, open.h);
+        ctx.fillStyle = hov ? "#d6ecfb" : "#9fd0f0";
+        ctx.font = "bold 8px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("↗", open.x + open.w / 2, open.y + open.h - 2.2);
+        ctx.textAlign = "left";
+      }
+    }
+    ctx.restore(); // end viewport clip
+
+    // scrollbar (only when the content overflows the fixed viewport)
+    if (bb.scrollbar) {
+      const { track, thumb } = bb.scrollbar;
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fillRect(track.x, track.y, track.w, track.h);
+      ctx.fillStyle = "rgba(166,180,189,0.55)";
+      ctx.fillRect(thumb.x, thumb.y, thumb.w, thumb.h);
+    }
+
+    // empty-line / loading / disconnected placeholders
+    if (bb.emptyLine) {
       ctx.textAlign = "center";
-      ctx.fillText("↗", open.x + open.w / 2, open.y + open.h - 2.2);
+      ctx.fillStyle = TEXT.muted;
+      ctx.font = "6.5px 'IBM Plex Mono', monospace";
+      ctx.fillText(bb.emptyLine, x + w / 2, viewport.y + 16);
       ctx.textAlign = "left";
     }
-    if (!rows.length) {
-      const cy = top + headerH + BB_ROW / 2 + 2;
+    if (!bb.showChips) {
+      const cy = top + headerH + 24;
       ctx.textAlign = "center";
       if (this.prLoading) {
-        // first GitHub poll still running: a spinner, NOT a premature "not
-        // connected" (the token may be present and simply not loaded yet)
         this.drawSpinner(ctx, x + w / 2, cy - 3, 5, "#ffb13d");
         ctx.fillStyle = TEXT.muted;
         ctx.font = "6px 'IBM Plex Mono', monospace";
-        ctx.fillText("loading PRs…", x + w / 2, cy + 12);
-      } else if (this.githubConnected === false) {
-        // no token: show the disconnected glyph + a prompt, not a misleading empty
+        ctx.fillText("loading branches…", x + w / 2, cy + 12);
+      } else {
         this.drawDisconnected(ctx, x + w / 2, cy - 4, 7, "#ffb13d");
         ctx.fillStyle = TEXT.primary;
         ctx.font = "6px 'IBM Plex Mono', monospace";
@@ -3030,17 +3859,56 @@ class PixelCrew {
         ctx.fillStyle = TEXT.muted;
         ctx.font = "5px 'IBM Plex Mono', monospace";
         ctx.fillText("add a token in ⚙ Settings", x + w / 2, cy + 19);
-      } else {
-        ctx.fillStyle = TEXT.muted;
-        ctx.font = "6.5px 'IBM Plex Mono', monospace";
-        ctx.fillText("nothing awaiting you", x + w / 2, cy);
       }
       ctx.textAlign = "left";
     }
-    if (extra > 0) {
-      ctx.fillStyle = TEXT.muted;
-      ctx.font = "6px 'IBM Plex Mono', monospace";
-      ctx.fillText(`+${extra} more`, x + 6, top + bodyH - 3);
+
+    // open dropdown menu — drawn LAST so it floats over the rows
+    if (bb.openMenu) {
+      const m = bb.openMenu;
+      ctx.fillStyle = "#0f1722"; // menu backdrop
+      ctx.fillRect(m.rect.x, m.rect.y, m.rect.w, m.rect.h);
+      ctx.strokeStyle = "#ffb13d";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(m.rect.x + 0.5, m.rect.y + 0.5, m.rect.w - 1, m.rect.h - 1);
+      // search field (entity menus)
+      if (m.searchRect) {
+        const s = m.searchRect;
+        ctx.fillStyle = "rgba(255,255,255,0.04)";
+        ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 1);
+        ctx.fillStyle = "rgba(255,255,255,0.07)";
+        ctx.fillRect(s.x + 1, s.y + s.h - 1, s.w - 2, 0.6); // underline divider
+        ctx.textAlign = "left";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = TEXT.muted;
+        ctx.fillText("⌕", s.x + 4, s.y + s.h - 4);
+        const focused = this.bbInput === "menuSearch";
+        const txt = this.menuSearch || (focused ? "" : "Filter");
+        ctx.fillStyle = this.menuSearch ? "#e3ecf1" : "rgba(150,162,170,0.55)";
+        const caret = focused && this.frame % 16 < 8 ? "│" : "";
+        ctx.fillText(this.fitText(ctx, txt, s.w - 18) + caret, s.x + 12, s.y + s.h - 4);
+      }
+      for (const o of m.options) {
+        const hov = this.hov("bbopt:" + m.key + ":" + o.value);
+        if (o.selected || hov) {
+          ctx.fillStyle = o.selected ? "rgba(255,177,61,0.2)" : "rgba(255,255,255,0.08)";
+          ctx.fillRect(o.rect.x + 1, o.rect.y, o.rect.w - 2, o.rect.h);
+        }
+        // checkbox (multi / label) or check mark (single) on the selected option
+        if (m.multi) {
+          ctx.strokeStyle = o.selected ? "#ffce85" : "rgba(166,180,189,0.5)";
+          ctx.lineWidth = 0.8;
+          ctx.strokeRect(o.rect.x + 4, o.rect.y + o.rect.h / 2 - 3, 6, 6);
+          if (o.selected) { ctx.fillStyle = "#ffce85"; ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.textAlign = "left"; ctx.fillText("✓", o.rect.x + 4.6, o.rect.y + o.rect.h - 4); }
+        } else if (o.selected) {
+          ctx.fillStyle = "#ffce85"; ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.textAlign = "left";
+          ctx.fillText("✓", o.rect.x + 4, o.rect.y + o.rect.h - 4);
+        }
+        ctx.fillStyle = o.selected ? "#ffce85" : hov ? "#e3ecf1" : "#c4d0d8";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "left";
+        ctx.fillText(this.fitText(ctx, o.label, m.rect.w - 18), o.rect.x + 13, o.rect.y + o.rect.h - 4);
+      }
     }
   }
 
@@ -4067,8 +4935,12 @@ class PixelCrew {
     const base = y0 + hop;
     const facingLeft = sitting; // seated devs face their monitor (to the left)
     // reading a fetched skill book at the desk: the dev looks DOWN at an open book
-    // held in front of it, so the pages (and their text) face up toward its gaze
-    const reading = sitting && tn.booksInHand > 0 && !tn.agent.reviewOf;
+    // held in front of it, so the pages (and their text) face up toward its gaze.
+    // A dev only reads while it's actually working a task — once idle/complete it
+    // sets the book down and kicks back. The tick put-down clears booksInHand, but
+    // gate on the working state here too so a parked frame can't strand the read.
+    const working = st === "active" || st === "waiting";
+    const reading = sitting && working && tn.booksInHand > 0 && !tn.agent.reviewOf;
     // idle/complete devs stay seated but recline back into the chair: the upper
     // body tips toward the backrest (to its right) and sinks a little, hands
     // laced behind the head. Reads as "kicked back", not hunched at the desk.
@@ -4144,7 +5016,7 @@ class PixelCrew {
       ctx.fillRect(mx + 2.4, my + 2.4, 1.5, 1.6);
       ctx.fillStyle = p.shirt; // other hand resting on the desk
       ctx.fillRect(x + 2.6, ty + 2, 1.4, 2.6);
-    } else if (sitting && tn.booksInHand > 0) {
+    } else if (reading) {
       // reading the fetched skill book(s) at the desk: the forearms come up
       // here (below the head, so they stay behind it), but the open book itself
       // is drawn after the head further down so it reads as held up in front of
@@ -4368,8 +5240,8 @@ class PixelCrew {
   setPrBranches(b: string[]) {
     this._instance?.setPrBranches(b);
   },
-  setReviewPrs(prs: { number: number; repo: string; title: string; branch?: string; url?: string }[]) {
-    this._instance?.setReviewPrs(prs);
+  setBranchBoard(repos: RepoGroup[], viewer?: string) {
+    this._instance?.setBranchBoard(repos, viewer);
   },
   setGithubConnected(connected: boolean | null | undefined) {
     this._instance?.setGithubConnected(connected);
@@ -4430,6 +5302,9 @@ class PixelCrew {
   },
   onOpenPr(cb: (url: string) => void) {
     this._instance?.onOpenPr(cb);
+  },
+  onSendBranchToWorktree(cb: (repoShortName: string, branch: string) => void) {
+    this._instance?.onSendBranchToWorktree(cb);
   },
   focusReviewBoard() {
     this._instance?.toggleBillboard();

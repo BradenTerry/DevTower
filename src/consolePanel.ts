@@ -5,7 +5,7 @@ import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
+import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeAddExisting, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
@@ -421,6 +421,11 @@ export class ConsolePanel {
       case "removeWorktree":
         if (typeof m.worktree === "string") await this.removeWorktree(m.worktree, typeof m.island === "string" ? m.island : "");
         break;
+      case "sendBranchToWorktree":
+        if (typeof m.repo === "string" && typeof m.branch === "string") {
+          await this.sendBranchToWorktree(m.repo, m.branch);
+        }
+        break;
       case "cdAgent":
         if (id) await this.cdAgent(id, m.room, m.ghost);
         break;
@@ -535,6 +540,8 @@ export class ConsolePanel {
       type: "prs",
       crew: this.prs.getCrew(),
       review: this.prs.getReview(),
+      repos: this.prs.getRepos(),
+      viewer: this.prs.getViewer(),
       connected: this.prs.isConnected(),
       // first GitHub poll still in flight → the webview shows a spinner instead of
       // a premature "not connected" (isConnected() reads false until that completes)
@@ -908,6 +915,41 @@ export class ConsolePanel {
     }
   }
 
+  /** Send an existing branch to a new worktree room (from the billboard). Guards
+   *  against double-fire and idempotent on an already-checked-out branch. */
+  private async sendBranchToWorktree(shortName: string, branch: string): Promise<void> {
+    const key = `sbw::${shortName}::${branch}`;
+    if (this.addingRooms.has(key)) return;
+    this.addingRooms.add(key);
+    try {
+      const dir = this.dirForRepo(shortName);
+      if (!dir || !(await isRepo(dir))) {
+        vscode.window.showWarningMessage(`DevTower: no local repo found for "${shortName}".`);
+        return;
+      }
+      // Idempotent: if a worktree room already exists for this island+branch, do nothing
+      const existing = this.getWorktreeRooms().find((w) => w.island === shortName && w.branch === branch);
+      if (existing) return;
+
+      let wtPath: string;
+      try {
+        const result = await worktreeAddExisting(dir, branch);
+        wtPath = result.wtPath;
+      } catch (e) {
+        vscode.window.showErrorMessage(`DevTower: worktree creation failed — ${String(e).slice(0, 160)}`);
+        return;
+      }
+
+      const rows = this.getWorktreeRooms();
+      rows.push({ island: shortName, path: wtPath, branch });
+      await this.saveWorktreeRooms(rows);
+      this.postState();
+      void this.refreshState();
+    } finally {
+      this.addingRooms.delete(key);
+    }
+  }
+
   /** Start the agent's real Claude CLI session in its terminal (worktree cwd);
    *  devtower.launchCommand takes precedence if the user configured one. */
   private launchSession(id: string): void {
@@ -1027,6 +1069,27 @@ export class ConsolePanel {
       if (gp && branch) prTargets.push({ cwd: gp, repo: path.basename(gp), branch });
     }
     this.prs.setExtraTargets(prTargets);
+    // feed tracked repo roots to PrService for the branch board
+    const repoTargets: { cwd: string; shortName: string; checkedOutBranches: string[] }[] = [];
+    for (const room of this.getRooms()) {
+      if (!room.path || !fs.existsSync(room.path)) continue;
+      // collect branches checked out across this island's main checkout + worktree rooms
+      const checkedOut = new Set<string>();
+      const mainBranch = branches.get(room.path);
+      if (mainBranch) checkedOut.add(mainBranch);
+      for (const w of this.getWorktreeRooms()) {
+        if (w.island === room.name && w.branch) checkedOut.add(w.branch);
+      }
+      // also pick up any worktrees git knows about (covers worktrees added outside DevTower)
+      try {
+        const wtList = await worktreeList(room.path);
+        for (const entry of wtList) {
+          if (entry.branch && entry.branch !== "detached") checkedOut.add(entry.branch);
+        }
+      } catch { /* best effort */ }
+      repoTargets.push({ cwd: room.path, shortName: room.name, checkedOutBranches: [...checkedOut] });
+    }
+    this.prs.setRepoTargets(repoTargets);
     // only push (and wake the render loop) when something actually changed, so
     // the idle poll doesn't defeat the webview's park-when-quiet power saving
     const sig = JSON.stringify([...boards].sort());

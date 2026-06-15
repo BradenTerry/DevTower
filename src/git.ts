@@ -636,3 +636,254 @@ export async function show(cwd: string, ref: string, file: string): Promise<stri
     return "";
   }
 }
+
+/** Normalize raw lines from `git branch` and `git branch -r` into a unique,
+ *  sorted list of short branch names. Remote lines have their `origin/` prefix
+ *  stripped; `origin/HEAD` and bare `HEAD` are dropped. CRLF-safe. Pure. */
+export function normalizeBranchNames(localLines: string[], remoteLines: string[]): string[] {
+  const names = new Set<string>();
+  for (const raw of localLines) {
+    const b = raw.trim().replace(/^\*\s*/, ""); // git may prefix the current branch with "* "
+    if (!b || b === "HEAD") continue;
+    names.add(b);
+  }
+  for (const raw of remoteLines) {
+    const b = raw.trim();
+    if (!b || b === "origin/HEAD" || b.endsWith("/HEAD")) continue;
+    // strip leading "origin/" prefix
+    const short = b.startsWith("origin/") ? b.slice("origin/".length) : b;
+    if (!short || short === "HEAD") continue;
+    names.add(short);
+  }
+  return [...names].sort();
+}
+
+/** Return local + remote-tracking branch names for the repo at `cwd`,
+ *  de-duplicated. Returns [] on error. */
+export async function listBranches(cwd: string): Promise<string[]> {
+  try {
+    const [localOut, remoteOut] = await Promise.all([
+      runGit(cwd, ["branch", "--format=%(refname:short)"]),
+      runGit(cwd, ["branch", "-r", "--format=%(refname:short)"]),
+    ]);
+    const localLines = splitLines(localOut).filter(Boolean);
+    const remoteLines = splitLines(remoteOut).filter(Boolean);
+    return normalizeBranchNames(localLines, remoteLines);
+  } catch {
+    return [];
+  }
+}
+
+/** Create a worktree checked out on an EXISTING branch (no -b). Worktrees live
+ *  under <repoTopLevel>/.claude/worktrees/<branch-slug>. If the path already
+ *  exists, suffixes -1, -2, … are tried. Returns { wtPath }. Throws on failure. */
+export async function worktreeAddExisting(dir: string, branch: string): Promise<{ wtPath: string }> {
+  const top = await topLevel(dir).catch(() => dir);
+  const wtRoot = path.join(top, ".claude", "worktrees");
+  await ensureExcluded(dir, ".claude/worktrees/");
+  // Convert branch slashes (e.g. "feature/foo") to hyphens for a valid dir name
+  const slug = branch.replace(/\//g, "-");
+  let wtPath = path.join(wtRoot, slug);
+  if (fs.existsSync(wtPath)) {
+    let i = 1;
+    while (fs.existsSync(path.join(wtRoot, `${slug}-${i}`))) i++;
+    wtPath = path.join(wtRoot, `${slug}-${i}`);
+  }
+  await runGit(dir, ["worktree", "add", wtPath, branch]);
+  return { wtPath };
+}
+
+export interface BranchMeta {
+  updatedAt?: string;
+  authorEmail?: string;
+  ref: string;
+  isLocal: boolean;
+}
+
+/** Parse `git for-each-ref --format=%(refname:short)\t%(committerdate:iso-strict)\t%(authoremail)`
+ *  output (over refs/heads + refs/remotes/origin) into short-name → meta. A branch present both
+ *  locally and as origin/<name> collapses to one entry, preferring the LOCAL ref. `origin/HEAD`
+ *  and bare `HEAD` are dropped. `ref` is the ref to use for rev-list (the short local name, or
+ *  `origin/<name>` for remote-only). authorEmail has surrounding <> stripped, lowercased. Pure. */
+export function parseForEachRef(out: string): Map<string, BranchMeta> {
+  const result = new Map<string, BranchMeta>();
+  for (const raw of splitLines(out)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const [refname, updatedAt, emailRaw] = line.split("\t");
+    if (!refname) continue;
+
+    // Determine if this is a local or remote ref, and derive the short name
+    let isLocal: boolean;
+    let shortName: string;
+    let ref: string;
+
+    if (refname.startsWith("origin/")) {
+      const after = refname.slice("origin/".length);
+      // Drop origin/HEAD
+      if (!after || after === "HEAD") continue;
+      isLocal = false;
+      shortName = after;
+      ref = refname;
+    } else {
+      // Local ref
+      if (!refname || refname === "HEAD") continue;
+      isLocal = true;
+      shortName = refname;
+      ref = refname;
+    }
+
+    // Strip <> from email and lowercase
+    let authorEmail: string | undefined;
+    if (emailRaw !== undefined) {
+      authorEmail = emailRaw.replace(/^<|>$/g, "").toLowerCase();
+    }
+
+    const meta: BranchMeta = {
+      updatedAt: updatedAt || undefined,
+      authorEmail: authorEmail || undefined,
+      ref,
+      isLocal,
+    };
+
+    // Collapse: local ref wins over remote
+    const existing = result.get(shortName);
+    if (existing) {
+      // Keep local over remote; if both same locality, keep first (local refs are listed first)
+      if (!existing.isLocal && isLocal) {
+        result.set(shortName, meta);
+      }
+      // existing is already local → keep it
+    } else {
+      result.set(shortName, meta);
+    }
+  }
+  return result;
+}
+
+/** Per-branch metadata for the branch board: tip-commit date, whether the tip commit is the
+ *  local git user's, and ahead/behind vs `defaultBranch`. One `for-each-ref` call for dates +
+ *  authors, plus one `rev-list --left-right --count <default>...<ref>` per branch (best-effort,
+ *  0/0 on error). `git config user.email` is read once and compared (lowercased) for `mine`. */
+export async function branchMetas(
+  cwd: string,
+  defaultBranchName: string
+): Promise<Map<string, { updatedAt?: string; mine: boolean; ahead: number; behind: number }>> {
+  // Read local user email
+  let localEmail = "";
+  try {
+    localEmail = (await runGit(cwd, ["config", "user.email"])).trim().toLowerCase();
+  } catch {
+    /* no config → empty, mine will always be false */
+  }
+
+  // Fetch all branch metadata in one call
+  let forEachRefOut = "";
+  try {
+    forEachRefOut = await runGit(cwd, [
+      "for-each-ref",
+      "--format=%(refname:short)\t%(committerdate:iso-strict)\t%(authoremail)",
+      "refs/heads",
+      "refs/remotes/origin",
+    ]);
+  } catch {
+    /* no refs or bare repo → return empty */
+    return new Map();
+  }
+
+  const metaMap = parseForEachRef(forEachRefOut);
+
+  // Determine the base ref for rev-list comparisons.
+  // Prefer: local default branch if it exists, else origin/<default> if it exists, else fallback.
+  const defaultLocal = metaMap.get(defaultBranchName);
+  const defaultOriginKey = `origin/${defaultBranchName}` as string;
+  // Check if origin/<default> is in the map (it would be keyed as defaultBranchName with isLocal=false)
+  // Actually, after parseForEachRef, origin/main is collapsed to key "main". So we need to check
+  // if the entry for defaultBranchName came from remote (isLocal=false) or there's a direct local.
+  // Simpler: check if "origin/<defaultBranchName>" ref appears by checking the raw map.
+  // We re-derive: if defaultLocal?.isLocal → use defaultBranchName as base
+  //               else if map has defaultBranchName (remote-only) → use origin/<defaultBranchName>
+  //               else use defaultBranchName (fallback)
+  let baseRef: string;
+  if (defaultLocal) {
+    baseRef = defaultLocal.isLocal ? defaultBranchName : `origin/${defaultBranchName}`;
+  } else {
+    baseRef = defaultBranchName; // fallback
+  }
+
+  // Build result map: for each branch, compute ahead/behind
+  const result = new Map<string, { updatedAt?: string; mine: boolean; ahead: number; behind: number }>();
+
+  await Promise.all(
+    [...metaMap.entries()].map(async ([shortName, meta]) => {
+      const mine = localEmail !== "" && meta.authorEmail === localEmail;
+
+      let ahead = 0;
+      let behind = 0;
+
+      // Skip rev-list for the default branch itself (it's 0/0 by definition)
+      if (shortName !== defaultBranchName) {
+        try {
+          const revOut = await runGit(cwd, [
+            "rev-list",
+            "--left-right",
+            "--count",
+            `${baseRef}...${meta.ref}`,
+          ]);
+          const parts = revOut.trim().split(/\s+/);
+          behind = parseInt(parts[0], 10) || 0;
+          ahead = parseInt(parts[1], 10) || 0;
+        } catch {
+          /* best-effort: 0/0 on error */
+        }
+      }
+
+      result.set(shortName, { updatedAt: meta.updatedAt, mine, ahead, behind });
+    })
+  );
+
+  return result;
+}
+
+/** Resolve the repo's default branch short name. Tries origin/HEAD symbolic-ref,
+ *  then checks for origin/main, origin/master, then returns "main". */
+export async function defaultBranch(cwd: string): Promise<string> {
+  try {
+    const ref = (await runGit(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])).trim();
+    if (ref) return ref.replace(/^origin\//, "");
+  } catch { /* fall through */ }
+  // check if origin/main exists
+  try {
+    await runGit(cwd, ["show-ref", "--verify", "--quiet", "refs/remotes/origin/main"]);
+    return "main";
+  } catch { /* fall through */ }
+  // check if origin/master exists
+  try {
+    await runGit(cwd, ["show-ref", "--verify", "--quiet", "refs/remotes/origin/master"]);
+    return "master";
+  } catch { /* fall through */ }
+  return "main";
+}
+
+/** Parse an SSH or HTTPS GitHub remote URL into "owner/repo". Pure — no IO. */
+export function parseRepoSlug(url: string): string | undefined {
+  if (!url) return undefined;
+  // SSH: git@github.com:owner/repo.git
+  const ssh = /^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?\/?\s*$/.exec(url);
+  if (ssh) return ssh[1].replace(/\/$/, "");
+  // HTTPS: https://github.com/owner/repo.git or http://github.com/owner/repo
+  const https = /^https?:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?\s*$/.exec(url);
+  if (https) return https[1].replace(/\/$/, "");
+  return undefined;
+}
+
+/** Derive "owner/repo" from the origin remote URL of the repo at `cwd`.
+ *  Returns undefined if no remote or unparseable. */
+export async function repoSlug(cwd: string): Promise<string | undefined> {
+  try {
+    const url = (await runGit(cwd, ["remote", "get-url", "origin"])).trim();
+    return parseRepoSlug(url);
+  } catch {
+    return undefined;
+  }
+}
