@@ -4,7 +4,6 @@ import { TerminalManager } from "./terminals";
 import { DiffProvider, GIT_SCHEME, MOCK_SCHEME } from "./diffProvider";
 import { registerChanges } from "./changesView";
 import { registerDirectory } from "./directoryView";
-import { registerDebug } from "./debugLaunch";
 import { ConsolePanel } from "./consolePanel";
 import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
@@ -62,7 +61,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Changes tree (staged/unstaged, stage/unstage, open diff to the right).
   registerDirectory(context, store);
   registerChanges(context, store);
-  registerDebug(context, store);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("devtower.refresh", () => store.watchStateFile()),

@@ -173,11 +173,6 @@
         "icon": "$(list-flat)"
       },
       {
-        "command": "devtower.debugSelected",
-        "title": "DevTower: Debug Selected Directory",
-        "icon": "$(debug-alt)"
-      },
-      {
         "command": "devtower.commit",
         "title": "Commit",
         "icon": "$(check)"
@@ -264,11 +259,6 @@
           "command": "devtower.openConsole",
           "when": "view == devtower.directory",
           "group": "navigation@0"
-        },
-        {
-          "command": "devtower.debugSelected",
-          "when": "view == devtower.directory",
-          "group": "navigation@1"
         },
         {
           "command": "devtower.refreshDirectory",
