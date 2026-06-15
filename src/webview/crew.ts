@@ -1568,10 +1568,16 @@ class PixelCrew {
 
   setSelected(id: string | undefined) {
     this.selectedId = id;
-    // a freshly spawned dev you selected: ride along into their room
+    // a freshly spawned dev you selected: frame their whole ROOM rather than
+    // tight-zooming the desk, so the walk from the elevator to the desk stays
+    // on-screen instead of happening off-camera. The selection arrow and the
+    // dev's stats are driven by selectedId, so they show either way.
     if (id && this.newToonIds.has(id)) {
       this.newToonIds.delete(id);
-      this.focusAgent(id);
+      const tn = this.toons.get(id);
+      const room = tn?.bkey ? this.rooms.get(tn.bkey) : undefined;
+      if (room) this.focusOn(room.name);
+      else this.focusAgent(id);
     }
     this.invalidate();
   }
