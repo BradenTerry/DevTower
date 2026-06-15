@@ -152,16 +152,35 @@
   }
 
   /* ---------- arrivals / departures feed ---------- */
-  function pushFeed(html, color) {
+  // opts.agentId makes the toast actionable: a "View agent" button (zooms to the
+  // dev and opens its panel) plus an "✕" to dismiss. opts.sticky keeps it up
+  // until acted on, so an actionable toast can't vanish before it's clicked.
+  function pushFeed(html, color, opts) {
+    opts = opts || {};
     const feed = $("#feed");
     const el = document.createElement("div");
     el.className = "feed-item";
     el.style.setProperty("--c", color);
-    el.innerHTML = html;
+    if (opts.agentId) {
+      el.classList.add("actionable");
+      el.innerHTML =
+        `<div class="feed-msg">${html}</div>` +
+        `<div class="feed-actions">` +
+          `<button class="fa-btn fa-view" type="button">View agent</button>` +
+          `<button class="fa-btn fa-x" type="button" title="Dismiss" aria-label="Dismiss">✕</button>` +
+        `</div>`;
+      const remove = () => { el.classList.add("expire"); setTimeout(() => el.remove(), 600); };
+      $(".fa-view", el).onclick = () => { selectAgent(opts.agentId, true); remove(); };
+      $(".fa-x", el).onclick = remove;
+    } else {
+      el.innerHTML = html;
+    }
     feed.appendChild(el);
     while (feed.children.length > 5) feed.removeChild(feed.firstChild);
-    setTimeout(() => el.classList.add("expire"), 6500);
-    setTimeout(() => el.remove(), 7300);
+    if (!opts.sticky) {
+      setTimeout(() => el.classList.add("expire"), 6500);
+      setTimeout(() => el.remove(), 7300);
+    }
   }
 
   function diffCrew(next) {
@@ -183,7 +202,7 @@
       if (prev === undefined) {
         pushFeed(`<span class="fi">▸</span><b>${esc(a.name)}</b> joined<span class="repo">${esc(a.repo)}</span>`, "var(--active)");
       } else if (prev !== a.state) {
-        if (a.state === "waiting") pushFeed(`<span class="fi">?</span><b>${esc(a.name)}</b> has a question<span class="repo">${esc(a.repo)}</span>`, "var(--waiting)");
+        if (a.state === "waiting") pushFeed(`<span class="fi">?</span><b>${esc(a.name)}</b> has a question<span class="repo">${esc(a.repo)}</span>`, "var(--waiting)", { agentId: a.id, sticky: true });
         else if (a.state === "error") pushFeed(`<span class="fi">✗</span><b>${esc(a.name)}</b> hit an error<span class="repo">${esc(a.repo)}</span>`, "var(--error)");
         else if (a.state === "complete") pushFeed(`<span class="fi">✓</span><b>${esc(a.name)}</b> finished<span class="repo">${esc(a.repo)}</span>`, "var(--complete)");
       }
