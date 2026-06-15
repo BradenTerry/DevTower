@@ -217,12 +217,6 @@
     }
   }
 
-  /* ---------- PR board ---------- */
-
-  function prFor(agentId) {
-    return prs.crew.find((p) => p.agentId === agentId);
-  }
-
   /* ---------- settings overlay (tabbed: General / Hooks / GitHub) ---------- */
   let settings = null; // last { caps, scopeHelp } pushed by the extension
   let hooks = null; // last [{ id, label, description, installed }] pushed by the extension
@@ -673,7 +667,7 @@
     const sig = JSON.stringify([
       a.id, a.name, a.repo, a.state, a.model, a.contextTokens,
       (a.skills || []).join("|"), a.question || "", !!a.external,
-      prFor(a.id) || null, a.aiTitle || "",
+      a.aiTitle || "",
     ]);
     if (sig === panelSig) {
       const elEl = panel.querySelector(".el-elapsed");
@@ -692,7 +686,7 @@
         <button class="p-close" id="p-close" title="Close (Esc)">✕</button>
         <div class="p-id">
           <div class="avatar" style="--av1:hsl(${hue} 55% 58%); --av2:hsl(${hue} 50% 38%)"></div>
-          <div>
+          <div class="p-meta">
             <h1>${esc(a.name)}</h1>
             <div class="sub"><b>${esc(a.repo)}</b><span class="sep">·</span><span class="el-elapsed">${esc(a.elapsed || "")}</span></div>
           </div>
@@ -726,18 +720,12 @@
         ${a.external
           ? `<div class="pa ext-note" title="This session runs outside DevTower — manage it in its own terminal">⌗ Runs in its own session</div>`
           : `<button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>`}
-        ${prFor(a.id) ? `<button class="pa" data-tool="pr">⇄ PR</button>` : ""}
         ${a.external ? "" : `<button class="pa danger" data-tool="sendHome">⌂ Send Home</button>`}
       </div>`;
 
     // wiring
     $("#p-close", panel).onclick = closePanelToRoom;
     $$("[data-tool]", panel).forEach((t) => (t.onclick = () => {
-      if (t.dataset.tool === "pr") {
-        const p = prFor(a.id);
-        if (p) vscode.postMessage({ type: "action", act: "openPr", url: p.url });
-        return;
-      }
       vscode.postMessage({ type: "action", id: a.id, act: t.dataset.tool });
     }));
   }

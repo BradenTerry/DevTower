@@ -331,8 +331,12 @@ button{ font-family:inherit; }
   width:18px; height:5px;
   background:radial-gradient(circle 2.5px at 4px 2.5px, #14181b 99%, transparent), radial-gradient(circle 2.5px at 14px 2.5px, #14181b 99%, transparent);
 }
-.p-id h1{ font-size:17px; font-weight:600; letter-spacing:.01em; }
-.p-id .sub{ font-size:10.5px; color:var(--text-dim); margin-top:3px; display:flex; align-items:center; gap:7px; }
+/* the name column shrinks (min-width:0) so a wide status badge can never push
+   past the gutter and slide under the ✕; the name truncates instead. */
+.p-meta{ min-width:0; flex:1 1 auto; }
+.p-id h1{ font-size:17px; font-weight:600; letter-spacing:.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.p-id .sub{ font-size:10.5px; color:var(--text-dim); margin-top:3px; display:flex; align-items:center; gap:7px; min-width:0; }
+.p-id .sub .el-elapsed{ white-space:nowrap; }
 .p-id .sub b{ color:var(--text); font-weight:500; }
 .p-id .sub .sep{ color:var(--text-faint); }
 .statebadge{

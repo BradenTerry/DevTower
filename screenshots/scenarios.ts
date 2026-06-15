@@ -174,7 +174,7 @@ export const SCENARIOS: Scenario[] = [
     focusAgent: "a1",
     state: {
       agents: [
-        { id: "a1", name: "Atlas", state: "waiting", repo: "DevTower", model: "claude-opus-4-8", worktree: "/repo", branch: "main", skills: ["code-review", "verify"], contextTokens: 84_000, elapsed: "12m", question: "Run the destructive migration?" },
+        { id: "a1", name: "DevTower·ae4f", state: "waiting", repo: "DevTower", model: "claude-opus-4-8", worktree: "/repo", branch: "main", skills: ["code-review", "verify"], contextTokens: 84_000, elapsed: "12m", question: "Run the destructive migration?" },
       ],
       rooms: [{ name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] }],
       boards: { "/repo": board({ branch: "main", modified: 2 }) },
