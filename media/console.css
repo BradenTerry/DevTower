@@ -349,6 +349,16 @@ button{ font-family:inherit; }
 .feed-item b{ color:var(--text); font-weight:600; }
 .feed-item .fi{ color:var(--c,var(--idle)); font-size:13px; }
 .feed-item .repo{ margin-left:auto; font-family:var(--label); font-size:7.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint); padding-left:8px; }
+/* actionable toast (e.g. an agent's question): message row on top, buttons below.
+   the feed container is pointer-events:none, so re-enable hits on this item. */
+.feed-item.actionable{ flex-direction:column; align-items:stretch; gap:8px; pointer-events:auto; }
+.feed-item .feed-msg{ display:flex; align-items:center; gap:9px; }
+.feed-item .feed-actions{ display:flex; gap:7px; }
+.feed-item .fa-btn{ font:inherit; cursor:pointer; border-radius:7px; padding:5px 10px; border:1px solid var(--edge); background:var(--glass); color:var(--text-dim); transition:background .15s, color .15s, border-color .15s; }
+.feed-item .fa-btn:hover{ background:rgba(255,255,255,.08); color:var(--text); }
+.feed-item .fa-view{ flex:1; font-weight:600; border-color:var(--c,var(--waiting)); color:var(--c,var(--waiting)); }
+.feed-item .fa-view:hover{ background:var(--c,var(--waiting)); color:#10151b; border-color:var(--c,var(--waiting)); }
+.feed-item .fa-x{ width:32px; padding:5px 0; text-align:center; }
 @keyframes feedin{ from{ opacity:0; transform:translateY(14px) scale(.95); } }
 
 /* ============ AGENT PANEL (right) ============ */
