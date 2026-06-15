@@ -65,10 +65,30 @@
   }
 
   /* ---------- selection ---------- */
+  // Clear any actionable "has a question" toast for this agent — whether the user
+  // acted on the toast itself or just clicked the dev on the canvas/leaderboard,
+  // the notification has served its purpose and shouldn't linger.
+  function dismissAgentFeed(id) {
+    const feed = $("#feed");
+    if (!feed) return;
+    feed.querySelectorAll('.feed-item.actionable[data-agent-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]').forEach((el) => {
+      el.classList.add("expire");
+      setTimeout(() => el.remove(), 600);
+    });
+  }
+
   function selectAgent(id, open) {
+    dismissAgentFeed(id);
     selectedId = id;
     vscode.postMessage({ type: "select", id }); // reveals the agent's terminal
-    if (window.DevTowerCrew) window.DevTowerCrew.setSelected(id);
+    if (window.DevTowerCrew) {
+      window.DevTowerCrew.setSelected(id);
+      // a direct canvas tap zooms via its own hit-test; selections that come
+      // from elsewhere (the "View agent" toast, leaderboard, host) must request
+      // the same tight dev zoom or the camera is left at whatever overview/tower
+      // view it was on.
+      if (open && window.DevTowerCrew.focusAgent) window.DevTowerCrew.focusAgent(id);
+    }
     if (open) panelOpen = true;
     updateInsets();
     renderPanel();
@@ -170,6 +190,7 @@
     el.style.setProperty("--c", color);
     if (opts.agentId) {
       el.classList.add("actionable");
+      el.dataset.agentId = opts.agentId; // so selecting the agent elsewhere can dismiss it
       el.innerHTML =
         `<div class="feed-msg">${html}</div>` +
         `<div class="feed-actions">` +
