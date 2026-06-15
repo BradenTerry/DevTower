@@ -158,6 +158,19 @@ export function resolveCwd(agent: Agent): string | undefined {
   return resolveDir(agent.worktree);
 }
 
+/** Fold a directory path to a canonical form for identity comparisons: resolve to
+ *  an absolute real path (following symlinks, e.g. macOS `/var` → `/private/var`),
+ *  strip trailing separators, and lower-case on case-insensitive platforms. Two
+ *  paths that point at the same directory canonicalize equal. Used for room-key
+ *  de-duplication AND the `/cd` relocation match (a reserved room's stored path
+ *  vs. the transcript's canonical cwd otherwise fail a raw `===`). */
+export function canonicalDir(p: string): string {
+  let abs = path.resolve(p);
+  try { abs = fs.realpathSync.native(abs); } catch { /* path gone; use resolved form */ }
+  abs = abs.replace(/[\\/]+$/, "");
+  return process.platform === "win32" || process.platform === "darwin" ? abs.toLowerCase() : abs;
+}
+
 /** Parse `git status --porcelain` into staged / unstaged buckets. */
 export async function status(cwd: string): Promise<GitStatus> {
   const root = await topLevel(cwd);

@@ -4,7 +4,7 @@ import * as path from "path";
 import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
-import { currentBranch, isRepo } from "./git";
+import { currentBranch, isRepo, canonicalDir } from "./git";
 import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers } from "./hooks";
 import { dlog, elog } from "./debugLog";
 
@@ -882,16 +882,21 @@ export class ClaudeDiscovery {
       // shown wherever it really is. The hold expires so a failed /cd is dropped.
       const cwd = f.cwd;
       const pend = this.cdPending.get(id);
+      // match through canonicalization, not raw `===`: the reserved room's stored
+      // path (picker/migrated form) and the transcript's cwd (Claude's canonical
+      // realpath) routinely differ by symlink (/Users vs /private), trailing slash
+      // or case — a raw compare never confirms a /cd into the main checkout.
+      const cdArrived = pend !== undefined && canonicalDir(cwd) === canonicalDir(pend.dir);
       let cdRoom: string | undefined;
       if (pend) {
-        if (cwd === pend.dir) {
+        if (cdArrived) {
           cdRoom = pend.room; // confirmed — relocate to the requested room
           this.cdPending.delete(id);
         } else if (Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
           this.cdPending.delete(id);
         }
       }
-      const cdConfirmed = cdRoom !== undefined || (pend !== undefined && cwd === pend.dir);
+      const cdConfirmed = cdRoom !== undefined || cdArrived;
       const cachedBranch = this.branchCache.get(cwd);
       let branch: string;
       if (cachedBranch && Date.now() - cachedBranch.at < ClaudeDiscovery.BRANCH_TTL_MS) {

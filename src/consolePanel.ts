@@ -5,7 +5,7 @@ import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
+import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit, canonicalDir } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
@@ -83,8 +83,13 @@ export class ConsolePanel implements MiniDelegate {
   /** Last payloads posted to the webview, replayed to the mini view on open. */
   private lastState?: Record<string, unknown>;
   private lastPrs?: Record<string, unknown>;
-  /** Re-evaluates whether the background pollers run (tower OR mini visible). */
-  private applyVisibility: () => void = () => {};
+  /** The tower's editor webview panel — created on demand and re-created if it was
+   *  closed while the mini popout kept the instance (and its data feed) alive.
+   *  Undefined while the tower is not open. */
+  private panel?: vscode.WebviewPanel;
+  /** Listeners scoped to the CURRENT tower panel (message / dispose / view-state),
+   *  torn down and re-added each time the panel is (re)mounted. */
+  private towerDisposables: vscode.Disposable[] = [];
   private static readonly viewType = "devtower.console";
   private usageTimer?: ReturnType<typeof setInterval>;
   private usageWatcher?: fs.FSWatcher;
@@ -125,65 +130,41 @@ export class ConsolePanel implements MiniDelegate {
     prs: PrService,
     discovery?: ClaudeDiscovery
   ): ConsolePanel {
-    const column = vscode.ViewColumn.Active;
-    if (ConsolePanel.current) {
-      ConsolePanel.current.panel.reveal(column);
-      return ConsolePanel.current;
+    const inst = ConsolePanel.ensure(context, store, terminals, prs, discovery);
+    inst.showTower();
+    return inst;
+  }
+
+  /** Get (creating if needed) the singleton WITHOUT opening the tower panel. The
+   *  instance owns the live data feed, so this is what lets the mini popout run on
+   *  its own — `devtower.openMini` calls `ensure(...).openMini()`. */
+  static ensure(
+    context: vscode.ExtensionContext,
+    store: DevTowerStore,
+    terminals: TerminalManager,
+    prs: PrService,
+    discovery?: ClaudeDiscovery
+  ): ConsolePanel {
+    if (!ConsolePanel.current) {
+      ConsolePanel.current = new ConsolePanel(context, store, terminals, prs, discovery);
     }
-    const panel = vscode.window.createWebviewPanel(
-      ConsolePanel.viewType,
-      "DevTower",
-      column,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")],
-      }
-    );
-    panel.iconPath = {
-      light: vscode.Uri.joinPath(context.extensionUri, "media", "devtower-light.svg"),
-      dark: vscode.Uri.joinPath(context.extensionUri, "media", "devtower-dark.svg"),
-    };
-    ConsolePanel.current = new ConsolePanel(panel, context, store, terminals, prs, discovery);
     return ConsolePanel.current;
   }
 
   private constructor(
-    private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
     private readonly store: DevTowerStore,
     private readonly terminals: TerminalManager,
     private readonly prs: PrService,
     private readonly discovery?: ClaudeDiscovery
   ) {
-    this.panel.webview.html = this.html();
-    this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m), null, this.disposables);
+    // DATA PIPELINE — lives as long as the instance, i.e. while EITHER the tower or
+    // the mini popout is open. The tower webview is mounted/unmounted separately
+    // (showTower / onTowerClosed) so closing the tower never kills this feed.
     this.store.onChange(() => this.postState(), null, this.disposables);
     this.store.onDidChangeSelection(() => this.postState(), null, this.disposables);
     this.prs.onChange(() => this.postPrs(), null, this.disposables);
     this.prs.onChange(() => void this.refreshState(), null, this.disposables); // PR → board column
-    this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-    // Pause the always-on pollers while this tab isn't visible — the discovery
-    // scan (ps/lsof + transcript walk) and the GitHub PR poll only matter when
-    // the tower is on screen. Becoming visible again refreshes both immediately,
-    // so nothing looks stale.
-    const applyVisibility = () => {
-      // the mini popout is a second on-screen view of the same data, so it keeps
-      // the pollers alive even when the tower tab is hidden behind it
-      const visible = this.panel.visible || !!this.mini?.visible;
-      this.discovery?.setVisible(visible);
-      this.prs.setVisible(visible);
-      if (visible) this.postUsage(); // catch up on any missed-while-hidden usage
-      // re-broadcast on any visibility change: the tower (if now visible) catches
-      // up after being hidden, and the mini's "tower visible?" flag stays fresh so
-      // it can enable/disable its View action. Each post gates the tower webview on
-      // visibility and always feeds the mini.
-      this.postState();
-      this.postPrs();
-    };
-    this.applyVisibility = applyVisibility;
-    this.panel.onDidChangeViewState(applyVisibility, null, this.disposables);
-    applyVisibility();
     // mirror a live devtower.debugLog toggle into the scene so shred/toon events
     // start (or stop) without reopening the console
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -193,16 +174,96 @@ export class ConsolePanel implements MiniDelegate {
     // a saved file is a working-tree (unstaged) change → refresh promptly
     vscode.workspace.onDidSaveTextDocument(() => this.onGitChange(), null, this.disposables);
     // poll each worktree's git stats as a fallback (the .git watchers below catch
-    // stage/commit/push instantly; the poll covers edits made outside VS Code)
+    // stage/commit/push instantly; the poll covers edits made outside VS Code).
+    // Runs while EITHER view is on screen since both render git stats.
     this.statsTimer = setInterval(() => {
-      if (this.panel.visible) void this.refreshState();
+      if (this.anyVisible()) void this.refreshState();
     }, 6_000);
     // background fetch so "behind" (out-of-date) is meaningful; once shortly after
     // open, then periodically while visible
     setTimeout(() => void this.fetchAll(), 5_000);
     this.fetchTimer = setInterval(() => {
-      if (this.panel.visible) void this.fetchAll();
+      if (this.anyVisible()) void this.fetchAll();
     }, 180_000);
+    // populate rooms/boards + restore the mounted dir now, so the data feed is
+    // ready whether the first view to open is the tower or a standalone mini (the
+    // mini has no webview "ready" handshake to kick this off).
+    void this.bootstrap();
+  }
+
+  private bootstrapped = false;
+  /** One-time initial data load: fill in worktree rooms + boards, then re-mount the
+   *  last-used Selected Directory. Idempotent; the tower's `ready` handler no longer
+   *  owns this so the mini can open first. */
+  private async bootstrap(): Promise<void> {
+    if (this.bootstrapped) return;
+    this.bootstrapped = true;
+    await this.refreshState();
+    await this.restoreSelectedDir(); // needs roomGitPaths, so after refreshState
+  }
+
+  /** True while either view is on screen — gates the always-on pollers and the
+   *  git/fetch timers (the mini renders the same data, so it counts). */
+  private anyVisible(): boolean {
+    return !!this.panel?.visible || !!this.mini?.visible;
+  }
+
+  /** Re-evaluate the background pollers and re-broadcast state on any visibility
+   *  change: the tower (if now visible) catches up after being hidden, and the
+   *  mini's "tower visible?" flag stays fresh. Each post gates the tower webview on
+   *  its own visibility and always feeds the mini. */
+  private applyVisibility(): void {
+    const visible = this.anyVisible();
+    this.discovery?.setVisible(visible);
+    this.prs.setVisible(visible);
+    if (visible) this.postUsage(); // catch up on any missed-while-hidden usage
+    this.postState();
+    this.postPrs();
+  }
+
+  /** Create the tower webview panel if it isn't open, otherwise reveal it. The
+   *  panel is a detachable surface over the instance's live data feed, so it can
+   *  be closed and re-opened without disturbing the mini popout. */
+  showTower(): void {
+    if (this.panel) {
+      this.panel.reveal(vscode.ViewColumn.Active);
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      ConsolePanel.viewType,
+      "DevTower",
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+      }
+    );
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(this.context.extensionUri, "media", "devtower-light.svg"),
+      dark: vscode.Uri.joinPath(this.context.extensionUri, "media", "devtower-dark.svg"),
+    };
+    this.panel = panel;
+    this.webviewReady = false; // a fresh webview must re-announce `ready`
+    panel.webview.html = this.html(panel.webview);
+    this.towerDisposables.push(
+      panel.webview.onDidReceiveMessage((m) => this.onMessage(m)),
+      panel.onDidDispose(() => this.onTowerClosed()),
+      panel.onDidChangeViewState(() => this.applyVisibility())
+    );
+    this.applyVisibility();
+  }
+
+  /** The tower tab was closed. Drop the panel + its listeners, but keep the
+   *  instance (and its data feed) alive if the mini popout is still open, so the
+   *  mini keeps updating and the tower can be re-opened later. Tear everything
+   *  down only once both views are gone. */
+  private onTowerClosed(): void {
+    this.panel = undefined;
+    this.towerDisposables.forEach((d) => d.dispose());
+    this.towerDisposables = [];
+    if (this.mini) this.applyVisibility();
+    else this.disposeInstance();
   }
 
   /** Quiet `git fetch` per tracked repo so the boards' behind/ahead counts reflect
@@ -299,19 +360,18 @@ export class ConsolePanel implements MiniDelegate {
     switch (m.type) {
       case "ready":
         this.webviewReady = true;
-        this.postState();
-        this.postUsage();
-        // push the persisted efficiency-mode setting (defaults off) plus the
-        // review-dispatch options (selectable skills + saved defaults)
+        // replay current data to the freshly-mounted webview (the initial load is
+        // owned by bootstrap() now, so a re-opened tower catches up immediately)
         this.postConfig();
-        await this.refreshState(); // fill in each island's worktree rooms
-        // re-mount the room whose "USE DIR" was last pressed in this workspace,
-        // restored from global state (needs roomGitPaths, so after refreshState)
-        await this.restoreSelectedDir();
+        this.postState();
+        this.postPrs();
+        this.postUsage();
+        await this.bootstrap(); // no-op after the first view opened it
+        void this.refreshState(); // refresh boards on (re)open
         if (this.pendingOpenSettings) {
           const tab = typeof this.pendingOpenSettings === "string" ? this.pendingOpenSettings : undefined;
           this.pendingOpenSettings = false;
-          this.panel.webview.postMessage({ type: "openSettings", tab });
+          this.panel?.webview.postMessage({ type: "openSettings", tab });
         }
         break;
       case "setPerf":
@@ -539,7 +599,7 @@ export class ConsolePanel implements MiniDelegate {
     const perfSet =
       perfInfo?.globalValue ?? perfInfo?.workspaceValue ?? perfInfo?.workspaceFolderValue;
     const perf = perfSet ?? (cfg.get<boolean>("efficiencyMode", false) ? "eco" : "balanced");
-    this.panel.webview.postMessage({
+    this.panel?.webview.postMessage({
       type: "config",
       perf,
       debug: cfg.get<boolean>("debugLog", false),
@@ -562,7 +622,7 @@ export class ConsolePanel implements MiniDelegate {
     // only feed the tower webview while it's on screen — a hidden scene shouldn't
     // re-render; it replays lastPrs when it becomes visible again (applyVisibility).
     // The mini popout always gets it, so it stays live even when used standalone.
-    if (this.panel.visible) this.panel.webview.postMessage(payload);
+    if (this.panel?.visible) this.panel.webview.postMessage(payload);
     this.mini?.postPrs(payload);
   }
 
@@ -570,21 +630,22 @@ export class ConsolePanel implements MiniDelegate {
    *  features it unlocks) to the settings page. Never sends the token itself. */
   private async postSettings(): Promise<void> {
     const caps = await capabilities();
-    this.panel.webview.postMessage({ type: "settings", caps, scopeHelp: SCOPE_HELP });
+    this.panel?.webview.postMessage({ type: "settings", caps, scopeHelp: SCOPE_HELP });
   }
 
   /** Push the managed Claude Code hooks and their enabled state to the Hooks tab. */
   private async postHooks(): Promise<void> {
-    this.panel.webview.postMessage({ type: "hooks", hooks: await listHooks() });
+    this.panel?.webview.postMessage({ type: "hooks", hooks: await listHooks() });
   }
 
   /** Reveal the tower and open the settings overlay (from the nudge / command),
-   *  optionally landing on a specific tab (e.g. "hooks"). */
+   *  optionally landing on a specific tab (e.g. "hooks"). Re-mounts the tower if it
+   *  was closed while only the mini popout was open. */
   openSettings(tab?: string): void {
-    this.panel.reveal();
+    this.showTower();
     // On a freshly created panel the webview's message listener isn't wired yet,
     // so this post would be dropped — defer it until the webview reports `ready`.
-    if (this.webviewReady) this.panel.webview.postMessage({ type: "openSettings", tab });
+    if (this.webviewReady) this.panel?.webview.postMessage({ type: "openSettings", tab });
     else this.pendingOpenSettings = tab ?? true;
   }
 
@@ -661,6 +722,8 @@ export class ConsolePanel implements MiniDelegate {
   onVisibilityChange(): void {
     if (!MiniPanel.current) this.mini = undefined; // it closed itself
     this.applyVisibility();
+    // the mini was the last view holding the instance open → full teardown
+    if (!this.panel && !this.mini) this.disposeInstance();
   }
 
   /* ============ ROOMS (tower floors) ============ */
@@ -1261,7 +1324,8 @@ export class ConsolePanel implements MiniDelegate {
       vscode.window.showWarningMessage(`DevTower: no directory known for room "${room ?? ""}".`);
       return;
     }
-    if (resolveCwd(agent) === dir) return; // already there
+    const cur = resolveCwd(agent);
+    if (cur && canonicalDir(cur) === canonicalDir(dir)) return; // already there (canonical compare)
 
     // tell the live Claude session to change directory; the terminal hosts the
     // real session (auto-resumed on first open). Use command() so the path is
@@ -1399,7 +1463,7 @@ export class ConsolePanel implements MiniDelegate {
         untracked: false,
       }));
     }
-    this.panel.webview.postMessage({ type: "changes", id, files, real: !!(cwd && (await isRepo(cwd))) });
+    this.panel?.webview.postMessage({ type: "changes", id, files, real: !!(cwd && (await isRepo(cwd))) });
   }
 
   private appendSession(id: string, msg: SessionMessage): void {
@@ -1437,23 +1501,24 @@ export class ConsolePanel implements MiniDelegate {
       agents,
       selectedId: this.store.getSelectedId(),
       usedDir: this.usedDirRoom,
+      selectedDir: collapseHome(this.store.getSelectedDir()),
       rooms,
       boards: Object.fromEntries(this.boardsByPath),
       // lets the mini disable its "View" action when the tower isn't on screen to
       // jump to (View selects/zooms an agent in the scene)
-      towerVisible: this.panel.visible,
+      towerVisible: !!this.panel?.visible,
     };
     this.lastState = payload;
     // only feed the tower webview while it's on screen (see postPrs); the mini
     // popout always receives the update so a standalone mini view stays current.
-    if (this.panel.visible) this.panel.webview.postMessage(payload);
+    if (this.panel?.visible) this.panel.webview.postMessage(payload);
     this.mini?.postState(payload);
   }
 
   private postSession(id: string): void {
     const agent = this.store.get(id);
     if (!agent) return;
-    this.panel.webview.postMessage({ type: "session", id, messages: getSession(agent) });
+    this.panel?.webview.postMessage({ type: "session", id, messages: getSession(agent) });
   }
 
   /* ============ PLAN USAGE (5h / weekly rate-limit windows) ============ */
@@ -1469,11 +1534,11 @@ export class ConsolePanel implements MiniDelegate {
   private startUsage(): void {
     this.postUsage();
     this.usageTimer = setInterval(() => {
-      if (this.panel.visible) this.postUsage();
+      if (this.panel?.visible) this.postUsage();
     }, 60_000);
     try {
       this.usageWatcher = fs.watch(this.usageFile(), () => {
-        if (this.panel.visible) this.postUsage();
+        if (this.panel?.visible) this.postUsage();
       });
     } catch {
       /* file may not exist yet — the interval will pick it up once it appears */
@@ -1493,13 +1558,16 @@ export class ConsolePanel implements MiniDelegate {
     } catch {
       usage = null; // missing/unreadable → webview hides the meters
     }
-    this.panel.webview.postMessage({ type: "usage", usage });
+    this.panel?.webview.postMessage({ type: "usage", usage });
   }
 
-  private dispose(): void {
+  /** Full teardown — only when BOTH the tower and the mini are gone. Drops the
+   *  singleton, stops every timer/watcher, and disposes the data-pipeline
+   *  subscriptions and any remaining panel. */
+  private disposeInstance(): void {
     ConsolePanel.current = undefined;
-    // the mini view is a view of this panel's data — it can't outlive it
     this.mini?.close();
+    this.mini = undefined;
     if (this.usageTimer) clearInterval(this.usageTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.fetchTimer) clearInterval(this.fetchTimer);
@@ -1507,12 +1575,15 @@ export class ConsolePanel implements MiniDelegate {
     for (const w of this.gitWatchers.values()) w.close();
     this.gitWatchers.clear();
     this.usageWatcher?.close();
-    this.panel.dispose();
+    this.towerDisposables.forEach((d) => d.dispose());
+    this.towerDisposables = [];
+    this.panel?.dispose();
+    this.panel = undefined;
     while (this.disposables.length) this.disposables.pop()?.dispose();
   }
 
-  private html(): string {
-    const w = this.panel.webview;
+  private html(webview: vscode.Webview): string {
+    const w = webview;
     const nonce = makeNonce();
     const css = w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "console.css"));
     const js = w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "console.js"));
@@ -1543,11 +1614,16 @@ export class ConsolePanel implements MiniDelegate {
 
   <!-- top HUD -->
   <header class="hud-top">
-    <div class="telemetry">
-      <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
-      <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
-      <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
-      <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
+    <div class="hud-left">
+      <div class="telemetry">
+        <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
+        <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
+        <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
+        <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
+      </div>
+      <div class="seldir" id="seldir" hidden>
+        <span class="lbl">dir</span><span class="seldir-path" id="seldir-path"></span>
+      </div>
     </div>
     <div class="spacer"></div>
     <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
@@ -1605,6 +1681,17 @@ export class ConsolePanel implements MiniDelegate {
   }
 }
 
+/** Collapse the user's home prefix to `~` so the HUD's selected-directory label
+ *  reads compactly (the webview truncates the rest from the left). */
+function collapseHome(dir: string | undefined): string | undefined {
+  if (!dir) return undefined;
+  const home = os.homedir();
+  if (home && (dir === home || dir.startsWith(home + path.sep))) {
+    return "~" + dir.slice(home.length);
+  }
+  return dir;
+}
+
 function makeNonce(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let s = "";
@@ -1615,9 +1702,7 @@ function makeNonce(): string {
 /** Canonical key for a reserved-room directory so the same folder reached via a
  *  trailing slash, a symlink, or a case difference maps to one building. Resolves
  *  the real path when it exists; folds case on case-insensitive platforms. */
-function normalizeRoomPath(p: string): string {
-  let abs = path.resolve(p);
-  try { abs = fs.realpathSync.native(abs); } catch { /* path gone; use resolved form */ }
-  abs = abs.replace(/[\\/]+$/, ""); // strip trailing separators
-  return process.platform === "win32" || process.platform === "darwin" ? abs.toLowerCase() : abs;
-}
+// room keys are de-duplicated by canonical path (shared with the /cd relocation
+// match in claude.ts) so a trailing slash, symlink, or case difference all fold
+// to one building.
+const normalizeRoomPath = canonicalDir;
