@@ -4,7 +4,7 @@
 
 **A pixel office tower for your coding agents.** DevTower turns your repos into a tiny 2D office campus inside VS Code: each repo is a cutaway room, and every live Claude Code session is a pixel dev working at a desk. Spawn new agents into git worktrees, watch them type, see when one needs you, open diffs in the native editor, and review pull requests - all from one playful, low-overhead scene.
 
-![An agent at its desk: as it edits the working tree, the change streams up the network cable to the room's board and the UNSTAGED column updates live.](media/agent-stream.gif)
+![An agent runs a full git turn at its desk: it edits a file, stages, commits, pushes, then opens a PR. Each step streams up the network cable to the room's board, where the UNSTAGED, STAGED, COMMITS and PR cells update live.](media/agent-stream.gif)
 
 > **Early Preview.** DevTower is on the VS Code Marketplace, flagged as a Preview while features settle. Install it, kick the tires, and [file issues](https://github.com/BradenTerry/DevTower/issues) - feedback shapes future releases.
 
