@@ -60,6 +60,8 @@ interface BoardData {
     changesRequested: number;
     reviewersPending: number;
     comments: number;
+    /** PR was merged: the board shows a brief MERGED badge before it clears. */
+    merged?: boolean;
   };
 }
 
@@ -1007,7 +1009,7 @@ export class ConsolePanel {
                 checksRunning: pr.checksRunning, checksTotal: pr.checksTotal,
                 review: pr.review, approvals: pr.approvals,
                 changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
-                comments: pr.comments,
+                comments: pr.comments, merged: pr.merged,
               }
             : undefined,
         });

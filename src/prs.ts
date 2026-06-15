@@ -30,6 +30,11 @@ export interface PrInfo {
   author?: string;
   agentId?: string;
   updatedAt?: string;
+  /** True when this PR was merged (rather than still open). A merged PR is kept
+   *  on the board briefly so the TV celebrates the merge instead of the PR just
+   *  silently vanishing; see MERGED_CELEBRATE_MS. */
+  merged?: boolean;
+  mergedAt?: string;
 }
 
 // Run gh with DevTower's PAT forced via GH_TOKEN, so gh uses it instead of any
@@ -89,6 +94,12 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  *  The schedule is short and bounded (one immediate try, then a few ~2s retries)
  *  so the chase can't burst the API before the normal poller takes back over. */
 export const PR_CHASE_DELAYS_MS = [0, 2_000, 2_000, 2_000, 2_000];
+
+/** How long after a PR is merged to keep it on the board in a "MERGED" state, so
+ *  the room's TV visibly reflects the merge before the PR clears. Measured from
+ *  the PR's mergedAt, so the window is the same no matter which poll first
+ *  catches the merge. After it elapses the merged PR drops off the board. */
+export const MERGED_CELEBRATE_MS = 5 * 60_000;
 
 export function rollupChecks(rollup: any[]): PrInfo["checks"] {
   if (!Array.isArray(rollup) || rollup.length === 0) return "none";
@@ -179,6 +190,13 @@ export class PrService {
   /** Per-branch ETag cache: a settled PR's last fetch + its PR-resource ETag, so
    *  the next poll can short-circuit with a free 304 when nothing changed. */
   private prCache = new Map<string, { etag: string; info: PrInfo }>();
+  /** Branch query-keys that had an OPEN PR in the last crew fetch. When one drops
+   *  out of the open set we look up whether it was merged (rather than closed), so
+   *  the TV can show a brief MERGED state instead of the PR silently vanishing. */
+  private prevOpenBranches = new Set<string>();
+  /** A just-merged PR kept on the board until MERGED_CELEBRATE_MS elapses, keyed
+   *  by branch query-key so repeated polls don't re-hit the API to re-confirm. */
+  private mergedCache = new Map<string, PrInfo>();
 
   constructor(private store: DevTowerStore) {}
 
@@ -329,7 +347,7 @@ export class PrService {
    *  reordered fetch doesn't read as a change. */
   private signature(): string {
     const key = (p: PrInfo) =>
-      [p.id, p.title, p.isDraft, p.checks, p.checksPass, p.checksFailed, p.checksRunning,
+      [p.id, p.title, p.isDraft, p.merged ? 1 : 0, p.checks, p.checksPass, p.checksFailed, p.checksRunning,
         p.checksTotal, p.review, p.approvals, p.changesRequested, p.reviewersPending, p.comments].join("¦");
     // include `connected` so a disconnected↔connected flip repaints even when the
     // PR lists are identical (e.g. adding a token while you have zero open PRs)
@@ -340,19 +358,23 @@ export class PrService {
     const out: PrInfo[] = [];
     const seen = new Set<string>();
     const queried = new Set<string>(); // repo+branch already asked, skip duplicate gh calls
+    const openNow = new Set<string>(); // query-keys with an open PR this fetch (→ prevOpenBranches)
     let ok = true;
     // agents' branches (run in each agent's worktree) ...
     for (const agent of this.store.list()) {
       const cwd = resolveCwd(agent);
       if (!cwd) continue;
-      if (!(await this.queryHead(cwd, agent.repo, agent.branch, out, seen, queried, token, agent.id))) ok = false;
+      if (!(await this.queryHead(cwd, agent.repo, agent.branch, out, seen, queried, openNow, token, agent.id))) ok = false;
     }
     // ... plus the room checkouts (main building + worktree rooms) so a PR opened
     // outside any DevTower agent still shows on that building's board
     for (const t of this.extraTargets) {
       if (!t.branch) continue;
-      if (!(await this.queryHead(t.cwd, t.repo, t.branch, out, seen, queried, token))) ok = false;
+      if (!(await this.queryHead(t.cwd, t.repo, t.branch, out, seen, queried, openNow, token))) ok = false;
     }
+    // record which branches are open so the NEXT fetch can tell an open→merged
+    // transition (PR vanished from the open set) from a branch that never had one
+    if (ok) this.prevOpenBranches = openNow;
     return { prs: out, ok };
   }
 
@@ -361,7 +383,8 @@ export class PrService {
    *  caller can preserve prior data instead of blanking the panel. */
   private async queryHead(
     cwd: string, repo: string, branch: string,
-    out: PrInfo[], seen: Set<string>, queried: Set<string>, token: string, agentId?: string
+    out: PrInfo[], seen: Set<string>, queried: Set<string>, openNow: Set<string>,
+    token: string, agentId?: string
   ): Promise<boolean> {
     const qkey = `${repo} ${branch}`;
     if (queried.has(qkey)) return true;
@@ -380,7 +403,8 @@ export class PrService {
       if (resp !== null) {
         const status = httpStatus(resp);
         if (status === 304) {
-          if (!seen.has(cached.info.id)) { seen.add(cached.info.id); out.push({ ...cached.info, agentId }); }
+          // cache only ever holds OPEN PRs, so an unchanged hit is still open
+          if (!seen.has(cached.info.id)) { seen.add(cached.info.id); out.push({ ...cached.info, agentId }); openNow.add(qkey); }
           return true; // unchanged — served for free
         }
         if (status === 200) freshEtag = etagOf(resp); // changed; reuse this ETag below
@@ -399,6 +423,8 @@ export class PrService {
         if (seen.has(id)) continue;
         seen.add(id);
         matched = true;
+        openNow.add(qkey);
+        this.mergedCache.delete(qkey); // a live open PR supersedes any merge celebration
         const cc = checkCounts(p.statusCheckRollup);
         const rc = reviewCounts(p.reviews, p.reviewRequests);
         const comments = (Array.isArray(p.comments) ? p.comments.length : 0) + rc.commented;
@@ -440,8 +466,77 @@ export class PrService {
     } catch {
       /* skip malformed */
     }
-    if (!matched) this.prCache.delete(qkey); // no open PR on this branch anymore
+    if (!matched) {
+      this.prCache.delete(qkey); // no open PR on this branch anymore
+      await this.surfaceMerge(cwd, repo, branch, qkey, out, seen, token, agentId);
+    }
     return true;
+  }
+
+  /** When a branch's open PR has just disappeared, find out whether it was MERGED
+   *  (vs simply closed) and, if the merge is recent, keep it on the board in a
+   *  "MERGED" state so the room's TV reflects the merge instead of the PR silently
+   *  blanking out. The result is cached per branch so subsequent polls re-serve it
+   *  without another API call until MERGED_CELEBRATE_MS elapses. We only probe a
+   *  branch we were actively tracking (prevOpenBranches), so an unrelated branch
+   *  with an ancient merged PR never gets resurrected, and a no-PR branch costs
+   *  zero extra calls. */
+  private async surfaceMerge(
+    cwd: string, repo: string, branch: string, qkey: string,
+    out: PrInfo[], seen: Set<string>, token: string, agentId?: string
+  ): Promise<void> {
+    const fresh = (info?: PrInfo): info is PrInfo =>
+      !!info?.mergedAt && Date.now() - Date.parse(info.mergedAt) < MERGED_CELEBRATE_MS;
+
+    let info = this.mergedCache.get(qkey);
+    if (!fresh(info)) {
+      this.mergedCache.delete(qkey);
+      info = undefined;
+      // only look up the merge for a branch whose open PR we were just tracking
+      if (this.prevOpenBranches.has(qkey)) {
+        const found = await this.fetchMerged(cwd, repo, branch, token);
+        if (fresh(found)) { this.mergedCache.set(qkey, found); info = found; }
+      }
+    }
+    if (info && !seen.has(info.id)) { seen.add(info.id); out.push({ ...info, agentId }); }
+  }
+
+  /** Look up the most recently merged PR for `branch`. Returns a minimal merged
+   *  PrInfo (no checks/review detail — the board shows a MERGED badge instead). */
+  private async fetchMerged(cwd: string, repo: string, branch: string, token: string): Promise<PrInfo | undefined> {
+    const raw = await runGh(cwd, [
+      "pr", "list", "--head", branch, "--state", "merged", "--limit", "1",
+      "--json", "number,title,url,headRefName,author,mergedAt",
+    ], token);
+    if (!raw) return undefined;
+    try {
+      const [p] = JSON.parse(raw);
+      if (!p || !p.mergedAt) return undefined;
+      return {
+        id: `${repo}#${p.number}`,
+        number: p.number,
+        title: p.title,
+        repo,
+        branch: p.headRefName ?? branch,
+        url: p.url,
+        isDraft: false,
+        checks: "none",
+        checksPass: 0,
+        checksFailed: 0,
+        checksRunning: 0,
+        checksTotal: 0,
+        review: "none",
+        approvals: 0,
+        changesRequested: 0,
+        reviewersPending: 0,
+        comments: 0,
+        author: p.author?.login,
+        merged: true,
+        mergedAt: p.mergedAt,
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   private async fetchReview(token: string): Promise<{ prs: PrInfo[]; ok: boolean }> {
