@@ -40,15 +40,15 @@ To see PRs and checks, add a GitHub token in **Settings** (the ⚙ gear, top rig
 
 ![The agent panel: context-window bar, model, skills, and a button into the agent's Claude terminal. When the worktree already has a PR, the panel links straight to it.](media/shot-agent-panel.png)
 
-- **Changes view** (native tree in the ◆ DevTower activity-bar): the selected agent's files split into **Staged Changes** and **Changes**, inline stage (`+`) / unstage (`-`), stage all / unstage all, and click-to-diff (native HEAD <-> working tree).
-- **File viewer** (the *Selected Directory* tree): browse and open **any** file in the focused room's worktree, not just changed ones - editable, in this window, without touching your workspace folders. **Drag a file or folder onto another folder to move it**, or **right-click -> Delete** (sent to the OS Trash). Each action confirms once and offers **"don't ask again"** (reset later with **DevTower: Reset File Prompt Confirmations**). Press a room's **USE DIR** button to point the viewer at that worktree.
-- **PR status on every board**: per-worktree pull requests via `gh`, with the open PR's number, title, CI checks, and review status shown right on each room's board (and a disconnected placeholder when no GitHub token is set).
+- **Source Control view** (native VS Code SCM in the ◆ DevTower activity-bar): the selected worktree's files split into **Staged Changes** and **Changes**, inline stage (`+`) / unstage (`-`) / discard, stage all / unstage all / **discard all**, commit from the input box, and click-to-diff (native HEAD <-> working tree). In tree mode you can stage, unstage, or discard a whole **folder** at once. A title-bar toggle hides agent worktrees from the panel.
+- **File viewer** (the *Selected Directory* tree): browse and open **any** file in the focused room's worktree, not just changed ones - editable, in this window, without touching your workspace folders. **Drag a file or folder onto another folder to move it**, or select one or more files (shift-click a range, cmd/ctrl-click to toggle) and **right-click -> Delete** to send them to the OS Trash in one action. Each action confirms once and offers **"don't ask again"** (reset later with **DevTower: Reset File Prompt Confirmations**). Press a room's **USE DIR** button to point the viewer at that worktree.
+- **PR status on every board**: per-worktree pull requests via `gh`, with the open PR's number, title, CI checks, and review status shown right on each room's board (and a disconnected placeholder when no GitHub token is set). A just-**merged** PR lingers on the board with a purple MERGED badge for a few minutes before it clears.
 
 See [FEATURES.md](FEATURES.md) for the full capability map and the data-core / presentation split.
 
 ## Mini view (compact popout)
 
-Beside the canvas tower, DevTower can open a **mini view**: a dense, DOM-table popout that shows the same live data without the scene. Open it with the popout button in the tower's HUD, or jump straight to it from the Command Palette -> **DevTower: Open Mini View**. It drills **Projects -> Worktrees -> Agents**, with **All agents** and **All PRs** tabs, per-branch git stats (committed / staged / unstaged with ahead-behind), and PR/CI status. From the list you can add projects and worktrees, spawn or remove agents, view or chat with an agent, switch the selected directory, and jump straight to a PR's detail. It runs off the **same real-time feed** as the tower, so it stays in sync - and it works on its own when you want a compact panel instead of the full scene.
+Beside the canvas tower, DevTower can open a **mini view**: a dense, DOM-table popout that shows the same live data without the scene. Open it with the popout button in the tower's HUD, or jump straight to it from the Command Palette -> **DevTower: Open Mini View** (which opens the mini on its own, without the tower). It drills **Projects -> Worktrees -> Agents**, with **All agents** and **All PRs** tabs, per-branch git stats (committed / staged / unstaged with ahead-behind), and PR/CI status. From the list you can add projects and worktrees, spawn or remove agents, view or chat with an agent, switch the selected directory, and jump straight to a PR's detail. It runs off the **same real-time feed** as the tower and is **decoupled from the tower's lifecycle** - it keeps updating when the scene is closed, so you can use the compact panel entirely on its own.
 
 ![The DevTower mini view: a compact table that drills projects, worktrees, and agents, with All-agents and All-PRs tabs, per-branch git stats, and PR status.](media/shot-mini.png)
 
@@ -56,12 +56,12 @@ Beside the canvas tower, DevTower can open a **mini view**: a dense, DOM-table p
 
 The two trees in the **◆ DevTower** activity-bar container turn the focused worktree into a place you can actually work, without opening a second window:
 
-- **Selected Directory** is a full file viewer for the worktree (every file, not just changed ones). Open a file to edit it inline; **drag** a file or folder onto a folder to move it; **right-click -> Delete** to send it to Trash. Both moving and deleting confirm once, with a **"don't ask again"** option.
-- **Changes** is the SCM-style split of staged / unstaged changes for the same worktree, with inline stage/unstage and click-to-diff into the native VS Code diff editor.
+- **Selected Directory** is a full file viewer for the worktree (every file, not just changed ones). Open a file to edit it inline; **drag** a file or folder onto a folder to move it; multi-select (shift-click a range, cmd/ctrl-click to toggle) and **right-click -> Delete** to send them to Trash in one go. Both moving and deleting confirm once, with a **"don't ask again"** option (folder deletes use a separate confirmation key from file deletes).
+- **Source Control** is the native VS Code SCM split of staged / unstaged changes for the same worktree, with inline stage / unstage / discard (and stage-all / unstage-all / discard-all, plus folder-level actions in tree mode), commit from the input box, and click-to-diff into the native VS Code diff editor.
 
 ## Real git, real terminals, real PRs
 
-- The Changes view runs `git status --porcelain` (+ numstat) in the selected agent's resolved worktree; stage/unstage call `git add` / `git reset HEAD`. Diffs read `git show HEAD:<file>` for the left side and the working file for the right.
+- The Source Control view runs `git status --porcelain` (+ numstat) in the selected agent's resolved worktree; stage / unstage / discard call `git add` / `git reset HEAD` / `git checkout`. Diffs read `git show HEAD:<file>` for the left side and the working file for the right.
 - Each agent gets a terminal rooted in its worktree (`cwd`). Set **`devtower.launchCommand`** to run a command on first open (e.g. resume a session) so subsequent sends reach that process. Placeholders: `${worktree}`, `${branch}`, `${id}`.
 - Spawning a dev into a room either creates a git worktree (`git worktree add` under `.claude/worktrees/<slug>` with a `devtower/<slug>` branch, where `<slug>` is a Claude-style three-word name like `swift-gliding-heron` - unique and collision-checked) or runs in the project base dir, then launches `devtower.claudeCommand` in its terminal.
 - PR features shell out to the GitHub CLI (`gh pr list --head <branch>`, `gh search prs --review-requested=@me`, `gh pr checkout`). DevTower does not open PRs for you - prompt the agent in its terminal to create the PR exactly how you want it.
@@ -73,7 +73,7 @@ DevTower drives your existing CLIs; it makes no network calls of its own (git/gh
 | Tool | Required? | Used for |
 |---|---|---|
 | **VS Code** 1.85+ | required | host |
-| **git** | required | Changes view, native diffs, `git worktree add`, per-room push/pull/fetch |
+| **git** | required | Source Control view, native diffs, `git worktree add`, per-room push/pull/fetch |
 | **claude** ([Claude Code](https://claude.com/claude-code) CLI) | required for live agents | spawning/resuming sessions in terminals (`devtower.claudeCommand`); session discovery reads `~/.claude/projects` transcripts |
 | **gh** ([GitHub CLI](https://cli.github.com)) | optional | Per-worktree PR status on each board, PR view/checkout (DevTower never creates PRs). Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
 | **ps** / **lsof** (macOS / Linux) | optional | phantom-session filter - show only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower instead counts running `claude` processes tower-wide via WMI (`Get-CimInstance Win32_Process`) and caps shown sessions to that many, newest-first; if even that is unavailable it falls back to a 15-min freshness window |
