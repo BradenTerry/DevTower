@@ -1510,7 +1510,7 @@ export class ConsolePanel {
     <div class="spacer"></div>
     <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
     <button class="iconbtn" id="prbtn" title="Pull requests">⇄<span class="nbadge" id="pr-badge" hidden>0</span></button>
-    <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">⚡</button>
+    <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">🔋</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
   </header>
 

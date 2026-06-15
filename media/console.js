@@ -372,6 +372,7 @@
   // that, not the FLIP, is what made the open board churn on every poll
   let lbRaf = 0;
   let lbSig = "";
+  let lbOrder = ""; // last painted rank order; FLIP only runs when this changes
   function scheduleLeaderboard() {
     if (lbRaf || !leaderboardOpen()) return;
     lbRaf = requestAnimationFrame(() => { lbRaf = 0; syncLeaderboard(); });
@@ -383,6 +384,7 @@
     s.hidden = true; s.innerHTML = "";
     if (lbRaf) { cancelAnimationFrame(lbRaf); lbRaf = 0; }
     lbSig = "";
+    lbOrder = "";
   }
   function openLeaderboard() {
     const s = $("#leaderboard");
@@ -393,7 +395,7 @@
     s.innerHTML = `
       <div class="lb-card">
         <button class="lb-close" id="lb-close" title="Close (Esc)">✕</button>
-        <h2>Token leaderboard</h2>
+        <h2>Token leaderboard <span class="lb-count" id="lb-count"></span></h2>
         <div class="lb-sub">All crew ranked by context-window usage. Click an agent to zoom to them.</div>
         <div class="lb-head">
           <span class="lb-rank">#</span><span class="lb-dot"></span>
@@ -419,6 +421,14 @@
     return el;
   }
 
+  // briefly highlight a value cell when it changes; remove + reflow + re-add so a
+  // rapid second change restarts the animation instead of being ignored
+  function flashValue(el, dir) {
+    el.classList.remove("up", "dn");
+    void el.offsetWidth; // force reflow so the animation can re-trigger
+    el.classList.add(dir);
+  }
+
   // patch a row's cells in place (no teardown) so live token updates don't flash
   function paintLbRow(el, a, i) {
     const pct = contextOf(a); // 0..100, or null when no tokens yet
@@ -433,7 +443,17 @@
     bar.className = "lb-bar" + (pct == null ? "" : pct >= 80 ? " hot" : pct >= 60 ? " warm" : "");
     bar.querySelector("i").style.width = (pct == null ? 0 : pct) + "%";
     el.querySelector(".lb-pct").textContent = pct == null ? "—" : pct + "%";
-    el.querySelector(".lb-tok").textContent = fmtTokens(a.contextTokens ?? 0);
+    // tokens: flash the value when it changes (green up / red down), mirroring the
+    // tower board's stat glow. The first paint of a row seeds the baseline silently.
+    const tok = a.contextTokens ?? 0;
+    const tokEl = el.querySelector(".lb-tok");
+    tokEl.textContent = fmtTokens(tok);
+    if (el.dataset.tok !== undefined) {
+      const prev = Number(el.dataset.tok);
+      if (tok > prev) flashValue(tokEl, "up");
+      else if (tok < prev) flashValue(tokEl, "dn");
+    }
+    el.dataset.tok = tok;
     el.classList.toggle("sel", a.id === selectedId);
     el.title = "Zoom to " + (a.name || "agent");
   }
@@ -445,6 +465,10 @@
     if (!list) return;
     // every agent, biggest context first (zero-token devs sink to the bottom)
     const ranked = agents.slice().sort((x, y) => (y.contextTokens ?? 0) - (x.contextTokens ?? 0));
+
+    // live crew count in the title (e.g. "12 agents")
+    const countEl = $("#lb-count", s);
+    if (countEl) countEl.textContent = ranked.length === 1 ? "1 agent" : ranked.length + " agents";
 
     // bail when nothing the board shows actually changed. Most state posts are
     // unrelated polls (git stats, PRs, usage) carrying identical token data;
@@ -465,6 +489,17 @@
     // index the rows that already exist, keyed by agent id
     const existing = new Map();
     list.querySelectorAll(".lb-row").forEach((el) => existing.set(el.dataset.id, el));
+
+    // fast path: ranks unchanged (the common case — tokens tick up without
+    // reordering). Patch cells in place and skip the FLIP entirely; its forced
+    // reflow + transform reset on every row is what still flickered on value-only
+    // updates. Only reorders (new/gone agent, rank swap) need the slide.
+    const order = ranked.map((a) => a.id).join(",");
+    if (order === lbOrder && existing.size === ranked.length) {
+      ranked.forEach((a, i) => paintLbRow(existing.get(a.id), a, i));
+      return;
+    }
+    lbOrder = order;
     // FLIP "first": each surviving row's CURRENT on-screen y (a row still sliding
     // from a prior update reports its mid-animation position here, so an
     // interrupted slide continues from where it is instead of snapping/jittering)
