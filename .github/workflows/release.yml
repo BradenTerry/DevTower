@@ -1,19 +1,36 @@
 name: Release
 
-# Runs when you push a version tag (e.g. v0.2.0) to a commit on main. The tag is the
-# single source of truth for the version: it is injected into package.json at build
-# time (the committed "version" is just a placeholder and is never edited by hand).
-# The job typechecks, builds, packages the extension as a .vsix, creates a GitHub release
-# with auto-generated notes and the .vsix attached, and publishes to the VS Code
-# Marketplace (regular channel) when VSCE_PAT is set.
+# Two ways to publish; both build, package the .vsix, create a GitHub release, and
+# publish to the VS Code Marketplace when VSCE_PAT is set. The version is the single
+# source of truth and is injected into package.json at build time (the committed
+# "version" is just a placeholder and is never edited by hand).
 #
-# DevTower publishes to the regular Marketplace channel (not the pre-release channel).
+#   1. Push a plain version tag (regular release):
+#        git tag v0.2.0 && git push origin v0.2.0     -> publishes 0.2.0 (regular)
 #
-#   git tag v0.2.0 && git push origin v0.2.0
+#   2. Run this workflow manually (Actions tab -> Release -> Run workflow), enter a
+#      version and tick "prerelease" to choose the channel at run time. Plain version
+#      numbers only - no "-pre" suffix. The run tags the commit and publishes:
+#        version 0.2.1, prerelease checked   -> publishes 0.2.1 (pre-release channel)
+#        version 0.2.1, prerelease unchecked -> publishes 0.2.1 (regular channel)
+#
+# Publishing any pre-release build is what makes the "Switch to Pre-Release Version"
+# button appear on the listing; users opt in per-install. Versions are one continuous
+# line that always increments - the channel is an independent per-run choice.
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, e.g. 1.2.3 (plain number, no v, no -suffix)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Publish to the pre-release channel'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -35,8 +52,29 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Set version from tag
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+      - name: Resolve version and release channel
+        id: channel
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            version="${version#v}"          # tolerate a leading v in the input
+            if [ "${{ inputs.prerelease }}" = "true" ]; then
+              echo "Manual run -> pre-release channel (publishing $version)"
+              echo "pre_release_flag=--pre-release" >> "$GITHUB_OUTPUT"
+            else
+              echo "Manual run -> regular channel (publishing $version)"
+              echo "pre_release_flag=" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            version="${GITHUB_REF_NAME#v}"   # tag push is always a regular release
+            echo "Tag push $GITHUB_REF_NAME -> regular channel (publishing $version)"
+            echo "pre_release_flag=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set version
+        run: npm version "${{ steps.channel.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - run: npm ci
 
@@ -47,13 +85,22 @@ jobs:
         run: npm run build
 
       - name: Package extension
-        run: npx --yes @vscode/vsce package --readme-path MARKETPLACE.md --out DevTower.vsix
+        run: npx --yes @vscode/vsce package ${{ steps.channel.outputs.pre_release_flag }} --readme-path MARKETPLACE.md --out DevTower.vsix
 
+      # On a tag push the tag already exists; on a manual run gh creates it at this commit
+      # (a tag created with GITHUB_TOKEN does not re-trigger the push-tag run above).
       - name: Create GitHub release with .vsix
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" DevTower.vsix --title "$GITHUB_REF_NAME" --generate-notes
+          PRERELEASE_FLAG: ${{ steps.channel.outputs.pre_release_flag }}
+          TAG: ${{ steps.channel.outputs.tag }}
+        run: |
+          gh release create "$TAG" DevTower.vsix \
+            --title "$TAG" \
+            --target "$GITHUB_SHA" \
+            --generate-notes \
+            ${PRERELEASE_FLAG:+--prerelease}
 
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
-        run: npx --yes @vscode/vsce publish --packagePath DevTower.vsix -p "$VSCE_PAT"
+        run: npx --yes @vscode/vsce publish ${{ steps.channel.outputs.pre_release_flag }} --packagePath DevTower.vsix -p "$VSCE_PAT"
