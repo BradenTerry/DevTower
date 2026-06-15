@@ -186,6 +186,7 @@ button{ font-family:inherit; }
   animation:rdin .24s cubic-bezier(.2,.9,.3,1);
 }
 .lb-card h2{ margin:0; font-size:15px; font-weight:600; color:var(--text); letter-spacing:.02em; }
+.lb-count{ font-size:11px; font-weight:600; color:var(--text-dim); background:var(--edge-soft); border:1px solid var(--edge); border-radius:999px; padding:1px 8px; margin-left:6px; vertical-align:middle; font-variant-numeric:tabular-nums; }
 .lb-sub{ margin:3px 0 12px; font-size:11.5px; color:var(--text-dim); }
 .lb-close{
   position:absolute; top:16px; right:16px; cursor:pointer; border:1px solid var(--edge); background:transparent;
@@ -223,6 +224,18 @@ button{ font-family:inherit; }
 .lb-row .lb-bar.hot i{ background:var(--error); }
 .lb-row .lb-pct{ text-align:right; font-variant-numeric:tabular-nums; color:var(--text-dim); font-size:11px; }
 .lb-row .lb-tok{ text-align:right; font-variant-numeric:tabular-nums; font-weight:600; color:var(--text); }
+/* value-change flash: green when tokens climb, red when they drop, fading back to
+   the resting color — mirrors the tower board's stat glow */
+.lb-row .lb-tok.up{ animation:lbtokup .8s ease-out; }
+.lb-row .lb-tok.dn{ animation:lbtokdn .8s ease-out; }
+@keyframes lbtokup{
+  0%{ color:var(--complete); text-shadow:0 0 9px color-mix(in srgb,var(--complete) 65%,transparent); }
+  100%{ color:var(--text); text-shadow:none; }
+}
+@keyframes lbtokdn{
+  0%{ color:var(--error); text-shadow:0 0 9px color-mix(in srgb,var(--error) 65%,transparent); }
+  100%{ color:var(--text); text-shadow:none; }
+}
 .lb-row.lb-enter{ animation:lbin .26s ease; }
 @keyframes lbin{ from{ opacity:0; transform:translateY(-4px); } to{ opacity:1; transform:none; } }
 .lb-empty{ padding:26px 10px; text-align:center; color:var(--text-dim); font-size:12px; }
