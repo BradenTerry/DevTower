@@ -1,7 +1,7 @@
 import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore } from "./store";
-import { isRepo, resolveCwd, repoSlug, defaultBranch, listBranches, branchMetas } from "./git";
+import { isRepo, resolveCwd } from "./git";
 import { getGithubToken } from "./github";
 
 export interface PrInfo {
@@ -30,58 +30,6 @@ export interface PrInfo {
   author?: string;
   agentId?: string;
   updatedAt?: string;
-}
-
-export interface BranchPr {
-  number: number;
-  url: string;
-  title: string;
-  isDraft: boolean;
-  checks: "pass" | "fail" | "pending" | "none";
-  checksPass: number;
-  checksFailed: number;
-  checksRunning: number;
-  checksTotal: number;
-  review: "approved" | "changes" | "required" | "none";
-  approvals: number;
-  changesRequested: number;
-  reviewersPending: number;
-  comments: number;
-  author?: string;
-  isMine: boolean;
-  reviewRequestedFromMe: boolean;
-  updatedAt?: string;
-  createdAt?: string;
-  assignees: string[];
-  labels: string[];
-  milestone?: string;
-  projects: string[];
-}
-
-export interface BranchRow {
-  branch: string;
-  repo: string;
-  isDefault: boolean;
-  hasWorktree: boolean;
-  pr?: BranchPr;
-  updatedAt?: string;
-  mine: boolean;
-  ahead: number;
-  behind: number;
-}
-
-export interface RepoGroup {
-  repo: string;
-  shortName: string;
-  defaultBranch: string;
-  main: {
-    checks: "pass" | "fail" | "pending" | "none";
-    pass: number;
-    fail: number;
-    running: number;
-    total: number;
-  };
-  branches: BranchRow[];
 }
 
 // Run gh with DevTower's PAT forced via GH_TOKEN, so gh uses it instead of any
@@ -210,8 +158,6 @@ export function mapDecision(d: string | undefined): PrInfo["review"] {
 export class PrService {
   private crew: PrInfo[] = [];
   private review: PrInfo[] = [];
-  private repos: RepoGroup[] = [];
-  private viewer?: string;
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
   private timer?: ReturnType<typeof setInterval>;
@@ -224,9 +170,6 @@ export class PrService {
    *  so a branch+PR created outside DevTower (e.g. from the CLI) still surfaces. */
   private extraTargets: { cwd: string; repo: string; branch: string }[] = [];
   private extraSig = "";
-  /** Tracked repo dirs fed from ConsolePanel for the branch board. */
-  private repoTargets: { cwd: string; shortName: string; checkedOutBranches: string[] }[] = [];
-  private repoTargetSig = "";
   private signInPrompted = false; // only nudge the user to connect GitHub once
   private connected = false; // is a GitHub token present (drives the disconnected UI)
   private chasing = false; // a just-opened PR is being chased onto the board
@@ -266,25 +209,6 @@ export class PrService {
     return this.fetched;
   }
 
-  getRepos(): RepoGroup[] {
-    return this.repos;
-  }
-
-  getViewer(): string | undefined {
-    return this.viewer;
-  }
-
-  /** Feed the set of tracked repo roots from ConsolePanel. Each entry provides the
-   *  island's cwd, its shortName, and branches already checked out locally. When
-   *  the set changes, kick a refresh. */
-  setRepoTargets(targets: { cwd: string; shortName: string; checkedOutBranches: string[] }[]): void {
-    const sig = JSON.stringify(targets.map((t) => `${t.cwd}¦${t.checkedOutBranches.sort().join(",")}`).sort());
-    if (sig === this.repoTargetSig) return;
-    this.repoTargetSig = sig;
-    this.repoTargets = targets;
-    void this.refresh();
-  }
-
   /** Adaptive polling: while any matched PR has a check still running, poll every
    *  ~10s so a live build updates reasonably quickly; otherwise back off to ~60s.
    *  (Kept conservative — each poll is N gh API calls, and bursts trip GitHub's
@@ -315,24 +239,20 @@ export class PrService {
         this.connected = false;
         this.crew = [];
         this.review = [];
-        this.repos = [];
         this.fetched = true;
         this.lastSig = this.signature(); // record so a later reconnect is detected
         this._onChange.fire(); // always re-emit so the disconnected state shows
         return;
       }
       this.connected = true;
-      await this.ensureViewer(token);
-      const [crew, review, reposResult] = await Promise.all([
+      const [crew, review] = await Promise.all([
         this.fetchCrew(token),
         this.fetchReview(token),
-        this.fetchRepos(token),
       ]);
       // keep prior data when a fetch FAILED (auth / rate limit) so the PR doesn't
       // vanish on a transient error
       this.crew = (!crew.ok && crew.prs.length === 0 && this.crew.length) ? this.crew : crew.prs;
       this.review = (!review.ok && review.prs.length === 0 && this.review.length) ? this.review : review.prs;
-      this.repos = (!reposResult.ok && reposResult.repos.length === 0 && this.repos.length) ? this.repos : reposResult.repos;
       const firstFetch = !this.fetched;
       this.fetched = true; // set before firing so refreshState reads it live
       // only repaint when the PR data actually changed — otherwise every poll /
@@ -393,162 +313,9 @@ export class PrService {
     const key = (p: PrInfo) =>
       [p.id, p.title, p.isDraft, p.checks, p.checksPass, p.checksFailed, p.checksRunning,
         p.checksTotal, p.review, p.approvals, p.changesRequested, p.reviewersPending, p.comments].join("¦");
-    const repoKey = (g: RepoGroup) => {
-      const branchKeys = g.branches.map((b) =>
-        [b.branch, b.hasWorktree, b.isDefault, b.pr?.number ?? "", b.pr?.checks ?? "", b.pr?.review ?? ""].join("|")
-      ).join(";");
-      return [g.repo, g.defaultBranch, g.main.checks, g.main.pass, g.main.fail, g.main.running, g.main.total, branchKeys].join("¦");
-    };
     // include `connected` so a disconnected↔connected flip repaints even when the
     // PR lists are identical (e.g. adding a token while you have zero open PRs)
-    return JSON.stringify([this.connected, this.crew.map(key).sort(), this.review.map(key).sort(), this.repos.map(repoKey).sort()]);
-  }
-
-  /** Fetch viewer login once and cache it. Ignores failure. */
-  private async ensureViewer(token: string): Promise<void> {
-    if (this.viewer !== undefined) return;
-    const out = await runGh(undefined, ["api", "user", "-q", ".login"], token);
-    if (out !== null) {
-      const login = out.trim();
-      if (login) this.viewer = login;
-    }
-  }
-
-  /** Fetch the full branch+PR board data for all tracked repo targets. */
-  private async fetchRepos(token: string): Promise<{ repos: RepoGroup[]; ok: boolean }> {
-    if (this.repoTargets.length === 0) return { repos: [], ok: true };
-    const groups: RepoGroup[] = [];
-    let ok = true;
-
-    await Promise.all(this.repoTargets.map(async (target) => {
-      const { cwd, shortName, checkedOutBranches } = target;
-      // Resolve owner/repo from git remote
-      const slug = await repoSlug(cwd);
-      if (!slug) return; // no remote / unparseable — skip this target
-
-      const [defBranch, branches] = await Promise.all([
-        defaultBranch(cwd),
-        listBranches(cwd),
-      ]);
-
-      // Fetch all open PRs for this repo in one call
-      const prRaw = await runGh(cwd, [
-        "pr", "list", "--state", "open", "--limit", "50",
-        "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,author,reviews,reviewRequests,comments,updatedAt,createdAt,assignees,labels,milestone,projectItems",
-      ], token);
-
-      if (prRaw === null) { ok = false; }
-
-      // Build headRefName -> BranchPr map
-      const prMap = new Map<string, BranchPr>();
-      if (prRaw !== null) {
-        try {
-          for (const p of JSON.parse(prRaw) as any[]) {
-            const cc = checkCounts(p.statusCheckRollup);
-            const rc = reviewCounts(p.reviews, p.reviewRequests);
-            const comments = (Array.isArray(p.comments) ? p.comments.length : 0) + rc.commented;
-            const authorLogin = p.author?.login as string | undefined;
-            const reviewRequests: any[] = Array.isArray(p.reviewRequests) ? p.reviewRequests : [];
-            const reviewRequestedFromMe = this.viewer
-              ? reviewRequests.some((r) => (r.login ?? r.name ?? r.slug) === this.viewer)
-              : false;
-            const bp: BranchPr = {
-              number: p.number,
-              url: p.url,
-              title: p.title,
-              isDraft: !!p.isDraft,
-              checks: rollupChecks(p.statusCheckRollup),
-              checksPass: cc.pass,
-              checksFailed: cc.fail,
-              checksRunning: cc.running,
-              checksTotal: cc.total,
-              review: mapDecision(p.reviewDecision),
-              approvals: rc.approvals,
-              changesRequested: rc.changesRequested,
-              reviewersPending: rc.pending,
-              comments,
-              author: authorLogin,
-              isMine: !!(this.viewer && authorLogin === this.viewer),
-              reviewRequestedFromMe,
-              updatedAt: p.updatedAt,
-              createdAt: p.createdAt,
-              assignees: (p.assignees ?? []).map((a: any) => a.login).filter(Boolean) as string[],
-              labels: (p.labels ?? []).map((l: any) => l.name).filter(Boolean) as string[],
-              milestone: p.milestone?.title || undefined,
-              projects: (p.projectItems ?? []).map((pi: any) => pi.title || pi.name).filter(Boolean) as string[],
-            };
-            if (p.headRefName) prMap.set(p.headRefName, bp);
-          }
-        } catch { /* skip malformed */ }
-      }
-
-      // Fetch main branch build status from check-runs
-      let main: RepoGroup["main"] = { checks: "none", pass: 0, fail: 0, running: 0, total: 0 };
-      try {
-        const checkRunsRaw = await runGh(cwd, [
-          "api", `repos/{owner}/{repo}/commits/${defBranch}/check-runs`,
-        ], token);
-        if (checkRunsRaw !== null) {
-          const parsed = JSON.parse(checkRunsRaw);
-          const checkRuns: any[] = Array.isArray(parsed.check_runs) ? parsed.check_runs : [];
-          if (checkRuns.length > 0) {
-            // Map each check_run to a shape rollupChecks/checkCounts can handle
-            const items = checkRuns.map((r: any) => ({
-              conclusion: r.conclusion ? String(r.conclusion).toUpperCase() : null,
-              state: r.status ? String(r.status).toUpperCase() : null,
-            }));
-            const cc = checkCounts(items);
-            main = { checks: rollupChecks(items), pass: cc.pass, fail: cc.fail, running: cc.running, total: cc.total };
-          }
-        }
-      } catch { /* leave as none */ }
-
-      // Fetch per-branch git metadata (best-effort, empty map on error)
-      let metaMap: Awaited<ReturnType<typeof branchMetas>> = new Map();
-      try {
-        metaMap = await branchMetas(cwd, defBranch);
-      } catch { /* non-fatal */ }
-
-      // Build BranchRow[] — one row per branch
-      const branchRows: BranchRow[] = branches.map((branch) => {
-        const meta = metaMap.get(branch);
-        const pr = prMap.get(branch);
-        // Prefer git committerdate; fall back to PR updatedAt when git meta has no date
-        const updatedAt = meta?.updatedAt ?? pr?.updatedAt;
-        return {
-          branch,
-          repo: slug,
-          isDefault: branch === defBranch,
-          hasWorktree: checkedOutBranches.includes(branch),
-          pr,
-          updatedAt,
-          mine: meta?.mine ?? false,
-          ahead: meta?.ahead ?? 0,
-          behind: meta?.behind ?? 0,
-        };
-      });
-
-      // Sort: default branch first, then by updatedAt descending, then alphabetically
-      branchRows.sort((a, b) => {
-        if (a.isDefault && !b.isDefault) return -1;
-        if (!a.isDefault && b.isDefault) return 1;
-        if (a.updatedAt && b.updatedAt) {
-          const cmp = b.updatedAt.localeCompare(a.updatedAt);
-          if (cmp !== 0) return cmp;
-        } else if (a.updatedAt && !b.updatedAt) {
-          return -1;
-        } else if (!a.updatedAt && b.updatedAt) {
-          return 1;
-        }
-        return a.branch.localeCompare(b.branch);
-      });
-
-      groups.push({ repo: slug, shortName, defaultBranch: defBranch, main, branches: branchRows });
-    }));
-
-    // Sort groups by repo name
-    groups.sort((a, b) => a.repo.localeCompare(b.repo));
-    return { repos: groups, ok };
+    return JSON.stringify([this.connected, this.crew.map(key).sort(), this.review.map(key).sort()]);
   }
 
   private async fetchCrew(token: string): Promise<{ prs: PrInfo[]; ok: boolean }> {

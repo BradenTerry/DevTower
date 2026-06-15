@@ -51,24 +51,34 @@ process.stdin.on("end", () => {
   try {
     const ev = JSON.parse(data || "{}");
     const source = String(ev.source || "");
-    // only /clear (mints a new uuid) and resume (reopens another session in a
-    // DevTower terminal) need a marker; startup/compact have nothing to rebind.
+    // only /clear (mints a new uuid) and resume (reopens an existing session)
+    // need a marker; startup mints a fresh transcript (already reads active) and
+    // compact keeps writing, so neither needs one.
     if (source !== "clear" && source !== "resume") return;
     const id = String(ev.session_id || "");
     // session ids are uuids; refuse anything that could escape the dir
     if (!/^[A-Za-z0-9._-]+$/.test(id)) return;
+    const cwd = String(ev.cwd || "");
+    const write = (sub, body) => {
+      const dir = path.join(os.homedir(), ".claude", "devtower", sub);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(body));
+    };
+    // EVERY resume drops a liveness marker: reopening a session does not write to
+    // the transcript until the first prompt, so without this a just-resumed dev
+    // keeps its stale mtime and reads idle even while you are reading/typing.
+    if (source === "resume") write("active", { cwd, ts: Date.now() });
     const launch = launchId(process.ppid);
-    // a resume marker is only meaningful when this terminal was launched by
-    // DevTower (carries a --session-id) AND it reopened a DIFFERENT session than
-    // the one we launched; otherwise the deterministic launch-id bind covers it.
-    if (source === "resume" && (!launch || launch === id.toLowerCase())) return;
-    const sub = source === "clear" ? "succession" : "resume";
-    const dir = path.join(os.homedir(), ".claude", "devtower", sub);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(
-      path.join(dir, id + ".json"),
-      JSON.stringify({ cwd: String(ev.cwd || ""), source, ts: Date.now(), launchId: launch })
-    );
+    if (source === "clear") {
+      // /clear retires this uuid and mints a successor; link them via launch id.
+      write("succession", { cwd, source, ts: Date.now(), launchId: launch });
+    } else if (launch && launch !== id.toLowerCase()) {
+      // narrow redirect: a DevTower-launched terminal reopened a DIFFERENT session
+      // than the one we launched, so the placeholder waiting on `launch` needs to
+      // be pointed at this resumed uuid. (Same-session / non-DevTower resumes are
+      // covered by the deterministic launch-id bind and the active marker above.)
+      write("resume", { cwd, source, ts: Date.now(), launchId: launch });
+    }
   } catch {
     /* swallow: a broken hook must not disrupt Claude Code */
   }

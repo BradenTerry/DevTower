@@ -23,6 +23,7 @@ describe("ClaudeDiscovery binding", () => {
   let succDir: string; // fake ~/.claude/devtower/succession
   let resumeDir: string; // fake ~/.claude/devtower/resume
   let endedDir: string; // fake ~/.claude/devtower/ended
+  let activeDir: string; // fake ~/.claude/devtower/active
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-disc-"));
@@ -33,6 +34,7 @@ describe("ClaudeDiscovery binding", () => {
     succDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-succ-"));
     resumeDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-resume-"));
     endedDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-ended-"));
+    activeDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-active-"));
   });
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
@@ -41,6 +43,7 @@ describe("ClaudeDiscovery binding", () => {
     fs.rmSync(succDir, { recursive: true, force: true });
     fs.rmSync(resumeDir, { recursive: true, force: true });
     fs.rmSync(endedDir, { recursive: true, force: true });
+    fs.rmSync(activeDir, { recursive: true, force: true });
   });
 
   /** Drop a SessionStart(clear) succession marker for the new session uuid,
@@ -64,6 +67,14 @@ describe("ClaudeDiscovery binding", () => {
     fs.writeFileSync(
       path.join(endedDir, `${uuid}.json`),
       JSON.stringify({ cwd, reason, ts: Date.now(), ...(launchId ? { launchId } : {}) })
+    );
+
+  /** Drop a SessionStart(resume) activity marker: a just-reopened session that
+   *  hasn't written to its transcript yet. `tsOffsetSec` relative to now. */
+  const writeActive = (uuid: string, cwd = wt, tsOffsetSec = 0) =>
+    fs.writeFileSync(
+      path.join(activeDir, `${uuid}.json`),
+      JSON.stringify({ cwd, ts: Date.now() + tsOffsetSec * 1000 })
     );
 
   /** Drop a Notification-hook marker for a session, `tsOffsetSec` relative to now. */
@@ -106,6 +117,7 @@ describe("ClaudeDiscovery binding", () => {
       successionDir: succDir,
       resumeDir,
       endedDir,
+      activeDir,
     });
 
   /** Create a panel placeholder exactly as addDev does (no transcript yet). */
@@ -441,6 +453,34 @@ describe("ClaudeDiscovery binding", () => {
     const a = store.list()[0];
     expect(a.state).toBe("waiting"); // hook overrides the active mask
     expect(a.question).toBe("Claude needs your permission to use Write");
+  });
+
+  it("a just-resumed session reads active even before it writes to its transcript", async () => {
+    // A finished session: it last spoke a STATEMENT and went quiet for minutes, so
+    // on its own it reads idle. Reopening it (SessionStart resume) writes nothing
+    // to the transcript until the first prompt, so the activity marker is the only
+    // signal it came back — without folding it in, a resumed dev shows idle while
+    // you read/type. The transcript ends on an assistant statement so the baseline
+    // is genuinely idle (not "working" or "waiting").
+    const uuid = randomUUID();
+    const file = path.join(proj, `${uuid}.jsonl`);
+    fs.writeFileSync(file,
+      JSON.stringify({ type: "user", cwd: wt, message: { role: "user", content: "ship it" } }) + "\n" +
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Done, pushed." } }) + "\n");
+    const quiet = Date.now() / 1000 - 300; // 5 min since the last write
+    fs.utimesSync(file, quiet, quiet);
+    const id = "cc-" + uuid.slice(0, 8);
+
+    // baseline: silent finished session, no resume marker → idle
+    const store1 = newStore();
+    await discovery(store1, { [wt]: 1 }, [uuid]).refresh();
+    expect(store1.get(id)?.state).toBe("idle");
+
+    // resume drops a fresh activity marker → reads active despite the stale mtime
+    writeActive(uuid);
+    const store2 = newStore();
+    await discovery(store2, { [wt]: 1 }, [uuid]).refresh();
+    expect(store2.get(id)?.state).toBe("active");
   });
 
   it("drops the hand (and sweeps the marker) once the session resumes past the marker", async () => {

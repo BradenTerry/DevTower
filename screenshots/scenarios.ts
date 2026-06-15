@@ -81,6 +81,11 @@ export const SCENARIOS: Scenario[] = [
     // glyph); the top room carries a live PR so the board's PR cell is shown.
     name: "campus",
     config: { eco: false },
+    // pull back to the fit-all overview so both stacked rooms sit in frame with
+    // sky above. The overview frames the tower's full bounding box (height-fit),
+    // unlike the default boot camera which fills viewport width and crops the
+    // top floor now that the left-side billboard width is gone.
+    overview: true,
     usage: { fiveHour: { pct: 62 }, sevenDay: { pct: 41 } },
     state: {
       agents: [
@@ -104,9 +109,7 @@ export const SCENARIOS: Scenario[] = [
       crew: [
         { id: "DevTower#318", number: 318, title: "SSE streaming for /v1/messages", repo: "DevTower", branch: "feat/streaming", url: "https://github.com/acme/x/pull/318", isDraft: true, checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5, review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2, comments: 0, author: "you", agentId: "a2" },
       ],
-      review: [
-        { id: "acme/infra#87", number: 87, title: "Terraform: split staging state", repo: "acme/infra", branch: "infra/split", url: "https://github.com/acme/infra/pull/87", isDraft: false, checks: "none", checksPass: 0, checksFailed: 0, checksRunning: 0, checksTotal: 0, review: "required", approvals: 0, changesRequested: 0, reviewersPending: 1, comments: 0, author: "mrivera" },
-      ],
+      review: [],
     },
   },
   {
@@ -171,7 +174,7 @@ export const SCENARIOS: Scenario[] = [
     focusAgent: "a1",
     state: {
       agents: [
-        { id: "a1", name: "Atlas", state: "waiting", repo: "DevTower", model: "claude-opus-4-8", worktree: "/repo", branch: "main", skills: ["code-review", "verify"], contextTokens: 84_000, elapsed: "12m", question: "Run the destructive migration?" },
+        { id: "a1", name: "DevTower·ae4f", state: "waiting", repo: "DevTower", model: "claude-opus-4-8", worktree: "/repo", branch: "main", skills: ["code-review", "verify"], contextTokens: 84_000, elapsed: "12m", question: "Run the destructive migration?" },
       ],
       rooms: [{ name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] }],
       boards: { "/repo": board({ branch: "main", modified: 2 }) },
@@ -179,8 +182,8 @@ export const SCENARIOS: Scenario[] = [
     prs: { crew: [], review: [] },
   },
   {
-    // no GitHub token: the billboard + board PR cell show the disconnected glyph
-    // instead of mock data or a misleading empty state
+    // no GitHub token: the board PR cell shows the disconnected glyph instead of
+    // mock data or a misleading empty state
     name: "disconnected",
     config: { eco: false },
     connected: false,
@@ -203,7 +206,7 @@ export const SCENARIOS: Scenario[] = [
     settings: {
       scopeHelp: [
         { scope: "repo", why: "Read pull requests and CI checks on your PRIVATE repositories. Public-only? You can skip this, but private PRs will not appear." },
-        { scope: "read:org", why: "Resolve review requests assigned to you inside organizations (the 'PRs to review' billboard)." },
+        { scope: "read:org", why: "Resolve review requests assigned to you inside organizations." },
       ],
       caps: {
         connected: true, login: "BradenTerry", tokenType: "classic", scopes: ["repo", "read:org"],

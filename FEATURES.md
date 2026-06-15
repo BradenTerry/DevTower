@@ -48,10 +48,10 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | PR board: PRs requesting my review | ✅ | `gh search prs --review-requested=@me`; badge count in HUD |
 | PR chip on agent panel + View PR link | ✅ | Opens the worktree's existing PR; no create-PR button (prompt the agent to open the PR how you want it) |
 | File viewer: drag-to-move + right-click delete | ✅ | *Selected Directory* tree: `TreeDragAndDropController` renames within the worktree; `devtower.deleteFile` removes to Trash; each confirms once with a "don't ask again" opt-out (`devtower.confirmFileMove` / `devtower.confirmFileDelete` in globalState; reset via `devtower.resetFilePrompts`) |
-| Review Dispatch modal: skills + instructions + effort + agent md, save defaults | ✅ | Glass modal from a PR row or the billboard; `devtower.reviewSkills` / `devtower.reviewDefaults`; agent md auto-discovered from `.claude/agents` and applied via `--append-system-prompt` |
-| Review in an isolated worktree | ✅ | `worktreeForPr` adds a detached worktree under `.claude/worktrees`, `gh pr checkout` brings the PR branch in; main checkout untouched; registered as its own room |
-| Central "PRs to review" billboard | ✅ | Standalone signboard left of the campus listing review-requested (@me) PRs; click a row → dispatch modal; bounds extend so the overview frames it |
-| Diegetic review: reviewer pose (magnifier + printout) + verdict stamp | ✅ | `reviewOf` tags the agent; verdict derived from polled PR decision flips an APPROVED/CHANGES badge over the dev |
+| Review Dispatch modal: skills + instructions + effort + agent md, save defaults | ⛔ removed | Removed with the billboard (see CHANGELOG [Unreleased]); returns when the branch/PR board is rebuilt |
+| Review in an isolated worktree | ⚠️ no entry point | `worktreeForPr` (`src/git.ts`) and the verdict wiring still exist, but the only launcher (the Review Dispatch modal) was removed |
+| Central "PRs to review" billboard | ⛔ removed | Removed for v1 (see CHANGELOG [Unreleased]); the branch/PR board returns as a dedicated feature later |
+| Diegetic review: reviewer pose (magnifier + printout) + verdict stamp | ⚠️ no entry point | `reviewOf` → verdict rendering still lives in `crew.ts`, but nothing assigns `reviewOf` now that Review Dispatch is gone |
 | Light/dark theme toggle | ✅ | Token-driven; presentation-only |
 
 ## Partial / mock-backed (works in UI, needs real backing)
@@ -70,7 +70,7 @@ Capability map, independent of the current visual theme. The **data contracts** 
 
 | Feature | Needs |
 |---|---|
-| Billboard visual pass: placement/scale/legibility tuning in the running app | Canvas iteration — billboard geometry is in `crew.ts` (`billboardGeom`/`drawReviewBillboard`) but unverified against the live scene |
+| Rebuild the branch/PR board (was the billboard + Review Dispatch) | Re-add the canvas board, its data feed (`fetchRepos`-style branch/PR listing), and a launcher for review dispatch; all removed for v1 |
 | Merge/close PR from the board | `gh pr merge` + confirmation UX |
 | PR event toasts (checks went red, review approved) | Diff PR snapshots between polls → feed |
 | Commit + push from Changes tab | Commit message input + `git commit/push`; sits next to stage/unstage |

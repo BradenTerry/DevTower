@@ -25,7 +25,7 @@ DevTower collapses it into **a single view**. Every repo and worktree is a room 
 - **Spawn a dev into a worktree.** Reserve an empty cell, pick a folder, hit **+ DEV**: DevTower creates a git worktree under `.claude/worktrees/` with a Claude-style three-word branch name (like `swift-gliding-heron`), or runs in the project dir, then launches Claude in a native terminal rooted there.
 - **Native diffs and terminals.** Click a changed file for the real VS Code diff (HEAD <-> working tree). Each agent gets a native integrated terminal in its worktree - the terminal *is* the conversation.
 - **Changes view + a full file viewer.** The selected agent's files split into Staged / Changes with inline stage, unstage, stage-all, and unstage-all, backed by real `git`. A second *Selected Directory* tree lets you browse and edit **any** file in the worktree, **drag to move** files, and **right-click to delete** them - each with a one-time confirm and a "don't ask again" option.
-- **Pull requests in-scene.** A PR board shows per-worktree PRs with checks and review status, a standalone billboard lists PRs requesting your review, and a **Review Dispatch** modal spawns a reviewer agent in an isolated worktree with the skills, effort, and instructions you choose. (DevTower won't open a PR for you - just ask the agent in its terminal to create it however you like.)
+- **Pull requests in-scene.** Each room's board shows its worktree's open PR with the number, title, CI checks, and review status, right next to the branch and change counts. (DevTower won't open a PR for you - just ask the agent in its terminal to create it however you like.)
 
 ## Getting started
 
@@ -43,7 +43,7 @@ DevTower drives your existing command-line tools and makes **no network calls of
 | **VS Code** 1.85+ | required | host |
 | **git** | required | the Changes view, native diffs, `git worktree add`, and per-room push / pull / fetch |
 | **Claude Code CLI** (`claude`) | required for live agents | spawning and resuming sessions in terminals; discovering sessions from `~/.claude/projects` |
-| **GitHub CLI** (`gh`) | optional | the PR board, review-requested billboard, review dispatch, and PR view / checkout (DevTower never creates PRs). Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
+| **GitHub CLI** (`gh`) | optional | per-room PR status on the board, plus PR view / checkout (DevTower never creates PRs). Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
 | **ps** / **lsof** (macOS / Linux) | optional | showing only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower counts running `claude` processes tower-wide via WMI (PowerShell) and caps shown sessions to that many; if unavailable it uses a freshness fallback |
 
 **What it reads and writes:**
@@ -64,9 +64,9 @@ DevTower uses the token only inside the extension: it is passed to the `gh` subp
 
 ## A look around
 
-The campus at a glance - telemetry across every room, the PRs-to-review billboard, and a live room board, all in one window:
+The campus at a glance - telemetry across every room and each room's live board, all in one window:
 
-![The DevTower campus: run / wait / err / crew telemetry, a PRs-to-review billboard, and a room board with branch and change counts.](media/shot-campus.png)
+![The DevTower campus: run / wait / err / crew telemetry and room boards with branch and change counts.](media/shot-campus.png)
 
 A single room: the worktree's board (branch, unstaged / staged / commit counts, PR cell), the **USE DIR** and **+ DEV** controls, the ghost slot to stack the next worktree, and the dev at their desk (here with a sub-agent badge):
 

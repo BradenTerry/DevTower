@@ -26,6 +26,12 @@ export const WAITING_DIR = path.join(os.homedir(), ".claude", "devtower", "waiti
 export const SUCCESSION_DIR = path.join(os.homedir(), ".claude", "devtower", "succession");
 export const RESUME_DIR = path.join(os.homedir(), ".claude", "devtower", "resume");
 export const ENDED_DIR = path.join(os.homedir(), ".claude", "devtower", "ended");
+// SessionStart(resume) drops one of these for ANY resumed session (see
+// media/devtower-session.js). Resuming reopens an existing transcript and does
+// not write a line until the first prompt, so a just-resumed session keeps its
+// old mtime and would read as idle. Discovery folds a fresh marker's ts into the
+// session's activity time so a resumed dev reads active until it writes for real.
+export const ACTIVE_DIR = path.join(os.homedir(), ".claude", "devtower", "active");
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 const MARKER_MAX_AGE = 24 * 3_600_000; // prune markers for sessions long gone
 // a /clear's successor session surfaces within a poll or two; if it never does
@@ -40,6 +46,10 @@ const RESUME_MAX_AGE = 10 * 60_000;
 // age cap only guards against a marker whose poll never ran (extension asleep) —
 // keep it short so a stale one can't retire a same-uuid session resumed later.
 const ENDED_MAX_AGE = 10 * 60_000;
+// how long a resume keeps a silent session reading "active": long enough to cover
+// reading the resumed context and composing the first prompt, short enough that a
+// resumed-then-abandoned session settles back to idle on its own.
+const ACTIVE_MAX_AGE = 3 * 60_000;
 
 export interface WaitMarker {
   message: string;
@@ -226,6 +236,39 @@ export async function readResumeMarkers(dir = RESUME_DIR): Promise<Map<string, R
 export function clearResumeMarker(sessionId: string, dir = RESUME_DIR): void {
   if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return;
   fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
+}
+
+/** A SessionStart(resume) drops one of these, keyed by the resumed session's
+ *  uuid: a "just came back" signal independent of transcript writes. */
+export interface ActiveMarker {
+  cwd: string;
+  ts: number;
+}
+
+/** Read the resume-activity markers, keyed by session id, returning the ts so a
+ *  caller can fold it into the session's activity time. Stale ones are pruned so
+ *  the marker can't keep a long-finished session reading active. */
+export async function readActiveMarkers(dir = ACTIVE_DIR): Promise<Map<string, ActiveMarker>> {
+  const out = new Map<string, ActiveMarker>();
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const now = Date.now();
+  for (const fn of files) {
+    if (!fn.endsWith(".json")) continue;
+    const id = fn.slice(0, -5);
+    const full = path.join(dir, fn);
+    try {
+      const raw = await fs.promises.readFile(full, "utf8");
+      const m = JSON.parse(raw) as ActiveMarker;
+      if (typeof m?.ts !== "number" || now - m.ts > ACTIVE_MAX_AGE) {
+        await fs.promises.unlink(full).catch(() => {});
+        continue;
+      }
+      out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts });
+    } catch {
+      /* partial write or garbage — ignore this poll */
+    }
+  }
+  return out;
 }
 
 /** A genuine session exit (not /clear or resume) drops one of these keyed by the
