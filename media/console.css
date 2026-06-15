@@ -203,8 +203,12 @@ button{ font-family:inherit; }
 .s-row-sub{ margin-top:3px; font-size:11px; line-height:1.4; color:var(--text-faint); }
 .s-toggle{ flex:none; cursor:pointer; width:40px; height:23px; border-radius:99px; border:1px solid var(--edge); background:rgba(0,0,0,0.25); position:relative; transition:.16s; }
 .s-toggle .knob{ position:absolute; top:2px; left:2px; width:17px; height:17px; border-radius:50%; background:var(--text-faint); transition:.16s; }
+.s-toggle:hover{ border-color:var(--text-faint); background:rgba(0,0,0,0.32); }
+.s-toggle:hover .knob{ background:var(--text-dim); }
 .s-toggle.on{ background:color-mix(in srgb,var(--active) 28%,transparent); border-color:color-mix(in srgb,var(--active) 55%,transparent); }
+.s-toggle.on:hover{ background:color-mix(in srgb,var(--active) 38%,transparent); border-color:color-mix(in srgb,var(--active) 70%,transparent); }
 .s-toggle.on .knob{ left:19px; background:var(--active); }
+.s-toggle.on:hover .knob{ background:var(--active); }
 
 /* Hooks tab: enable all / disable all */
 .s-hookbar{ display:flex; gap:8px; }

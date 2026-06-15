@@ -16,6 +16,8 @@ import {
   pull,
   fetch,
   stashSave,
+  listBranches,
+  checkout,
   worktreeList,
   GitFile,
 } from "./git";
@@ -35,17 +37,51 @@ import { openGitFileDiff } from "./diffProvider";
  * `SourceControl.actionButton` API, which a marketplace build can't use, so we
  * commit via accept-input + the title-bar check (the pre-actionButton native UX).
  */
+/** Turn a raw git failure into a tidy, multi-line message for a modal's detail:
+ *  drop the wrapper/`error:`/`fatal:`/`Aborting` noise and bullet the
+ *  tab-indented file paths git lists so they don't run together. */
+export function formatGitError(raw: string): string {
+  const lines = raw.replace(/^Error:\s*/, "").split(/\r?\n/);
+  const out: string[] = [];
+  for (const line of lines) {
+    // git indents listed paths with a leading tab/spaces — turn those into bullets
+    if (/^\s+\S/.test(line)) {
+      out.push(`  • ${line.trim()}`);
+      continue;
+    }
+    const text = line.replace(/^(error|fatal|warning):\s*/i, "").trim();
+    if (!text || /^aborting\.?$/i.test(text)) continue; // drop empty + trailing "Aborting"
+    out.push(text);
+  }
+  return out.join("\n");
+}
+
 export function registerScmView(context: vscode.ExtensionContext, store: DevTowerStore): void {
-  const sc = vscode.scm.createSourceControl("devtower", "DevTower Changes");
-  const stagedGroup = sc.createResourceGroup("staged", "Staged Changes");
-  const changesGroup = sc.createResourceGroup("changes", "Changes");
-  stagedGroup.hideWhenEmpty = true;
-  changesGroup.hideWhenEmpty = true;
-  sc.acceptInputCommand = { command: "devtower.scmCommit", title: "Commit" };
-  // accept-input (scm.acceptInput) is ⌘Enter on macOS, Ctrl+Enter elsewhere —
-  // surface it in the placeholder the way the built-in Git box does.
-  const commitKey = process.platform === "darwin" ? "⌘Enter" : "Ctrl+Enter";
-  sc.inputBox.placeholder = `Message (${commitKey} to commit)`;
+  // The provider is (re)created with a rootUri pointing at the mounted worktree,
+  // so VS Code renders it as its OWN titled section in the Source Control view —
+  // sitting alongside the built-in Git provider for the folder you opened, rather
+  // than as a rootless provider that looks like it replaced Source Control. Since
+  // rootUri/label are fixed at creation, changing the directory means rebuilding.
+  let sc: vscode.SourceControl;
+  let stagedGroup: vscode.SourceControlResourceGroup;
+  let changesGroup: vscode.SourceControlResourceGroup;
+  let mountedRoot: string | undefined; // rootUri the live provider was built with
+  let provider: vscode.Disposable | undefined;
+
+  const mount = (root: string | undefined): void => {
+    provider?.dispose();
+    const title = root ? `DevTower • ${path.basename(root)}` : "DevTower Changes";
+    sc = vscode.scm.createSourceControl("devtower", title, root ? vscode.Uri.file(root) : undefined);
+    stagedGroup = sc.createResourceGroup("staged", "Staged Changes");
+    changesGroup = sc.createResourceGroup("changes", "Changes");
+    stagedGroup.hideWhenEmpty = true;
+    changesGroup.hideWhenEmpty = true;
+    sc.acceptInputCommand = { command: "devtower.scmCommit", title: "Commit" };
+    sc.inputBox.placeholder = "Message";
+    mountedRoot = root;
+    provider = vscode.Disposable.from(stagedGroup, changesGroup, sc);
+  };
+  mount(undefined);
 
   // the worktree the SCM currently reflects, resolved fresh each sync. Commands
   // act on this cwd; null when nothing committable is selected.
@@ -153,12 +189,16 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
       const { cwd, label } = resolveCurrent();
       curCwd = cwd;
       curLabel = label;
+      // rebuild the provider when the mounted directory changes so its section
+      // title + rootUri track the worktree USE DIR points at.
+      if (cwd !== mountedRoot) mount(cwd);
       const real = cwd ? await isRepo(cwd) : false;
       if (!cwd || !real) {
         stagedGroup.resourceStates = [];
         changesGroup.resourceStates = [];
         sc.count = 0;
-        sc.inputBox.placeholder = `Message (${commitKey} to commit)`;
+        sc.inputBox.placeholder = "Message";
+        sc.statusBarCommands = [];
         return;
       }
       const st = await status(cwd).catch(() => null);
@@ -166,13 +206,23 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
         stagedGroup.resourceStates = [];
         changesGroup.resourceStates = [];
         sc.count = 0;
+        sc.statusBarCommands = [];
         return;
       }
       stagedGroup.resourceStates = st.staged.map((f) => toState(cwd, f));
       changesGroup.resourceStates = st.unstaged.map((f) => toState(cwd, f));
       sc.count = st.staged.length + st.unstaged.length;
-      // branch-aware placeholder, e.g. Message (⌘Enter to commit on "main")
-      sc.inputBox.placeholder = `Message (${commitKey} to commit on "${st.branch || "HEAD"}")`;
+      // branch-aware placeholder, e.g. Message (commit on "main")
+      sc.inputBox.placeholder = `Message (commit on "${st.branch || "HEAD"}")`;
+      // branch indicator + switcher, shown inline on the section (like built-in Git)
+      const branch = st.branch || "HEAD";
+      sc.statusBarCommands = [
+        {
+          command: "devtower.scmCheckout",
+          title: `$(git-branch) ${branch}`,
+          tooltip: `Switch branch (currently ${branch})`,
+        },
+      ];
       // keep newly-created worktrees ignored while the toggle is on
       if (worktreesHidden()) void applyWorktreeVisibility();
     } finally {
@@ -196,9 +246,8 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
   };
 
   context.subscriptions.push(
-    sc,
-    stagedGroup,
-    changesGroup,
+    // dispose whichever provider is currently mounted on deactivate
+    { dispose: () => provider?.dispose() },
     // keep the mirror in step with selection, focus, and any store change (a
     // poll, a stage/commit landing via the .git watcher, etc.)
     store.onChange(() => void sync()),
@@ -284,6 +333,38 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
     }),
     vscode.commands.registerCommand("devtower.scmRefresh", () => void sync()),
 
+    vscode.commands.registerCommand("devtower.scmCheckout", async () => {
+      if (!curCwd) return;
+      const cwd = curCwd;
+      const [branches, st] = await Promise.all([listBranches(cwd), status(cwd).catch(() => null)]);
+      const current = st?.branch;
+      if (!branches.length) {
+        vscode.window.showInformationMessage("DevTower: no branches to switch to.");
+        return;
+      }
+      const pick = await vscode.window.showQuickPick(
+        branches.map((b) => ({
+          label: b === current ? `$(check) ${b}` : `$(git-branch) ${b}`,
+          description: b === current ? "current" : undefined,
+          branch: b,
+        })),
+        { title: `Switch branch — ${path.basename(cwd)}`, placeHolder: "Select a branch to check out" }
+      );
+      if (!pick || pick.branch === current) return;
+      try {
+        await checkout(cwd, pick.branch);
+      } catch (e) {
+        // git's reason (e.g. "local changes would be overwritten ...") can run
+        // several lines with tab-indented file paths — clean it up and show it in
+        // full, in a modal, instead of a clipped/garbled toast.
+        const raw = e instanceof Error ? e.message : String(e);
+        vscode.window.showErrorMessage(`DevTower: couldn't switch to "${pick.branch}".`, {
+          modal: true,
+          detail: formatGitError(raw),
+        });
+      }
+      void sync();
+    }),
     vscode.commands.registerCommand("devtower.scmHideWorktrees", () => setWorktreesHidden(true)),
     vscode.commands.registerCommand("devtower.scmShowWorktrees", () => setWorktreesHidden(false)),
 
