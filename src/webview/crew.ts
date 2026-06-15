@@ -358,6 +358,15 @@ interface Toon {
   // departure path: walk to the elevator → ride the car down to the ground → away
   leavePhase?: "walk" | "elevator" | "away";
   riding?: boolean; // currently inside the elevator car (drives the car render)
+  // worktree switch: the SAME session changed its checkout (cd into another
+  // worktree). The dev relocates between buildings — walk out the old room's
+  // door ("out"), ride the car down to the lobby ("down"), cross the ground to
+  // the destination building ("cross"), ride up to that worktree's floor ("up"),
+  // and walk in to a desk ("in"). If the destination worktree has no building in
+  // the project, it leaves the building instead (strolls out of the lobby, gone).
+  // `fromKey`/`fromX0` pin the source building so the down-ride and demolish
+  // guard survive the source room re-packing or even being torn down behind it.
+  transfer?: { toKey: string; fromKey?: string; fromX0: number; phase: "out" | "down" | "cross" | "up" | "in" };
   // skills the dev has fetched from the shelf (one book per skill). `skills` is
   // the accumulated set; `booksShown` is how many are resting on the desk and
   // `booksInHand` how many it carried back and is currently reading while the task
@@ -812,7 +821,7 @@ class PixelCrew {
         // toon must never be re-keyed: its session didn't /clear-restart, so
         // grabbing it would drag an unrelated agent through the shred trip and
         // swap desks with the new dev.
-        if (seen.has(id) || tn.leaving || tn.entering || tn.agent.external) continue;
+        if (seen.has(id) || tn.leaving || tn.entering || tn.transfer || tn.agent.external) continue;
         const key = tn.agent.worktree?.trim();
         // a /clear-restart of an OWNED dev mints another OWNED session in the same
         // DevTower terminal. An EXTERNAL arrival is a different outside session, not
@@ -909,7 +918,7 @@ class PixelCrew {
       // dev's session is replaced. On a change, send the SAME dev on its shredder
       // trip — carry the context papers over, feed them in, walk back to its seat.
       const nextClear = a.clearedSession;
-      if (nextClear && tn.clearedSession !== nextClear && !tn.entering && !tn.leaving && !tn.shred) {
+      if (nextClear && tn.clearedSession !== nextClear && !tn.entering && !tn.leaving && !tn.shred && !tn.transfer) {
         // carry the context papers to the shredder AND return the skill books to the
         // shelf — but ONLY books whose skill the fresh context no longer carries. A
         // skill that survives the /clear keeps its book on the desk (shown
@@ -933,6 +942,24 @@ class PixelCrew {
         this.invalidate(); // wake the loop so the tap + count roll play now
       }
       tn.taskDone = nextDone;
+      // a worktree switch: the SAME session cd'd into another checkout. Relocate
+      // the dev rather than letting layout teleport it — out the old door, down
+      // to the lobby, across to the destination building and up to that
+      // worktree's floor (the tick driver resolves whether a building exists and,
+      // if not, walks it out of the building). Only once it's actually placed and
+      // not already mid-trip.
+      const prevTree = tn.agent.worktree?.trim();
+      const nextTree = a.worktree?.trim();
+      if (prevTree && nextTree && prevTree !== nextTree && tn.x !== 0 &&
+          !tn.transfer && !tn.leaving && !tn.entering) {
+        this.dbg("toon.transfer", { id: a.id, from: prevTree, to: nextTree });
+        tn.transfer = { toKey: nextTree, fromKey: tn.bkey, fromX0: tn.x0, phase: "out" };
+        tn.errand = undefined;
+        tn.shred = undefined;
+        tn.riding = false;
+        tn.sitting = false;
+        this.invalidate(); // wake the loop so the relocation plays now
+      }
       tn.agent = a;
       // accumulate newly-used skills; the tick walks the dev to the shelf to
       // fetch a book for each one beyond what's already on its desk
@@ -1342,6 +1369,9 @@ class PixelCrew {
         const tn = this.toons.get(a.id);
         if (!tn) return;
         placed.add(a.id);
+        // a relocating dev owns its own position/bkey through the trip; don't
+        // snap it to the destination desk until the transfer driver hands back.
+        if (tn.transfer) return;
         tn.bkey = room.name;
         tn.deskIdx = di;
         const seat = room.plan!.seats.get(a.id) ?? { col: 0, row: 0 };
@@ -1372,7 +1402,10 @@ class PixelCrew {
     // mid-refresh, setAgents re-creates the toon and resumes from here rather
     // than teleporting the dev back to the door.
     for (const [id, tn] of this.toons) {
-      if (!placed.has(id)) {
+      // a relocating dev legitimately has no room while it crosses the lobby
+      // (its destination worktree may not even have a building) — the transfer
+      // driver owns its lifecycle, so never cull it here.
+      if (!placed.has(id) && !tn.transfer) {
         this.parkToon(id, tn);
         tn.bkey = undefined;
         this.toons.delete(id);
@@ -1766,7 +1799,7 @@ class PixelCrew {
       // a shredder (/clear) or shelf (skill) trip is a multi-frame walk; keep the
       // loop alive through it even though the dev's state is idle and it hasn't
       // started moving yet (tick sets its targetX on the next frame).
-      if (tn.shred || tn.errand) return false;
+      if (tn.shred || tn.errand || tn.transfer) return false;
       // the desk TV mid-deploy, or a just-pressed completion button, both animate
       if (tn.tvShow > 0.02 && tn.tvShow < 0.98) return false;
       if (tn.tapAt !== undefined && this.frame - tn.tapAt < 8) return false;
@@ -1802,8 +1835,11 @@ class PixelCrew {
         if (Math.abs(ty - r.baseY) < 0.4) r.baseY = ty;
       }
       if (r.dying) {
-        // wait until the departing dev has fully left, then deconstruct
-        const hasLeaver = this.leaving.some((t) => t.bkey === r.name);
+        // wait until the departing dev has fully left, then deconstruct — count
+        // both walk-outs and a dev still relocating out of this building
+        const hasLeaver = this.leaving.some((t) => t.bkey === r.name) ||
+          [...this.toons.values()].some((t) => t.transfer && t.transfer.fromKey === r.name &&
+            (t.transfer.phase === "out" || t.transfer.phase === "down"));
         if (!hasLeaver) {
           r.built = Math.max(0, r.built - dt / 1.0);
           if (!this.eco) {
@@ -1899,7 +1935,7 @@ class PixelCrew {
     // the collapse instead of snapping to the final desk. Also drive book errands:
     // a dev that used a new skill walks to the left-window shelf, then back.
     for (const tn of this.toons.values()) {
-      if (tn.leaving || tn.entering) continue;
+      if (tn.leaving || tn.entering || tn.transfer) continue;
       this.retargetToon(tn); // glue base/x0 + aim at the desk seat
       const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
       if (!room) continue;
@@ -1941,11 +1977,14 @@ class PixelCrew {
     const all: Toon[] = [...this.toons.values(), ...this.leaving];
     for (const tn of all) {
       if (tn.entering && tn.enterPhase === "elevator") continue; // handled above
+      // a relocating dev riding a car (down its old shaft, or up its new one) is
+      // moved vertically by the transfer driver, not walked horizontally here.
+      if (tn.transfer && (tn.transfer.phase === "down" || tn.transfer.phase === "up")) continue;
       const dx = tn.targetX - tn.x;
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
       const seatable = tn.agent.state === "active" || tn.agent.state === "idle" || tn.agent.state === "complete";
-      tn.sitting = seatable && !tn.entering && !tn.errand && !tn.shred && Math.abs(dx) <= 1;
+      tn.sitting = seatable && !tn.entering && !tn.errand && !tn.shred && !tn.transfer && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
       // (lift -> 0) whenever walking, entering, or leaving. A dev AT the bookshelf
       // (fetching a book, or returning one on /clear) steps back to SHELF_LIFT so it
@@ -1954,12 +1993,20 @@ class PixelCrew {
       const atShelf =
         (!!tn.errand && tn.errand.phase !== "back") ||
         (!!tn.shred && (tn.shred.phase === "shelf" || tn.shred.phase === "place"));
-      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred;
+      // a relocating dev only settles into its back-row seat once it has walked
+      // in to the destination desk ("in" phase); through every other phase it
+      // stays down in the aisle.
+      const transferSeating = !!tn.transfer && tn.transfer.phase === "in";
+      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred &&
+        (!tn.transfer || transferSeating);
       // a dev walking through the lift door steps back to the door's depth so it
-      // lines up with the raised sill instead of clipping the wall below it
+      // lines up with the raised sill instead of clipping the wall below it. The
+      // relocating dev does the same as it steps out the old door ("out") and in
+      // the new one ("in"); while it crosses the open lobby it walks at ground.
       const thruDoor =
         ((tn.leaving && tn.leavePhase === "walk") ||
-          (tn.entering && tn.enterPhase === "walk")) && !tn.riding;
+          (tn.entering && tn.enterPhase === "walk") ||
+          (tn.transfer && (tn.transfer.phase === "out" || tn.transfer.phase === "in"))) && !tn.riding;
       let targetLift = atDesk ? tn.row * ROW_DY : atShelf ? SHELF_LIFT : 0;
       if (thruDoor) {
         const dist = tn.x0 + ROOM_W - tn.x; // px left of the near corner
@@ -2060,12 +2107,106 @@ class PixelCrew {
       }
     }
 
+    // drive each relocating dev's trip between buildings. The generic walk loop
+    // above moves it horizontally (and lifts it through doors); here we steer the
+    // target, ride the cars vertically, and advance the phase as it arrives.
+    const transferGone: string[] = [];
+    for (const tn of this.toons.values()) {
+      const tr = tn.transfer;
+      if (!tr) continue;
+      if (tr.phase === "out") {
+        // walk to the old room's lift door, then ride down (upper floor) or step
+        // straight out into the lobby (ground floor)
+        tn.x0 = tr.fromX0;
+        tn.riding = false;
+        tn.targetX = doorThreshold(tr.fromX0);
+        if (tn.x >= tr.fromX0 + ROOM_W - 0.5) {
+          if (Math.abs(tn.base) > 1) {
+            tr.phase = "down";
+            tn.riding = true;
+            tn.x = shaftX(tr.fromX0);
+            tn.targetX = tn.x;
+          } else {
+            tr.phase = "cross";
+          }
+        }
+      } else if (tr.phase === "down") {
+        tn.x0 = tr.fromX0;
+        tn.x = shaftX(tr.fromX0);
+        tn.targetX = tn.x;
+        tn.riding = true;
+        tn.base += Math.sign(-tn.base) * Math.min(Math.abs(tn.base), CAR_SPEED * dt);
+        if (Math.abs(tn.base) <= 0.5) {
+          tn.base = 0;
+          tn.riding = false;
+          tr.phase = "cross";
+        }
+      } else if (tr.phase === "cross") {
+        // on the ground now. Resolve the destination (layout has run): a building
+        // for this worktree means walk over and ride up; none means the dev has
+        // left the project — stroll out of the lobby and vanish.
+        tn.base = 0;
+        tn.riding = false;
+        const dest = this.rooms.get(tr.toKey);
+        if (!dest || dest.dying) {
+          tn.targetX = tr.fromX0 + ROOM_W + 90; // out past the old shaft, gone
+          if (tn.x >= tr.fromX0 + ROOM_W + 80) transferGone.push(tn.agent.id);
+        } else {
+          const destShaftX = shaftX(dest.x0);
+          tn.targetX = destShaftX;
+          if (Math.abs(tn.x - destShaftX) <= 1) {
+            tn.x0 = dest.x0;
+            tn.bkey = tr.toKey;
+            const seat = dest.plan?.seats.get(tn.agent.id) ?? { col: 0, row: 0 };
+            tn.row = seat.row;
+            tn.seatCol = seat.col;
+            if (Math.abs(dest.baseY) > 1) {
+              tr.phase = "up";
+              tn.riding = true;
+              tn.x = destShaftX;
+              tn.targetX = tn.x;
+            } else {
+              tr.phase = "in";
+              this.retargetToon(tn); // step in off the lobby and cross to the desk
+            }
+          }
+        }
+      } else if (tr.phase === "up") {
+        const dest = this.rooms.get(tr.toKey);
+        if (!dest || dest.dying) { transferGone.push(tn.agent.id); continue; }
+        tn.x0 = dest.x0;
+        tn.x = shaftX(dest.x0);
+        tn.targetX = tn.x;
+        tn.riding = true;
+        const dy = dest.baseY - tn.base;
+        tn.base += Math.sign(dy) * Math.min(Math.abs(dy), CAR_SPEED * dt);
+        if (Math.abs(dest.baseY - tn.base) < 1) {
+          tn.base = dest.baseY;
+          tn.riding = false;
+          tn.lift = DOOR_LIFT; // step out at the door's depth (no upward pop)
+          tr.phase = "in";
+          this.retargetToon(tn);
+        }
+      } else if (tr.phase === "in") {
+        const dest = this.rooms.get(tr.toKey);
+        if (!dest) { transferGone.push(tn.agent.id); continue; }
+        tn.bkey = tr.toKey;
+        tn.x0 = dest.x0;
+        this.retargetToon(tn); // base on this floor + aim at the desk seat
+        if (Math.abs(tn.targetX - tn.x) <= 1) tn.transfer = undefined; // arrived — back to normal seating
+      }
+    }
+    for (const id of transferGone) this.toons.delete(id); // left the building
+
     // swing each room's lift door open while a dev is walking through it (on foot,
     // entering or leaving — not riding the car) and ease it shut once clear.
     const wantOpen = new Set<string>();
     const transiting: Toon[] = [
       ...this.leaving.filter((t) => t.leavePhase === "walk"),
       ...[...this.toons.values()].filter((t) => t.entering && t.enterPhase === "walk" && !t.riding),
+      // a relocating dev opens the old room's door on the way out and the new
+      // room's door on the way in
+      ...[...this.toons.values()].filter((t) => t.transfer && (t.transfer.phase === "out" || t.transfer.phase === "in") && !t.riding),
     ];
     for (const tn of transiting) {
       if (!tn.bkey) continue;
@@ -2407,7 +2548,8 @@ class PixelCrew {
         // disappears INTO the doorway instead of skating across the wall.
         const thru =
           (tn.leaving && tn.leavePhase === "walk") ||
-          (tn.entering && tn.enterPhase === "walk" && !tn.riding);
+          (tn.entering && tn.enterPhase === "walk" && !tn.riding) ||
+          (!!tn.transfer && (tn.transfer.phase === "out" || tn.transfer.phase === "in") && !tn.riding);
         if (ghost || thru) ctx.save();
         if (ghost) ctx.globalAlpha *= 0.62;
         if (thru) {
@@ -2885,29 +3027,6 @@ class PixelCrew {
     // the paper shredder a dev visits on /clear, stood against the left wall just
     // in front of the bookshelf's near end
     this.drawShredder(ctx, r, onWall);
-
-    // plant + hash decor
-    const px = x + w - DOOR_W - 6;
-    ctx.fillStyle = "#7a4a2a";
-    ctx.fillRect(px, base - 4.5, 4, 3);
-    ctx.fillStyle = "#3f8a4a";
-    ctx.fillRect(px + 0.5, base - 9, 1.4, 4.5);
-    ctx.fillRect(px + 2.2, base - 8, 1.4, 3.5);
-    ctx.fillRect(px - 0.8, base - 7.5, 1.4, 3);
-    // floor-standing decor only (a high wall poster used to live here too, but it
-    // collided with the full-wall task board, so it was removed; the water cooler
-    // that shared this slot was removed too). A small blinking server rack stands
-    // by the door on some rooms for variety.
-    if (r.decor % 2) {
-      const sx = x + w - DOOR_W - 14;
-      ctx.fillStyle = "#171c21";
-      ctx.fillRect(sx, base - 16, 6, 14.5);
-      for (let i = 0; i < 4; i++) {
-        const on = (this.frame + i * 3 + (r.decor % 7)) % 8 < 4;
-        ctx.fillStyle = on ? (i === 2 ? "#3ee089" : "#ffb13d") : "#2a3138";
-        ctx.fillRect(sx + 4.2, base - 14.5 + i * 3.2, 1, 1);
-      }
-    }
 
     // ceiling pendants: just the fixtures + a tight bulb glow — the room's actual
     // lighting is the soft floor gradient above, so no big distracting cones
