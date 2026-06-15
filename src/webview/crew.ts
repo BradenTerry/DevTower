@@ -1568,6 +1568,26 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** Pull back from a tight dev zoom to an overview of the room that dev is in.
+   *  Used when the agent's stat panel is closed (its ✕ / Esc): instead of leaving
+   *  the camera pinned on the dev, frame their room. No-op (returns false) when
+   *  we aren't currently zoomed onto an agent, so other close paths are untouched.
+   *  Also a no-op if the user has since panned or zoomed the camera themselves
+   *  (focusAgent resets pan/zoom to 0/1, so any nonzero value means they moved):
+   *  if they've wandered off, snapping them back to the room would be jarring. */
+  zoomOutToAgentRoom() {
+    const id = this.focusAgentId;
+    if (!id) return false;
+    const moved =
+      Math.abs(this.panX) > 0.5 || Math.abs(this.panY) > 0.5 || Math.abs(this.zoomMul - 1) > 0.01;
+    if (moved) return false;
+    const tn = this.toons.get(id);
+    const room = tn?.bkey ? this.rooms.get(tn.bkey) : undefined;
+    if (room) this.focusOn(room.name);
+    else this.clearFocus();
+    return true;
+  }
+
   clearFocus(resetZoom = true, preservePan = false) {
     this.focusRoom_ = null;
     this.focusAgentId = null;
@@ -3183,9 +3203,25 @@ class PixelCrew {
     if (!bd || bd.missing || !bd.pr?.url) return null;
     const b = boardRect(r.x0, r.baseY);
     if (b.w < 20 || b.h < 14) return null;
-    const innerR = b.x + b.w - 4;
-    const bodyTop = b.y + 12;
-    return { x: innerR - 6, y: bodyTop, w: 6, h: 6, url: bd.pr.url };
+    // x math mirrors drawBoard's PR cell: the ↗ sits right after the #number,
+    // which sits right after the "PR" heading (and an optional DRAFT badge).
+    const pad = 4;
+    const innerL = b.x + pad;
+    const innerR = b.x + b.w - pad;
+    const prW = Math.min(96, (innerR - innerL) * 0.42);
+    const gitR = innerR - prW - 4;
+    const px = gitR + 4;
+    const py = b.y + 12 + 3; // bodyTop + 3, the heading baseline
+    const ctx = this.ctx;
+    ctx.font = "3px 'IBM Plex Mono', monospace";
+    let nx = px + ctx.measureText("PR").width + 3;
+    if (bd.pr.draft) {
+      ctx.font = "bold 2.8px 'Martian Mono', monospace";
+      nx += ctx.measureText("DRAFT").width + 2;
+    }
+    ctx.font = "bold 6px 'Martian Mono', monospace";
+    const x = nx + ctx.measureText(`#${bd.pr.number}`).width + 3;
+    return { x, y: py - 5, w: 6, h: 6, url: bd.pr.url };
   }
 
   /** Draw a number, rolling the old value up and out while the new value rises in
@@ -3470,7 +3506,7 @@ class PixelCrew {
       }
     });
 
-    /* ---- right: PR ---- */
+    /* ---- right: PR (heading · #number · ↗ grouped together, left-aligned) ---- */
     const px = gitR + 4;
     cellGlow(gitR + 2, innerR - gitR - 2, cp.pr);
     ctx.fillStyle = "rgba(120,150,170,0.14)";
@@ -3485,18 +3521,21 @@ class PixelCrew {
     const loadingPr = !bd.pr && (!bd.prReady || this.prLoading);
     const pr = bd.pr;
     if (pr) {
-      if (pr.draft) { // draft badge by the PR label
+      // number + ↗ sit right next to "PR" and share its baseline, instead of
+      // floating off at the right edge (x math mirrored in prOpenButton).
+      ctx.font = "3px 'IBM Plex Mono', monospace";
+      let nx = px + ctx.measureText("PR").width + 3;
+      if (pr.draft) { // draft badge between the label and the number
         ctx.font = "bold 2.8px 'Martian Mono', monospace";
         ctx.fillStyle = "rgba(180,190,198,0.85)";
-        ctx.fillText("DRAFT", px + 7, py);
+        ctx.fillText("DRAFT", nx, py);
+        nx += ctx.measureText("DRAFT").width + 2;
       }
       ctx.font = "bold 6px 'Martian Mono', monospace";
       ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
-      ctx.textAlign = "right";
-      ctx.fillText(`#${pr.number}`, innerR - 8, py + 0.4); // leave room for the ↗ button
-      ctx.textAlign = "left";
-      // open-in-GitHub button (↗) at the top-right of the PR cell
-      const ob = { x: innerR - 6, y: bodyTop, w: 6, h: 6 };
+      ctx.fillText(`#${pr.number}`, nx, py);
+      // open-in-GitHub button (↗) right after the number, centred on its line
+      const ob = { x: nx + ctx.measureText(`#${pr.number}`).width + 3, y: py - 5, w: 6, h: 6 };
       const obHov = !!bd.pr?.url && this.hov("openpr:" + bd.pr.url);
       ctx.fillStyle = obHov ? "rgba(127,184,223,0.44)" : "rgba(127,184,223,0.20)"; // accent chip, brighter on hover
       ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
@@ -4317,6 +4356,9 @@ class PixelCrew {
   },
   clearFocus() {
     this._instance?.clearFocus();
+  },
+  zoomOutToAgentRoom() {
+    return this._instance?.zoomOutToAgentRoom() ?? false;
   },
   setEco(on: boolean) {
     this._instance?.setEco(on);

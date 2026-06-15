@@ -76,6 +76,15 @@
     renderPanel();
   }
 
+  // Closing the panel via its ✕ / Esc (not by clicking off the dev on the
+  // canvas, which already retargets the camera): pull back from the tight dev
+  // zoom to an overview of their room before tearing the panel down.
+  function closePanelToRoom() {
+    if (window.DevTowerCrew && window.DevTowerCrew.zoomOutToAgentRoom)
+      window.DevTowerCrew.zoomOutToAgentRoom();
+    closePanel();
+  }
+
   function closePanel() {
     panelOpen = false;
     panelSig = ""; // force a fresh build (and re-wire) on the next open
@@ -799,7 +808,7 @@
       </div>`;
 
     // wiring
-    $("#p-close", panel).onclick = closePanel;
+    $("#p-close", panel).onclick = closePanelToRoom;
     $$("[data-tool]", panel).forEach((t) => (t.onclick = () => {
       if (t.dataset.tool === "pr") {
         const p = prFor(a.id);
@@ -846,7 +855,7 @@
       if (leaderboardOpen()) closeLeaderboard();
       else if (settingsOpen()) closeSettings();
       else if (reviewDispatchOpen()) closeReviewDispatch();
-      else if (panelOpen) closePanel();
+      else if (panelOpen) closePanelToRoom();
     }
   });
 
