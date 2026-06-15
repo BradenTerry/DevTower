@@ -1,7 +1,7 @@
 import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore } from "./store";
-import { isRepo, resolveCwd, repoSlug, defaultBranch, listBranches } from "./git";
+import { isRepo, resolveCwd, repoSlug, defaultBranch, listBranches, branchMetas } from "./git";
 import { getGithubToken } from "./github";
 
 export interface PrInfo {
@@ -51,6 +51,11 @@ export interface BranchPr {
   isMine: boolean;
   reviewRequestedFromMe: boolean;
   updatedAt?: string;
+  createdAt?: string;
+  assignees: string[];
+  labels: string[];
+  milestone?: string;
+  projects: string[];
 }
 
 export interface BranchRow {
@@ -59,6 +64,10 @@ export interface BranchRow {
   isDefault: boolean;
   hasWorktree: boolean;
   pr?: BranchPr;
+  updatedAt?: string;
+  mine: boolean;
+  ahead: number;
+  behind: number;
 }
 
 export interface RepoGroup {
@@ -425,7 +434,7 @@ export class PrService {
       // Fetch all open PRs for this repo in one call
       const prRaw = await runGh(cwd, [
         "pr", "list", "--state", "open", "--limit", "50",
-        "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,author,reviews,reviewRequests,comments,updatedAt",
+        "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,author,reviews,reviewRequests,comments,updatedAt,createdAt,assignees,labels,milestone,projectItems",
       ], token);
 
       if (prRaw === null) { ok = false; }
@@ -462,6 +471,11 @@ export class PrService {
               isMine: !!(this.viewer && authorLogin === this.viewer),
               reviewRequestedFromMe,
               updatedAt: p.updatedAt,
+              createdAt: p.createdAt,
+              assignees: (p.assignees ?? []).map((a: any) => a.login).filter(Boolean) as string[],
+              labels: (p.labels ?? []).map((l: any) => l.name).filter(Boolean) as string[],
+              milestone: p.milestone?.title || undefined,
+              projects: (p.projectItems ?? []).map((pi: any) => pi.title || pi.name).filter(Boolean) as string[],
             };
             if (p.headRefName) prMap.set(p.headRefName, bp);
           }
@@ -489,24 +503,42 @@ export class PrService {
         }
       } catch { /* leave as none */ }
 
-      // Build BranchRow[] — one row per branch
-      const branchRows: BranchRow[] = branches.map((branch) => ({
-        branch,
-        repo: slug,
-        isDefault: branch === defBranch,
-        hasWorktree: checkedOutBranches.includes(branch),
-        pr: prMap.get(branch),
-      }));
+      // Fetch per-branch git metadata (best-effort, empty map on error)
+      let metaMap: Awaited<ReturnType<typeof branchMetas>> = new Map();
+      try {
+        metaMap = await branchMetas(cwd, defBranch);
+      } catch { /* non-fatal */ }
 
-      // Sort: default first, then branches with a PR (by updatedAt desc), then alphabetically
+      // Build BranchRow[] — one row per branch
+      const branchRows: BranchRow[] = branches.map((branch) => {
+        const meta = metaMap.get(branch);
+        const pr = prMap.get(branch);
+        // Prefer git committerdate; fall back to PR updatedAt when git meta has no date
+        const updatedAt = meta?.updatedAt ?? pr?.updatedAt;
+        return {
+          branch,
+          repo: slug,
+          isDefault: branch === defBranch,
+          hasWorktree: checkedOutBranches.includes(branch),
+          pr,
+          updatedAt,
+          mine: meta?.mine ?? false,
+          ahead: meta?.ahead ?? 0,
+          behind: meta?.behind ?? 0,
+        };
+      });
+
+      // Sort: default branch first, then by updatedAt descending, then alphabetically
       branchRows.sort((a, b) => {
         if (a.isDefault && !b.isDefault) return -1;
         if (!a.isDefault && b.isDefault) return 1;
-        const hasPrA = !!a.pr, hasPrB = !!b.pr;
-        if (hasPrA && !hasPrB) return -1;
-        if (!hasPrA && hasPrB) return 1;
-        if (hasPrA && hasPrB && a.pr!.updatedAt && b.pr!.updatedAt) {
-          return b.pr!.updatedAt.localeCompare(a.pr!.updatedAt);
+        if (a.updatedAt && b.updatedAt) {
+          const cmp = b.updatedAt.localeCompare(a.updatedAt);
+          if (cmp !== 0) return cmp;
+        } else if (a.updatedAt && !b.updatedAt) {
+          return -1;
+        } else if (!a.updatedAt && b.updatedAt) {
+          return 1;
         }
         return a.branch.localeCompare(b.branch);
       });

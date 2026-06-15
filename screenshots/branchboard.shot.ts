@@ -1,7 +1,8 @@
 // Throwaway capture for the Branches & PRs billboard (the central left signboard).
 // Boots the real webview front-end, feeds a mock `prs` message carrying the new
 // grouped `repos` dataset + `viewer`, flies the camera to the board, and shoots
-// it. Exercises the FIXED-size scrollable panel + multi-select filters.
+// it. Exercises the Branches/PRs tabs, the Branches sub-tabs, and the PR filter
+// dropdowns on a fixed-size scrollable panel.
 // Run: npm run screenshots -- -g branchboard
 import { test } from "@playwright/test";
 import * as fs from "fs";
@@ -11,21 +12,16 @@ import { harnessHtml } from "./harness";
 
 const OUT = path.join(__dirname, "out");
 const HTML = path.join(__dirname, ".harness.html");
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+const D = 24 * 3600 * 1000;
 
-// One island so the campus exists (the board anchors to the campus left edge).
 const STATE = {
   agents: [
     { id: "a1", name: "Atlas", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: [], contextTokens: 50_000, elapsed: "3m" },
   ],
-  rooms: [
-    { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] },
-  ],
+  rooms: [{ name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "main" }] }],
   boards: {
-    "/repo": {
-      branch: "main", modified: 0, staged: 0, modifiedFiles: [], stagedFiles: [],
-      unstagedAdd: 0, unstagedDel: 0, stagedAdd: 0, stagedDel: 0, committedAdd: 0, committedDel: 0,
-      base: "main", ahead: 0, unpushed: 0, behind: 0, commits: [], prReady: true,
-    },
+    "/repo": { branch: "main", modified: 0, staged: 0, modifiedFiles: [], stagedFiles: [], unstagedAdd: 0, unstagedDel: 0, stagedAdd: 0, stagedDel: 0, committedAdd: 0, committedDel: 0, base: "main", ahead: 0, unpushed: 0, behind: 0, commits: [], prReady: true },
   },
 };
 
@@ -34,32 +30,33 @@ const pr = (over: any) => ({
   number: 1, url: "https://github.com/acme/app/pull/1", title: "PR", isDraft: false,
   checks: "pass", checksPass: 3, checksFailed: 0, checksRunning: 0, checksTotal: 3,
   review: "approved", approvals: 1, changesRequested: 0, reviewersPending: 0, comments: 0,
-  author: "alice", isMine: true, reviewRequestedFromMe: false, ...over,
+  author: "alice", isMine: true, reviewRequestedFromMe: false, assignees: [], updatedAt: ago(D), createdAt: ago(7 * D),
+  labels: [], milestone: undefined, projects: [], ...over,
 });
-// many branches so the content overflows the fixed viewport and scrolls
-const APP_BRANCHES = [
-  { branch: "main", repo: "acme/app", isDefault: true, hasWorktree: true },
-  { branch: "feat-streaming", repo: "acme/app", isDefault: false, hasWorktree: false, pr: pr({ number: 318, title: "SSE streaming", review: "approved", approvals: 2, author: "alice", isMine: true }) },
-  { branch: "fix-race", repo: "acme/app", isDefault: false, hasWorktree: true, pr: pr({ number: 322, title: "Fix race", checks: "fail", checksPass: 2, checksFailed: 1, review: "changes", approvals: 0, changesRequested: 1, reviewersPending: 1, author: "bob", isMine: false, reviewRequestedFromMe: true }) },
-  { branch: "feat-search", repo: "acme/app", isDefault: false, hasWorktree: false, pr: pr({ number: 330, title: "Search", review: "approved", approvals: 1, author: "carol", isMine: false, reviewRequestedFromMe: true }) },
-  { branch: "chore-deps", repo: "acme/app", isDefault: false, hasWorktree: false, pr: pr({ number: 331, title: "Bump deps", review: "required", approvals: 0, reviewersPending: 2, author: "carol", isMine: false }) },
-  { branch: "docs-readme", repo: "acme/app", isDefault: false, hasWorktree: false },
-  { branch: "spike-idea", repo: "acme/app", isDefault: false, hasWorktree: false },
-  { branch: "perf-cache", repo: "acme/app", isDefault: false, hasWorktree: false, pr: pr({ number: 340, title: "Cache", checks: "pending", checksPass: 1, checksRunning: 2, checksTotal: 3, review: "approved", approvals: 3, author: "alice", isMine: true }) },
-  { branch: "refactor-store", repo: "acme/app", isDefault: false, hasWorktree: false, pr: pr({ number: 341, title: "Store refactor", review: "changes", approvals: 0, changesRequested: 2, author: "alice", isMine: true }) },
-];
+const br = (over: any) => ({ repo: "acme/app", isDefault: false, hasWorktree: false, mine: false, ahead: 0, behind: 0, updatedAt: ago(2 * D), ...over });
+
 const REPOS = [
   {
     repo: "acme/app", shortName: "DevTower", defaultBranch: "main",
     main: { checks: "pass", pass: 4, fail: 0, running: 0, total: 4 },
-    branches: APP_BRANCHES,
+    branches: [
+      br({ branch: "main", isDefault: true, hasWorktree: true, mine: true, updatedAt: ago(0.01 * D) }),
+      br({ branch: "feat-streaming", mine: true, ahead: 2, behind: 0, updatedAt: ago(0.1 * D), pr: pr({ number: 318, title: "SSE streaming for /v1/messages", review: "approved", approvals: 2, author: "alice", isMine: true, assignees: ["alice"], updatedAt: ago(0.1 * D), labels: ["enhancement"], milestone: "v1.0" }) }),
+      br({ branch: "fix-race", hasWorktree: true, mine: false, ahead: 1, behind: 1, updatedAt: ago(3 * D), pr: pr({ number: 322, title: "Fix race in poller", checks: "fail", checksPass: 2, checksFailed: 1, review: "changes", approvals: 0, changesRequested: 1, reviewersPending: 1, author: "bob", isMine: false, reviewRequestedFromMe: true, assignees: ["bob"], updatedAt: ago(3 * D), labels: ["bug"], milestone: "v1.0" }) }),
+      br({ branch: "feat-search", mine: false, ahead: 4, behind: 2, updatedAt: ago(2 * D), pr: pr({ number: 330, title: "Search index", review: "approved", approvals: 1, author: "carol", isMine: false, reviewRequestedFromMe: true, assignees: ["alice"], updatedAt: ago(2 * D), labels: ["enhancement", "documentation"] }) }),
+      br({ branch: "chore-deps", mine: false, ahead: 1, behind: 0, updatedAt: ago(5 * D), pr: pr({ number: 331, title: "Bump deps", review: "required", approvals: 0, reviewersPending: 2, author: "carol", isMine: false, updatedAt: ago(5 * D), labels: ["dependencies"] }) }),
+      br({ branch: "docs-readme", mine: true, ahead: 1, behind: 3, updatedAt: ago(100 * D) }),
+      br({ branch: "spike-old-idea", mine: true, ahead: 2, behind: 9, updatedAt: ago(200 * D) }),
+      br({ branch: "perf-cache", mine: true, ahead: 3, behind: 0, updatedAt: ago(1 * D), pr: pr({ number: 340, title: "Cache layer", isDraft: true, checks: "pending", checksPass: 1, checksRunning: 2, checksTotal: 3, review: "required", approvals: 0, reviewersPending: 2, author: "alice", isMine: true, assignees: ["alice"], updatedAt: ago(1 * D), labels: ["enhancement", "performance"], milestone: "v1.1" }) }),
+      br({ branch: "refactor-store", mine: true, ahead: 6, behind: 1, updatedAt: ago(10 * D), pr: pr({ number: 341, title: "Store refactor", review: "changes", approvals: 0, changesRequested: 2, author: "alice", isMine: true, updatedAt: ago(10 * D), labels: ["refactor"] }) }),
+    ],
   },
   {
     repo: "acme/lib", shortName: "lib", defaultBranch: "main",
     main: { checks: "pending", pass: 2, fail: 0, running: 1, total: 3 },
     branches: [
-      { branch: "main", repo: "acme/lib", isDefault: true, hasWorktree: true },
-      { branch: "perf-cache", repo: "acme/lib", isDefault: false, hasWorktree: false, pr: pr({ number: 91, title: "Cache layer", isDraft: true, checks: "pending", checksPass: 1, checksRunning: 2, checksTotal: 3, review: "required", approvals: 0, reviewersPending: 2, author: "alice", isMine: true }) },
+      { branch: "main", repo: "acme/lib", isDefault: true, hasWorktree: true, mine: true, ahead: 0, behind: 0, updatedAt: ago(0.2 * D) },
+      { branch: "perf-cache", repo: "acme/lib", isDefault: false, hasWorktree: false, mine: true, ahead: 2, behind: 0, updatedAt: ago(1 * D), pr: pr({ number: 91, title: "Cache layer", isDraft: true, checks: "pending", checksPass: 1, checksRunning: 2, checksTotal: 3, review: "required", author: "alice", isMine: true, assignees: ["alice"], updatedAt: ago(1 * D) }) },
     ],
   },
 ];
@@ -68,14 +65,11 @@ const settle = async (page: any) => {
   await page.waitForFunction(() => {
     const c = (window as any).DevTowerCrew?._instance;
     if (!c) return false;
-    const z = c.cam.z;
-    const prev = (window as any).__z;
-    (window as any).__z = z;
+    const z = c.cam.z, prev = (window as any).__z; (window as any).__z = z;
     return prev !== undefined && Math.abs(z - prev) < 0.002;
   }, { timeout: 8000, polling: 200 }).catch(() => {});
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(350);
 };
-// click the world point (wx,wy) on the canvas via a real pointer event
 const clickAt = (page: any, wx: number, wy: number) => page.evaluate((p: any) => {
   const c = (window as any).DevTowerCrew?._instance;
   const s = c.screenOf(p.wx, p.wy);
@@ -85,23 +79,14 @@ const clickAt = (page: any, wx: number, wy: number) => page.evaluate((p: any) =>
   canvas.dispatchEvent(new PointerEvent("pointerdown", o as any));
   canvas.dispatchEvent(new PointerEvent("pointerup", o as any));
 }, { wx, wy });
-// open a dropdown by clicking its header
-const openDropdown = async (page: any, key: string) => {
-  const rect = await page.evaluate((k: string) => {
+const clickRect = async (page: any, kind: string, key: string) => {
+  const rect = await page.evaluate((p: any) => {
     const c = (window as any).DevTowerCrew?._instance;
-    const dd = c.billboardGeom().dropdowns.find((d: any) => d.key === k);
-    return dd ? { x: dd.rect.x + dd.rect.w / 2, y: dd.rect.y + dd.rect.h / 2 } : null;
-  }, key);
-  if (rect) await clickAt(page, rect.x, rect.y);
-};
-// select an option (by value) from the currently-open dropdown
-const selectOption = async (page: any, value: string) => {
-  const rect = await page.evaluate((v: string) => {
-    const c = (window as any).DevTowerCrew?._instance;
-    const m = c.billboardGeom().openMenu;
-    const o = m && m.options.find((o: any) => o.value === v);
-    return o ? { x: o.rect.x + o.rect.w / 2, y: o.rect.y + o.rect.h / 2 } : null;
-  }, value);
+    const bb = c.billboardGeom();
+    const list = p.kind === "tab" ? bb.tabs : p.kind === "sub" ? bb.subTabs : p.kind === "dd" ? bb.dropdowns : bb.openMenu?.options || [];
+    const item = list.find((i: any) => (p.kind === "opt" ? i.value : i.key) === p.key);
+    return item ? { x: item.rect.x + item.rect.w / 2, y: item.rect.y + item.rect.h / 2 } : null;
+  }, { kind, key });
   if (rect) await clickAt(page, rect.x, rect.y);
 };
 
@@ -115,7 +100,6 @@ test("capture: branchboard", async ({ page }) => {
   await page.goto(pathToFileURL(HTML).href, { waitUntil: "load" });
   await page.waitForFunction(() => Array.isArray((window as any).__outbox)
     && (window as any).__outbox.some((m: any) => m.type === "ready"));
-
   await page.evaluate((d) => {
     window.postMessage({ type: "state", ...d.state }, "*");
     window.postMessage({ type: "prs", crew: [], review: [], repos: d.repos, viewer: d.viewer, connected: true, loading: false }, "*");
@@ -125,42 +109,51 @@ test("capture: branchboard", async ({ page }) => {
   await page.evaluate(() => (window as any).DevTowerCrew.focusReviewBoard());
   await settle(page);
 
-  // 1. default: fixed-size panel, three filter dropdowns, scrollbar (overflow)
-  const base = await page.evaluate(() => {
+  const type = async (page: any, s: string) => { for (const ch of s) { await page.evaluate((k: string) => document.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })), ch); await page.waitForTimeout(20); } };
+
+  // 1. Branches tab, Overview sub-tab (default) — sub-tabs + search box
+  const info = await page.evaluate(() => {
     const c = (window as any).DevTowerCrew?._instance;
     const bb = c.billboardGeom();
-    return { bodyH: bb.bodyH, hasScrollbar: !!bb.scrollbar, total: bb.visibleTotal, dds: bb.dropdowns.map((d: any) => d.key) };
+    return { bodyH: bb.bodyH, tab: c.boardTab, sub: c.branchSubTab, total: bb.visibleTotal, hasSearch: !!bb.searchBox };
   });
-  console.log("DEFAULT:", JSON.stringify(base));
+  console.log("BRANCHES/Overview:", JSON.stringify(info));
   await page.screenshot({ path: path.join(OUT, "branchboard.png") });
 
-  // 2. open the Review dropdown (menu overlay floats over the rows)
-  await openDropdown(page, "review");
+  // 2. Branches → All + search "feat"
+  await clickRect(page, "sub", "all");
+  await page.evaluate(() => { const bb = (window as any).DevTowerCrew._instance.billboardGeom(); const s = bb.searchBox; const c = (window as any).DevTowerCrew._instance; const sc = c.screenOf(s.x + s.w / 2, s.y + s.h / 2); const cv = c.canvas; const r = cv.getBoundingClientRect(); const o = { bubbles: true, clientX: r.left + sc.x, clientY: r.top + sc.y, button: 0, pointerId: 1 }; cv.dispatchEvent(new PointerEvent("pointerdown", o)); cv.dispatchEvent(new PointerEvent("pointerup", o)); });
+  await type(page, "feat");
+  await settle(page);
+  console.log("ALL search=feat total:", await page.evaluate(() => (window as any).DevTowerCrew._instance.billboardGeom().visibleTotal));
+  await page.screenshot({ path: path.join(OUT, "branchboard-search.png") });
+
+  // clear search, back to overview
+  await page.evaluate(() => { const c = (window as any).DevTowerCrew._instance; c.branchSearch = ""; c.bbInput = null; c.setBranchSubTab("overview"); });
+  await settle(page);
+
+  // 3. PRs tab
+  await clickRect(page, "tab", "prs");
+  await settle(page);
+  await page.screenshot({ path: path.join(OUT, "branchboard-prs.png") });
+
+  // 4. open the Label dropdown (multi-select menu + search field)
+  await clickRect(page, "dd", "label");
   await page.waitForTimeout(200);
-  await page.screenshot({ path: path.join(OUT, "branchboard-author-open.png") });
+  await page.screenshot({ path: path.join(OUT, "branchboard-prs-menu.png") });
 
-  // 3. Review = Approved AND Reviewer = Requested from me — the two are
-  //    orthogonal: approved PRs that ALSO request my review
-  await selectOption(page, "approved");
+  // 5. multi-select: enhancement AND documentation
+  await clickRect(page, "opt", "enhancement");
+  await page.waitForTimeout(120);
+  await clickRect(page, "opt", "documentation");
+  await page.waitForTimeout(120);
+  await clickRect(page, "tab", "prs"); // click the tab bar to dismiss the menu (no-op tab)
   await settle(page);
-  await openDropdown(page, "reviewer");
-  await page.waitForTimeout(150);
-  await selectOption(page, "@me");
-  await settle(page);
-  const combo = await page.evaluate(() => {
+  const prInfo = await page.evaluate(() => {
     const c = (window as any).DevTowerCrew?._instance;
-    const bb = c.billboardGeom();
-    return { bodyH: bb.bodyH, total: bb.visibleTotal, review: c.reviewFilter, reviewer: c.reviewerFilter };
+    return { bodyH: c.billboardGeom().bodyH, total: c.billboardGeom().visibleTotal, labels: [...c.prLabels] };
   });
-  console.log("REVIEW=Approved + REVIEWER=@me:", JSON.stringify(combo));
-  await page.screenshot({ path: path.join(OUT, "branchboard-mineappr.png") });
-
-  // 4. reset filters and scroll the viewport down (virtualized rows)
-  await openDropdown(page, "review"); await selectOption(page, "any");
-  await openDropdown(page, "reviewer"); await selectOption(page, "");
-  await settle(page);
-  await page.evaluate(() => (window as any).DevTowerCrew._instance.scrollBranchBoard(60));
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: path.join(OUT, "branchboard-scrolled.png") });
+  console.log("PRs label=enhancement+documentation:", JSON.stringify(prInfo));
+  await page.screenshot({ path: path.join(OUT, "branchboard-prs-filtered.png") });
   console.log("done");
 });

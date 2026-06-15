@@ -195,8 +195,15 @@ const PLINTH_APRON = 8; // depth of the pedestal's top surface tilting toward us
 const PLINTH_OV = 9; // how far the pedestal splays out past the tower on each side
 // central "Branches & PRs" billboard sitting to the left of the campus
 const BB_W = 348, BB_HEADER = 16, BB_GAP = 56;
-const BB_DD_H = 20, BB_DD_GAP = 4; // filter dropdowns (Author/Reviewer/Review/Checks) in one row
+const BB_TAB_H = 15; // Branches / PRs tab bar
+const BB_SUB_H = 13; // Branches sub-tab row (Overview / Yours / Active / Stale / All)
+const BB_DD_H = 20, BB_DD_GAP = 4; // PR filter dropdowns
+const BB_CTRL_ROWS = 2; // controls band holds two rows (4+3 dropdowns / sub-tabs + search)
+const BB_CTRL_H = BB_CTRL_ROWS * BB_DD_H + (BB_CTRL_ROWS - 1) * BB_DD_GAP + 6; // fixed controls height
 const BB_OPT_H = 13; // option-row height inside an open dropdown menu
+const BB_MENU_MAX = 8; // max option rows shown in an open menu (search narrows the rest)
+// GitHub: "Active" = committed within 3 months; "Stale" = no commits in 3 months.
+const BB_STALE_MS = 90 * 24 * 3600 * 1000;
 const BB_GROUP_H = 15; // repo group sub-header height
 const BB_ROW = 22; // branch row height (two text lines) — the fixed virtual-row size
 const BB_VIEW_ROWS = 5; // rows the fixed scroll viewport shows before scrolling
@@ -306,6 +313,11 @@ interface BranchPr {
   isMine: boolean;
   reviewRequestedFromMe: boolean;
   updatedAt?: string;
+  createdAt?: string;
+  assignees: string[];
+  labels: string[];
+  milestone?: string;
+  projects: string[];
 }
 /** One branch row under a repo group. */
 interface BranchRow {
@@ -314,6 +326,10 @@ interface BranchRow {
   isDefault: boolean;
   hasWorktree: boolean; // already checked out locally → no send action
   pr?: BranchPr;
+  updatedAt?: string; // ISO tip-commit date (or the PR's updatedAt)
+  mine: boolean; // tip commit authored by the local git user
+  ahead: number; // commits ahead of the default branch
+  behind: number; // commits behind the default branch
 }
 /** A repository group on the billboard: its default-branch build badge + rows. */
 interface RepoGroup {
@@ -324,32 +340,41 @@ interface RepoGroup {
   branches: BranchRow[];
 }
 
-/** The per-category filter dropdowns on the billboard, modeled on GitHub's PR
- *  search qualifiers (author:, review-requested:@me, review:, status:). Each holds
- *  one selected value; all are ANDed. */
-type DDKey = "author" | "reviewer" | "review" | "checks";
+/** The billboard has two tabs, mirroring GitHub's Branches page and PR list. */
+type BoardTab = "branches" | "prs";
+/** Branch sub-tabs, mirroring GitHub's branch list views. */
+type BranchSubTab = "overview" | "yours" | "active" | "stale" | "all";
+const BRANCH_SUBTABS: { key: BranchSubTab; label: string }[] = [
+  { key: "overview", label: "Overview" },
+  { key: "yours", label: "Yours" },
+  { key: "active", label: "Active" },
+  { key: "stale", label: "Stale" },
+  { key: "all", label: "All" },
+];
+/** PR-tab filter dropdowns, modeled on GitHub's PR filter bar (author:, label:,
+ *  project:, milestone:, review:, assignee:, sort:). All are ANDed; only Label is
+ *  multi-select. */
+type DDKey = "author" | "label" | "projects" | "milestone" | "reviews" | "assignee" | "sort";
 interface FilterOption { value: string; label: string }
-/** review-requested:@me — PRs that request the current user's review (orthogonal
- *  to the review decision: an approved PR can still request your review). */
-const REVIEWER_OPTIONS: FilterOption[] = [
+/** Dropdowns whose options are dynamic entities → they get a search-in-menu box. */
+const DD_ENTITY: Partial<Record<DDKey, boolean>> = { author: true, label: true, projects: true, milestone: true, assignee: true };
+/** review: + review-requested:@me, folded into one menu like GitHub's Reviews. */
+const REVIEWS_OPTIONS: FilterOption[] = [
   { value: "", label: "Any" },
-  { value: "@me", label: "Requested from me" },
-];
-/** status: — overall status-check rollup. */
-const CHECKS_OPTIONS: FilterOption[] = [
-  { value: "any", label: "Any" },
-  { value: "pass", label: "Passing" },
-  { value: "fail", label: "Failing" },
-  { value: "pending", label: "Pending" },
-  { value: "none", label: "No checks" },
-];
-/** review: — the review decision. */
-const REVIEW_OPTIONS: FilterOption[] = [
-  { value: "any", label: "Any" },
+  { value: "reviewme", label: "Awaiting review from you" },
   { value: "approved", label: "Approved" },
   { value: "changes", label: "Changes requested" },
   { value: "required", label: "Review required" },
   { value: "none", label: "No review" },
+];
+/** sort: order for the PR list. */
+const SORT_OPTIONS: FilterOption[] = [
+  { value: "updated", label: "Recently updated" },
+  { value: "least-updated", label: "Least recently updated" },
+  { value: "newest", label: "Newest" },
+  { value: "oldest", label: "Oldest" },
+  { value: "most-commented", label: "Most commented" },
+  { value: "least-commented", label: "Least commented" },
 ];
 
 interface Rect { x: number; y: number; w: number; h: number }
@@ -360,10 +385,19 @@ interface Rect { x: number; y: number; w: number; h: number }
 interface BillboardGeom {
   x: number; top: number; w: number; bodyH: number; headerH: number; surfaceY: number;
   refresh: Rect;
-  /** Filter dropdowns (Author / Checks / Review). Present when connected + loaded. */
-  dropdowns: { key: DDKey; label: string; valueLabel: string; rect: Rect; open: boolean }[];
-  /** The open dropdown's option menu, drawn as an overlay on top of the rows. */
-  openMenu?: { key: DDKey; rect: Rect; options: { value: string; label: string; rect: Rect; selected: boolean }[] };
+  tab: BoardTab;
+  /** Branches / PRs tab bar. */
+  tabs: { key: BoardTab; label: string; rect: Rect; active: boolean }[];
+  /** Branch sub-tabs (branches mode): Overview / Yours / Active / Stale / All. */
+  subTabs: { key: BranchSubTab; label: string; rect: Rect; active: boolean }[];
+  /** PR filter dropdowns (prs mode): Author / Label / Projects / Milestone /
+   *  Reviews / Assignee / Sort. */
+  dropdowns: { key: DDKey; label: string; valueLabel: string; rect: Rect; open: boolean; active: boolean }[];
+  /** The branch search box (branches mode). */
+  searchBox?: Rect;
+  /** The open dropdown's option menu, drawn as an overlay on top of the rows. A
+   *  `searchRect` (entity dropdowns) filters its options; `multi` selects many. */
+  openMenu?: { key: DDKey; rect: Rect; multi: boolean; searchRect?: Rect; options: { value: string; label: string; rect: Rect; selected: boolean }[] };
   /** The fixed scroll viewport the rows are clipped to. */
   viewport: Rect;
   /** Repo group sub-headers (with their main-build badge). */
@@ -573,12 +607,22 @@ class PixelCrew {
   // one repo group per tracked island, one row per branch, open-PR data attached
   private repos: RepoGroup[] = [];
   private viewer?: string; // authenticated GitHub login, for the "Me" author option
-  // per-category filter dropdowns, ANDed. "" / "any" = unfiltered.
-  private authorFilter = ""; // "" any, "@me", or a specific login (author:)
-  private reviewerFilter = ""; // "" any, or "@me" (review-requested:@me)
-  private checksFilter = "any"; // any | pass | fail | pending | none (status:)
-  private reviewFilter = "any"; // any | approved | changes | required | none (review:)
-  private openDropdown: DDKey | null = null; // which dropdown menu is expanded
+  private boardTab: BoardTab = "branches"; // Branches / PRs tab
+  private branchSubTab: BranchSubTab = "overview"; // Branches sub-tab
+  private branchSearch = ""; // Branches search box text
+  // PR-tab filter dropdowns, ANDed. "" = Any. "@me"/"@none" are special sentinels.
+  private prAuthorFilter = ""; // author:
+  private prLabels = new Set<string>(); // label: (multi-select; "@none" = unlabeled)
+  private prProjectFilter = ""; // project:
+  private prMilestoneFilter = ""; // milestone:
+  private prReviewsFilter = ""; // review:
+  private prAssigneeFilter = ""; // assignee:
+  private prSort = "updated"; // sort:
+  private openDropdown: DDKey | null = null; // which PR dropdown menu is expanded
+  private menuSearch = ""; // search-in-menu text for the open entity dropdown
+  // which text input has keyboard focus (the branch search box, or the open menu's
+  // search field), so keystrokes route to the right place
+  private bbInput: "branchSearch" | "menuSearch" | null = null;
   private boardScroll = 0; // px the row viewport is scrolled (fixed-size, virtualized)
   // null = not yet known (startup); false = no GitHub token, show the disconnected
   // placeholder instead of an empty/"nothing awaiting" state
@@ -744,7 +788,8 @@ class PixelCrew {
         const hit = this.pick(e);
         const clickable = !!(hit.agent || hit.room || hit.ghost || hit.addDev || hit.useDir || hit.removeBtn ||
           hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom || hit.openPrUrl ||
-          hit.billboardRefresh || hit.reviewPr || hit.billboardZoom || hit.ddToggle || hit.ddOption || hit.sendBranch);
+          hit.billboardRefresh || hit.reviewPr || hit.billboardZoom || hit.ddToggle || hit.ddOption ||
+          hit.boardTabSel || hit.branchSub || hit.sendBranch || hit.searchFocus || hit.menuSearchFocus);
         this.container.style.cursor = clickable ? "pointer" : "default";
         const hk = this.hoverKeyOf(hit);
         if (hk !== this.hoverKey) { this.hoverKey = hk; this.invalidate(); } // repaint the highlight
@@ -815,6 +860,10 @@ class PixelCrew {
       },
       { passive: false }
     );
+    // keystrokes feed the focused billboard text input (branch search / menu search)
+    document.addEventListener("keydown", (e) => {
+      if (this.handleBoardKey(e)) e.preventDefault();
+    });
   }
 
   onSelect(cb: (id: string) => void) { this.onSelectCb = cb; }
@@ -895,71 +944,232 @@ class PixelCrew {
     this.layout(); // bounds depend on the billboard so the overview frames it
   }
 
-  /** Set a filter dropdown's value (and close the menu). The three dropdowns are
-   *  ANDed. No refetch — filtering is done on the loaded dataset. */
-  setBranchDropdown(key: DDKey, value: string) {
-    if (key === "author") this.authorFilter = value;
-    else if (key === "reviewer") this.reviewerFilter = value;
-    else if (key === "checks") this.checksFilter = value;
-    else this.reviewFilter = value;
-    this.openDropdown = null;
+  /** Switch the Branches / PRs tab. */
+  setBoardTab(tab: BoardTab) {
+    if (this.boardTab === tab) return;
+    this.boardTab = tab;
+    this.openDropdown = null; this.bbInput = null; this.menuSearch = "";
     this.boardScroll = 0;
     this.layout();
   }
 
-  /** Expand / collapse a filter dropdown's option menu. */
+  /** Switch the Branches sub-tab (Overview / Yours / Active / Stale / All). */
+  setBranchSubTab(key: BranchSubTab) {
+    if (this.branchSubTab === key) return;
+    this.branchSubTab = key;
+    this.boardScroll = 0;
+    this.layout();
+  }
+
+  /** Focus the Branches search box (so keystrokes type into it). */
+  focusBranchSearch() {
+    this.openDropdown = null; this.menuSearch = "";
+    this.bbInput = "branchSearch";
+    this.invalidate();
+  }
+
+  /** Pick a value in a PR filter dropdown. Label is multi-select (toggle, menu
+   *  stays open); the rest are single-select (set + close). */
+  setBranchDropdown(key: DDKey, value: string) {
+    if (key === "label") {
+      if (value === "@none") {
+        if (this.prLabels.has("@none")) this.prLabels.delete("@none");
+        else { this.prLabels.clear(); this.prLabels.add("@none"); }
+      } else {
+        this.prLabels.delete("@none");
+        if (this.prLabels.has(value)) this.prLabels.delete(value); else this.prLabels.add(value);
+      }
+      this.boardScroll = 0;
+      this.layout(); // keep the menu open for further multi-select
+      return;
+    }
+    if (key === "author") this.prAuthorFilter = value;
+    else if (key === "projects") this.prProjectFilter = value;
+    else if (key === "milestone") this.prMilestoneFilter = value;
+    else if (key === "reviews") this.prReviewsFilter = value;
+    else if (key === "assignee") this.prAssigneeFilter = value;
+    else this.prSort = value;
+    this.openDropdown = null; this.bbInput = null; this.menuSearch = "";
+    this.boardScroll = 0;
+    this.layout();
+  }
+
+  /** Expand / collapse a PR filter dropdown's option menu. Entity menus auto-focus
+   *  their search field. */
   toggleBranchDropdown(key: DDKey) {
-    this.openDropdown = this.openDropdown === key ? null : key;
+    if (this.openDropdown === key) { this.openDropdown = null; this.bbInput = null; }
+    else { this.openDropdown = key; this.bbInput = DD_ENTITY[key] ? "menuSearch" : null; }
+    this.menuSearch = "";
     this.invalidate();
   }
 
   /** Collapse any open dropdown menu (e.g. a click elsewhere). */
   closeBranchDropdown() {
-    if (this.openDropdown !== null) { this.openDropdown = null; this.invalidate(); }
+    if (this.openDropdown !== null) { this.openDropdown = null; this.menuSearch = ""; if (this.bbInput === "menuSearch") this.bbInput = null; this.invalidate(); }
   }
 
-  /** Author options for the Author dropdown: Any, Me, then each distinct PR author. */
-  private authorOptions(): FilterOption[] {
-    const opts: FilterOption[] = [{ value: "", label: "Any" }];
-    if (this.viewer) opts.push({ value: "@me", label: `Me (${this.viewer})` });
+  /** Route a keystroke into the focused text input (branch search / menu search).
+   *  Returns true if it was consumed. */
+  handleBoardKey(e: KeyboardEvent): boolean {
+    if (!this.bbInput) return false;
+    const isMenu = this.bbInput === "menuSearch";
+    let str = isMenu ? this.menuSearch : this.branchSearch;
+    if (e.key === "Escape") { if (isMenu) this.closeBranchDropdown(); else { this.bbInput = null; this.invalidate(); } return true; }
+    if (e.key === "Enter") { this.bbInput = isMenu ? this.bbInput : null; this.invalidate(); return true; }
+    if (e.key === "Backspace") str = str.slice(0, -1);
+    else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) str += e.key;
+    else return false;
+    if (isMenu) this.menuSearch = str; else this.branchSearch = str;
+    this.boardScroll = 0;
+    this.layout();
+    return true;
+  }
+
+  /** Distinct entity options for a dropdown: Any (unless suppressed), a "none"
+   *  sentinel, Me (logins), then each distinct value from the loaded PRs. */
+  private entityOptions(pick: (pr: BranchPr) => string[], cfg: { any?: boolean; me?: boolean; noneLabel?: string }): FilterOption[] {
+    const out: FilterOption[] = [];
+    if (cfg.any !== false) out.push({ value: "", label: "Any" });
+    if (cfg.noneLabel) out.push({ value: "@none", label: cfg.noneLabel });
+    if (cfg.me && this.viewer) out.push({ value: "@me", label: "Me" });
     const seen = new Set<string>();
     for (const g of this.repos) for (const b of g.branches) {
-      const a = b.pr?.author;
-      if (a && a !== this.viewer && !seen.has(a)) { seen.add(a); opts.push({ value: a, label: a }); }
+      if (!b.pr) continue;
+      for (const v of pick(b.pr)) if (v && v !== this.viewer && !seen.has(v)) { seen.add(v); out.push({ value: v, label: v }); }
     }
-    return opts;
+    return out;
   }
   private ddOptions(key: DDKey): FilterOption[] {
-    return key === "author" ? this.authorOptions()
-      : key === "reviewer" ? REVIEWER_OPTIONS
-      : key === "checks" ? CHECKS_OPTIONS : REVIEW_OPTIONS;
+    switch (key) {
+      case "author": return this.entityOptions((p) => (p.author ? [p.author] : []), { me: true });
+      case "assignee": return this.entityOptions((p) => p.assignees, { me: true, noneLabel: "Assigned to nobody" });
+      case "label": return this.entityOptions((p) => p.labels, { any: false, noneLabel: "Unlabeled" });
+      case "projects": return this.entityOptions((p) => p.projects, { noneLabel: "No project" });
+      case "milestone": return this.entityOptions((p) => (p.milestone ? [p.milestone] : []), { noneLabel: "No milestone" });
+      case "reviews": return REVIEWS_OPTIONS;
+      case "sort": return SORT_OPTIONS;
+    }
+  }
+  /** ddOptions filtered by the in-menu search text. */
+  private menuOptions(key: DDKey): FilterOption[] {
+    const q = this.menuSearch.trim().toLowerCase();
+    const all = this.ddOptions(key);
+    return q ? all.filter((o) => o.label.toLowerCase().includes(q)) : all;
   }
   private ddValue(key: DDKey): string {
-    return key === "author" ? this.authorFilter
-      : key === "reviewer" ? this.reviewerFilter
-      : key === "checks" ? this.checksFilter : this.reviewFilter;
+    switch (key) {
+      case "author": return this.prAuthorFilter;
+      case "projects": return this.prProjectFilter;
+      case "milestone": return this.prMilestoneFilter;
+      case "reviews": return this.prReviewsFilter;
+      case "assignee": return this.prAssigneeFilter;
+      case "sort": return this.prSort;
+      case "label": return ""; // multi — tracked in prLabels
+    }
+  }
+  private ddSelected(key: DDKey, value: string): boolean {
+    return key === "label" ? this.prLabels.has(value) : this.ddValue(key) === value;
+  }
+  private ddActive(key: DDKey): boolean {
+    if (key === "label") return this.prLabels.size > 0;
+    if (key === "sort") return this.prSort !== "updated";
+    return this.ddValue(key) !== "";
   }
   private ddValueLabel(key: DDKey): string {
+    if (key === "label") {
+      if (this.prLabels.size === 0) return "Any";
+      if (this.prLabels.has("@none")) return "Unlabeled";
+      return this.prLabels.size === 1 ? [...this.prLabels][0] : `${this.prLabels.size} labels`;
+    }
     const v = this.ddValue(key);
     return this.ddOptions(key).find((o) => o.value === v)?.label ?? (v || "Any");
   }
-  /** True when any dropdown is narrowing the list. */
-  private get anyFilterActive(): boolean {
-    return !!this.authorFilter || !!this.reviewerFilter || this.checksFilter !== "any" || this.reviewFilter !== "any";
+
+  /** Age of a branch's last activity in ms (Infinity when unknown). */
+  private branchAge(iso?: string): number {
+    if (!iso) return Infinity;
+    const t = Date.parse(iso);
+    return isNaN(t) ? Infinity : Math.max(0, Date.now() - t);
+  }
+  /** A short "updated N ago" label for the branch's tip-commit date. */
+  private relTime(iso?: string): string {
+    const ms = this.branchAge(iso);
+    if (!isFinite(ms)) return "—";
+    const s = ms / 1000;
+    if (s < 60) return "now";
+    const m = s / 60; if (m < 60) return `${Math.floor(m)}m`;
+    const h = m / 60; if (h < 24) return `${Math.floor(h)}h`;
+    const d = h / 24; if (d < 7) return `${Math.floor(d)}d`;
+    const wk = d / 7; if (wk < 5) return `${Math.floor(wk)}w`;
+    const mo = d / 30; if (mo < 12) return `${Math.floor(mo)}mo`;
+    return `${Math.floor(d / 365)}y`;
   }
 
-  /** Whether a branch row passes every filter dropdown (ANDed). A row with no PR
-   *  can't match an author / reviewer / checks / review filter, so it's excluded. */
-  private branchVisible(row: BranchRow): boolean {
-    const pr = row.pr;
-    if (this.authorFilter) {
-      const want = this.authorFilter === "@me" ? this.viewer : this.authorFilter;
-      if (!pr || pr.author !== want) return false;
+  /** Whether a branch row belongs to the active Branches sub-tab (GitHub: Active =
+   *  committed within 3 months; Stale = no commits in 3 months; Yours/Active/Stale
+   *  exclude the default branch). Also honors the search box. */
+  private branchInSubTab(row: BranchRow): boolean {
+    if (this.branchSearch && !row.branch.toLowerCase().includes(this.branchSearch.toLowerCase())) return false;
+    const age = this.branchAge(row.updatedAt);
+    switch (this.branchSubTab) {
+      case "all": return true;
+      case "yours": return row.mine && !row.isDefault;
+      case "active": return !row.isDefault && age <= BB_STALE_MS;
+      case "stale": return !row.isDefault && isFinite(age) && age > BB_STALE_MS;
+      case "overview": return row.isDefault || (row.mine && !row.isDefault) || age <= BB_STALE_MS;
     }
-    if (this.reviewerFilter === "@me" && !pr?.reviewRequestedFromMe) return false;
-    if (this.checksFilter !== "any" && (!pr || pr.checks !== this.checksFilter)) return false;
-    if (this.reviewFilter !== "any" && (!pr || pr.review !== this.reviewFilter)) return false;
+  }
+  /** Sort branch rows: Stale = oldest first; otherwise default pinned, then most
+   *  recently updated first. */
+  private sortBranchRows(rows: BranchRow[]): BranchRow[] {
+    const t = (r: BranchRow) => Date.parse(r.updatedAt || "") || 0;
+    if (this.branchSubTab === "stale") return [...rows].sort((a, b) => t(a) - t(b));
+    return [...rows].sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0) || t(b) - t(a));
+  }
+
+  /** Whether a PR row passes the PR-tab filter dropdowns (ANDed). Branchless rows
+   *  are excluded (the PRs tab lists open PRs only). */
+  private prVisible(row: BranchRow): boolean {
+    const pr = row.pr;
+    if (!pr) return false;
+    if (this.prAuthorFilter) {
+      const want = this.prAuthorFilter === "@me" ? this.viewer : this.prAuthorFilter;
+      if (pr.author !== want) return false;
+    }
+    if (this.prAssigneeFilter) {
+      if (this.prAssigneeFilter === "@none") { if (pr.assignees.length) return false; }
+      else { const want = this.prAssigneeFilter === "@me" ? this.viewer : this.prAssigneeFilter; if (!want || !pr.assignees.includes(want)) return false; }
+    }
+    if (this.prLabels.size) {
+      if (this.prLabels.has("@none")) { if (pr.labels.length) return false; }
+      else { for (const l of this.prLabels) if (!pr.labels.includes(l)) return false; } // AND
+    }
+    if (this.prProjectFilter) {
+      if (this.prProjectFilter === "@none") { if (pr.projects.length) return false; }
+      else if (!pr.projects.includes(this.prProjectFilter)) return false;
+    }
+    if (this.prMilestoneFilter) {
+      if (this.prMilestoneFilter === "@none") { if (pr.milestone) return false; }
+      else if (pr.milestone !== this.prMilestoneFilter) return false;
+    }
+    const rf = this.prReviewsFilter;
+    if (rf === "reviewme") { if (!pr.reviewRequestedFromMe) return false; }
+    else if (rf) { if (pr.review !== rf) return false; }
     return true;
+  }
+  /** Sort PR rows per the Sort dropdown. */
+  private sortPrRows(rows: BranchRow[]): BranchRow[] {
+    const upd = (r: BranchRow) => Date.parse(r.pr?.updatedAt || r.updatedAt || "") || 0;
+    const cre = (r: BranchRow) => Date.parse(r.pr?.createdAt || "") || r.pr?.number || 0;
+    const cmt = (r: BranchRow) => r.pr?.comments || 0;
+    const by = this.prSort;
+    return [...rows].sort((a, b) =>
+      by === "least-updated" ? upd(a) - upd(b)
+      : by === "newest" ? cre(b) - cre(a)
+      : by === "oldest" ? cre(a) - cre(b)
+      : by === "most-commented" ? cmt(b) - cmt(a)
+      : by === "least-commented" ? cmt(a) - cmt(b)
+      : upd(b) - upd(a)); // recently updated (default)
   }
 
   /** Scroll the row viewport by `dy` px, clamped. Returns true if it moved (so the
@@ -981,53 +1191,79 @@ class PixelCrew {
     const x = this.campusMinX - BB_GAP - BB_W;
     const w = BB_W;
     const surfaceY = floorBase(0) + SLAB;
-    const ddAreaH = BB_DD_H + 8; // one row of dropdowns + padding
+    const tab = this.boardTab;
+    const prs = tab === "prs";
 
     const loading = this.prLoading && this.repos.length === 0;
     const disconnected = this.githubConnected === false;
     const showChips = !disconnected && !loading; // "show filters + rows" state
 
-    // filter each group's branches; drop a group with no matches (unless unfiltered)
+    // filter each repo group's rows for the active tab/sub-tab; drop empty groups
     const filtered: { g: RepoGroup; rows: BranchRow[] }[] = [];
     let visibleTotal = 0;
     for (const g of this.repos) {
-      const grows = g.branches.filter((r) => this.branchVisible(r));
-      visibleTotal += grows.length;
-      if (grows.length === 0 && this.anyFilterActive) continue;
+      let grows = g.branches.filter((r) => (prs ? this.prVisible(r) : this.branchInSubTab(r)));
+      grows = prs ? this.sortPrRows(grows) : this.sortBranchRows(grows);
+      if (grows.length === 0) continue;
       filtered.push({ g, rows: grows });
+      visibleTotal += grows.length;
     }
     const shownRows = filtered.reduce((a, p) => a + p.rows.length, 0);
     const contentH = filtered.length * BB_GROUP_H + shownRows * BB_ROW;
 
     const emptyLine = showChips && shownRows === 0
       ? (this.repos.length === 0 ? "no repositories tracked"
-        : !this.anyFilterActive ? "no branches" : "nothing matches these filters")
+        : prs ? "no open PRs match"
+        : this.branchSubTab === "yours" ? "no branches by you"
+        : this.branchSubTab === "stale" ? "no stale branches"
+        : this.branchSubTab === "active" ? "no active branches" : "no branches")
       : undefined;
 
-    // FIXED panel height — never changes with row count, so it doesn't shift as
-    // filters narrow the list. Overflow scrolls inside the viewport.
-    const bodyH = showChips ? BB_HEADER + ddAreaH + BB_VIEW_H + 5 : BB_HEADER + 48;
+    // FIXED panel height — header + tab bar + controls + viewport. Never resizes.
+    const bodyH = showChips ? BB_HEADER + BB_TAB_H + BB_CTRL_H + BB_VIEW_H + 5 : BB_HEADER + 48;
     const top = surfaceY - 40 - bodyH;
+    const tabsTop = top + BB_HEADER;
+    const ctrlTop = tabsTop + BB_TAB_H;
 
-    // filter dropdowns: Author / Reviewer / Review / Checks, in a single row
-    const DD_KEYS: DDKey[] = ["author", "reviewer", "review", "checks"];
-    const DD_LABELS: Record<DDKey, string> = { author: "Author", reviewer: "Reviewer", review: "Review", checks: "Checks" };
+    // Branches / PRs tab bar (two equal segments)
+    const tabs: BillboardGeom["tabs"] = [];
+    const subTabs: BillboardGeom["subTabs"] = [];
     const dropdowns: BillboardGeom["dropdowns"] = [];
+    let searchBox: Rect | undefined;
+    const ddX = x + 6, ddW = w - 12;
+    const row1Y = ctrlTop + 3, row2Y = ctrlTop + 3 + BB_DD_H + BB_DD_GAP;
     if (showChips) {
-      const ddX = x + 6, ddW = w - 12;
-      const ddTop = top + BB_HEADER + 4;
-      const bw = (ddW - (DD_KEYS.length - 1) * BB_DD_GAP) / DD_KEYS.length;
-      DD_KEYS.forEach((key, i) => {
-        dropdowns.push({
-          key, label: DD_LABELS[key], valueLabel: this.ddValueLabel(key),
-          rect: { x: ddX + i * (bw + BB_DD_GAP), y: ddTop, w: bw, h: BB_DD_H },
-          open: this.openDropdown === key,
-        });
+      const tw = (w - 12) / 2;
+      (["branches", "prs"] as BoardTab[]).forEach((key, i) => {
+        tabs.push({ key, label: key === "branches" ? "Branches" : "PRs",
+          rect: { x: x + 6 + i * tw, y: tabsTop + 1, w: tw, h: BB_TAB_H - 2 }, active: tab === key });
       });
+      if (prs) {
+        // PR filter dropdowns across two rows: Author/Label/Projects/Milestone, then Reviews/Assignee/Sort
+        const DD_LABELS: Record<DDKey, string> = { author: "Author", label: "Label", projects: "Projects", milestone: "Milestone", reviews: "Reviews", assignee: "Assignee", sort: "Sort" };
+        const layRow = (keys: DDKey[], ry: number) => {
+          const bw = (ddW - (keys.length - 1) * BB_DD_GAP) / keys.length;
+          keys.forEach((key, i) => dropdowns.push({
+            key, label: DD_LABELS[key], valueLabel: this.ddValueLabel(key), active: this.ddActive(key),
+            rect: { x: ddX + i * (bw + BB_DD_GAP), y: ry, w: bw, h: BB_DD_H }, open: this.openDropdown === key,
+          }));
+        };
+        layRow(["author", "label", "projects", "milestone"], row1Y);
+        layRow(["reviews", "assignee", "sort"], row2Y);
+      } else {
+        // Branches: sub-tabs row + search box row
+        const sTop = row1Y + (BB_DD_H - BB_SUB_H) / 2;
+        const sw = (ddW - (BRANCH_SUBTABS.length - 1) * BB_DD_GAP) / BRANCH_SUBTABS.length;
+        BRANCH_SUBTABS.forEach((s, i) => {
+          subTabs.push({ key: s.key, label: s.label,
+            rect: { x: ddX + i * (sw + BB_DD_GAP), y: sTop, w: sw, h: BB_SUB_H }, active: this.branchSubTab === s.key });
+        });
+        searchBox = { x: ddX, y: row2Y, w: ddW, h: BB_DD_H };
+      }
     }
 
     // the fixed scroll viewport the rows are clipped to
-    const viewTop = top + BB_HEADER + ddAreaH;
+    const viewTop = ctrlTop + BB_CTRL_H;
     const viewport: Rect = { x, y: viewTop, w, h: showChips ? BB_VIEW_H : 0 };
     const maxScroll = Math.max(0, contentH - BB_VIEW_H);
     this.bbMaxScroll = maxScroll;
@@ -1049,7 +1285,7 @@ class PixelCrew {
         let open: Rect | undefined;
         let send: Rect | undefined;
         if (row.pr?.url) { open = { x: glyphX, y: cy + 6, w: 10, h: 10 }; glyphX -= 13; }
-        if (!row.hasWorktree) { send = { x: glyphX, y: cy + 6, w: 10, h: 10 }; }
+        if (!prs && !row.hasWorktree) { send = { x: glyphX, y: cy + 6, w: 10, h: 10 }; } // send only on the Branches tab
         rows.push({ group: p.g, row, y: cy, visible, send, open });
         cy += BB_ROW;
       }
@@ -1063,31 +1299,36 @@ class PixelCrew {
       scrollbar = { track, thumb: { x: track.x, y: thumbY, w: track.w, h: thumbH } };
     }
 
-    // the open dropdown's option menu, drawn last as an overlay over the rows
+    // the open dropdown's option menu, drawn last as an overlay over the rows.
+    // Entity menus get a search field; options are search-filtered + capped.
     let openMenu: BillboardGeom["openMenu"];
-    if (showChips && this.openDropdown) {
+    if (showChips && prs && this.openDropdown) {
       const dd = dropdowns.find((d) => d.key === this.openDropdown);
       if (dd) {
-        const opts = this.ddOptions(dd.key);
-        const menuTop = dd.rect.y + dd.rect.h + 1;
+        const isEntity = !!DD_ENTITY[dd.key];
+        const shown = this.menuOptions(dd.key).slice(0, BB_MENU_MAX);
         // the menu is wider than its (narrow) button so option labels fit, clamped
         // to stay inside the panel
-        const menuW = Math.min(w - 12, Math.max(dd.rect.w, 116));
+        const menuW = Math.min(w - 12, Math.max(dd.rect.w, 150));
         const menuX = Math.min(dd.rect.x, x + w - 6 - menuW);
-        const sel = this.ddValue(dd.key);
-        const options = opts.map((o, i) => ({
+        const menuTop = dd.rect.y + dd.rect.h + 1;
+        let oy = menuTop;
+        let searchRect: Rect | undefined;
+        if (isEntity) { searchRect = { x: menuX, y: oy, w: menuW, h: BB_OPT_H }; oy += BB_OPT_H; }
+        const options = shown.map((o, i) => ({
           value: o.value, label: o.label,
-          rect: { x: menuX, y: menuTop + i * BB_OPT_H, w: menuW, h: BB_OPT_H },
-          selected: o.value === sel,
+          rect: { x: menuX, y: oy + i * BB_OPT_H, w: menuW, h: BB_OPT_H },
+          selected: this.ddSelected(dd.key, o.value),
         }));
-        openMenu = { key: dd.key, rect: { x: menuX, y: menuTop, w: menuW, h: opts.length * BB_OPT_H }, options };
+        const menuH = (isEntity ? BB_OPT_H : 0) + shown.length * BB_OPT_H;
+        openMenu = { key: dd.key, rect: { x: menuX, y: menuTop, w: menuW, h: menuH }, multi: dd.key === "label", searchRect, options };
       }
     }
 
     return {
       x, top, w, bodyH, headerH: BB_HEADER, surfaceY,
       refresh: { x: x + w - 14, y: top + 3, w: 11, h: 11 },
-      dropdowns, openMenu, viewport, groups, rows, scrollbar, visibleTotal, showChips, emptyLine,
+      tab, tabs, subTabs, dropdowns, searchBox, openMenu, viewport, groups, rows, scrollbar, visibleTotal, showChips, emptyLine,
     };
   }
 
@@ -2443,18 +2684,26 @@ class PixelCrew {
     ddToggle?: DDKey; // a filter dropdown header → expand / collapse it
     ddOption?: { key: DDKey; value: string }; // a dropdown menu option → select it
     ddClose?: boolean; // a click that should just dismiss the open dropdown menu
+    boardTabSel?: BoardTab; // a Branches / PRs tab → switch tab
+    branchSub?: BranchSubTab; // a Branches sub-tab → switch sub-tab
+    searchFocus?: boolean; // the Branches search box → focus it
+    menuSearchFocus?: boolean; // the open menu's search field → focus it
     sendBranch?: { repoShortName: string; branch: string }; // + → worktree on a branch
   } {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
 
-    // branch board: refresh → (open menu options) → dropdown headers → row controls
-    // → row body (assign reviewer) → anywhere else zooms to the board
+    // branch board: refresh → tab bar → (open menu options) → dropdowns / sub-tabs
+    // → row controls → row body (assign reviewer) → anywhere else zooms to the board
     const bb = this.billboardGeom();
     {
       if (this.inRect(mx, my, bb.refresh.x, bb.refresh.y, bb.refresh.w, bb.refresh.h)) return { billboardRefresh: true };
-      // an open dropdown menu captures clicks first (its options, else it dismisses)
+      for (const t of bb.tabs) {
+        if (this.inRect(mx, my, t.rect.x, t.rect.y, t.rect.w, t.rect.h)) return { boardTabSel: t.key };
+      }
+      // an open dropdown menu captures clicks first (search field, options, else dismiss)
       if (bb.openMenu) {
+        if (bb.openMenu.searchRect && this.inRect(mx, my, bb.openMenu.searchRect.x, bb.openMenu.searchRect.y, bb.openMenu.searchRect.w, bb.openMenu.searchRect.h)) return { menuSearchFocus: true };
         for (const o of bb.openMenu.options) {
           if (this.inRect(mx, my, o.rect.x, o.rect.y, o.rect.w, o.rect.h)) return { ddOption: { key: bb.openMenu.key, value: o.value } };
         }
@@ -2466,6 +2715,10 @@ class PixelCrew {
       for (const d of bb.dropdowns) {
         if (this.inRect(mx, my, d.rect.x, d.rect.y, d.rect.w, d.rect.h)) return { ddToggle: d.key };
       }
+      for (const s of bb.subTabs) {
+        if (this.inRect(mx, my, s.rect.x, s.rect.y, s.rect.w, s.rect.h)) return { branchSub: s.key };
+      }
+      if (bb.searchBox && this.inRect(mx, my, bb.searchBox.x, bb.searchBox.y, bb.searchBox.w, bb.searchBox.h)) return { searchFocus: true };
       // row controls live in the scroll viewport: only hit visible rows, and only
       // when the click is inside the viewport (so a row scrolled under the filters
       // or below the frame can't be clicked through the clip)
@@ -2538,6 +2791,9 @@ class PixelCrew {
    *  can highlight whatever the cursor is hovering. null = not a button. */
   private hoverKeyOf(h: ReturnType<PixelCrew["pick"]>): string | null {
     if (h.billboardRefresh) return "bbRefresh";
+    if (h.boardTabSel) return "bbtab:" + h.boardTabSel;
+    if (h.branchSub) return "bbsub:" + h.branchSub;
+    if (h.searchFocus) return "bbsearch";
     if (h.ddToggle) return "bbdd:" + h.ddToggle;
     if (h.ddOption) return "bbopt:" + h.ddOption.key + ":" + h.ddOption.value;
     if (h.sendBranch) return "bbsend:" + h.sendBranch.repoShortName + ":" + h.sendBranch.branch;
@@ -2560,6 +2816,10 @@ class PixelCrew {
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
     if (hit.billboardRefresh) { this.setBusy("bbRefresh"); this.onRefreshPrsCb(); }
+    else if (hit.boardTabSel) { this.closeBranchDropdown(); this.setBoardTab(hit.boardTabSel); }
+    else if (hit.branchSub) { this.setBranchSubTab(hit.branchSub); }
+    else if (hit.searchFocus) { this.focusBranchSearch(); }
+    else if (hit.menuSearchFocus) { /* already focused when the menu opened */ }
     else if (hit.ddOption) { this.setBranchDropdown(hit.ddOption.key, hit.ddOption.value); }
     else if (hit.ddToggle) { this.toggleBranchDropdown(hit.ddToggle); }
     else if (hit.ddClose) { this.closeBranchDropdown(); }
@@ -3168,12 +3428,43 @@ class PixelCrew {
     return s === "pass" ? "#3ee089" : s === "fail" ? "#ff6055" : s === "pending" ? "#ffb13d" : TEXT.muted;
   }
 
+  /** Draw a compact check rollup (Np✓ Nf✗ + pulsing running dot) at (sx,py).
+   *  Returns the advanced x cursor. */
+  private drawChecksInline(ctx: CanvasRenderingContext2D, pr: BranchPr, sx: number, py: number): number {
+    if (pr.checksTotal <= 0) return sx;
+    ctx.font = "bold 6px 'Martian Mono', monospace";
+    if (pr.checksPass > 0) { ctx.fillStyle = "#3ee089"; const t = `${pr.checksPass}✓`; ctx.fillText(t, sx, py); sx += ctx.measureText(t).width + 3; }
+    if (pr.checksFailed > 0) { ctx.fillStyle = "#ff6055"; const t = `${pr.checksFailed}✗`; ctx.fillText(t, sx, py); sx += ctx.measureText(t).width + 3; }
+    if (pr.checksRunning > 0) {
+      const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+      ctx.globalAlpha = pa; ctx.fillStyle = "#ffb13d";
+      ctx.beginPath(); ctx.arc(sx + 1.4, py - 1.3, 1.4, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1; ctx.fillStyle = "#ffb13d";
+      ctx.fillText(`${pr.checksRunning}`, sx + 3.6, py); sx += 3.6 + ctx.measureText(`${pr.checksRunning}`).width + 3;
+    }
+    return sx;
+  }
+
+  /** Draw a compact review state (✓N approved / ✗N changes / ◷N requested) at
+   *  (sx,py), stopping before `limitX`. Returns the advanced x cursor. */
+  private drawReviewInline(ctx: CanvasRenderingContext2D, pr: BranchPr, sx: number, py: number, limitX: number): number {
+    ctx.font = "6px 'IBM Plex Mono', monospace";
+    const seg = (label: string, on: string) => {
+      if (sx > limitX - 4) return;
+      ctx.fillStyle = on; ctx.fillText(label, sx, py); sx += ctx.measureText(label).width + 3;
+    };
+    if (pr.review === "approved") seg(`✓${pr.approvals}`, "#3ee089");
+    else if (pr.review === "changes") seg(`✗${pr.changesRequested}`, "#ff6055");
+    else if (pr.reviewersPending > 0) seg(`◷${pr.reviewersPending}`, "#56c7ff");
+    return sx;
+  }
+
   /** The Branches & PRs billboard: filter chips, repo groups (each with a
    *  default-branch build badge), and one row per branch with its open-PR state,
    *  send-to-worktree (+) and open-on-GitHub (↗) controls. */
   private drawBranchBoard(ctx: CanvasRenderingContext2D) {
     const bb = this.billboardGeom();
-    const { x, top, w, bodyH, headerH, surfaceY, refresh, dropdowns, groups, rows, viewport } = bb;
+    const { x, top, w, bodyH, headerH, surfaceY, refresh, tabs, subTabs, dropdowns, groups, rows, viewport } = bb;
     const legTop = top + bodyH;
     // two posts down to the ground + a soft contact shadow
     ctx.fillStyle = "#3a2c1d";
@@ -3213,30 +3504,75 @@ class PixelCrew {
       ctx.fillText("↻", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
     }
 
-    // filter dropdowns (Author / Reviewer / Review / Checks) — compact buttons,
-    // category label on top, selected value below, in one row
-    for (const d of dropdowns) {
-      const hov = this.hov("bbdd:" + d.key);
-      const set = this.ddValue(d.key) !== "" && this.ddValue(d.key) !== "any"; // a non-default value
-      const r = d.rect;
-      ctx.fillStyle = d.open ? "rgba(255,177,61,0.22)" : hov ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.05)";
+    // Branches / PRs tab bar (segmented, underlined when active)
+    for (const t of tabs) {
+      const hov = this.hov("bbtab:" + t.key);
+      const r = t.rect;
+      ctx.fillStyle = t.active ? "rgba(255,177,61,0.16)" : hov ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)";
       ctx.fillRect(r.x, r.y, r.w, r.h);
-      ctx.strokeStyle = d.open || set ? "#ffb13d" : "#2b3a47";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
-      // category label (top)
-      ctx.textAlign = "left";
-      ctx.font = "700 5px 'Martian Mono', monospace";
-      ctx.fillStyle = set ? "rgba(255,206,133,0.7)" : TEXT.muted;
-      ctx.fillText(d.label.toUpperCase(), r.x + 5, r.y + 8);
-      // value (bottom) + caret
-      ctx.font = "6px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = set ? "#ffce85" : "#c4d0d8";
-      ctx.fillText(this.fitText(ctx, d.valueLabel, r.w - 12), r.x + 5, r.y + r.h - 4);
-      ctx.fillStyle = hov || d.open ? "#ffb13d" : TEXT.muted; // caret
-      ctx.textAlign = "right";
-      ctx.fillText(d.open ? "▴" : "▾", r.x + r.w - 3, r.y + r.h - 4);
-      ctx.textAlign = "left";
+      if (t.active) { ctx.fillStyle = "#ffb13d"; ctx.fillRect(r.x, r.y + r.h - 1.5, r.w, 1.5); }
+      ctx.fillStyle = t.active ? "#ffce85" : hov ? "#e3ecf1" : TEXT.muted;
+      ctx.font = "700 7px 'Martian Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(t.label, r.x + r.w / 2, r.y + r.h - 4);
+    }
+    ctx.textAlign = "left";
+
+    if (bb.tab === "prs") {
+      // PR filter dropdowns — compact buttons, category label on top, value below
+      for (const d of dropdowns) {
+        const hov = this.hov("bbdd:" + d.key);
+        const set = d.active;
+        const r = d.rect;
+        ctx.fillStyle = d.open ? "rgba(255,177,61,0.22)" : hov ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.05)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeStyle = d.open || set ? "#ffb13d" : "#2b3a47";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+        ctx.textAlign = "left";
+        ctx.font = "700 5px 'Martian Mono', monospace";
+        ctx.fillStyle = set ? "rgba(255,206,133,0.7)" : TEXT.muted;
+        ctx.fillText(d.label.toUpperCase(), r.x + 5, r.y + 8);
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = set ? "#ffce85" : "#c4d0d8";
+        ctx.fillText(this.fitText(ctx, d.valueLabel, r.w - 12), r.x + 5, r.y + r.h - 4);
+        ctx.fillStyle = hov || d.open ? "#ffb13d" : TEXT.muted;
+        ctx.textAlign = "right";
+        ctx.fillText(d.open ? "▴" : "▾", r.x + r.w - 3, r.y + r.h - 4);
+        ctx.textAlign = "left";
+      }
+    } else {
+      // Branches sub-tabs (Overview / Yours / Active / Stale / All) — pill row
+      for (const s of subTabs) {
+        const hov = this.hov("bbsub:" + s.key);
+        const r = s.rect;
+        ctx.fillStyle = s.active ? "rgba(255,177,61,0.22)" : hov ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.05)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        if (s.active) { ctx.strokeStyle = "#ffb13d"; ctx.lineWidth = 1; ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1); }
+        ctx.fillStyle = s.active ? "#ffce85" : hov ? "#e3ecf1" : TEXT.muted;
+        ctx.font = "700 6px 'Martian Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(s.label, r.x + r.w / 2, r.y + r.h - 3.5);
+      }
+      // Branches search box
+      if (bb.searchBox) {
+        const r = bb.searchBox;
+        const focused = this.bbInput === "branchSearch";
+        const hov = this.hov("bbsearch");
+        ctx.fillStyle = "rgba(255,255,255,0.05)";
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeStyle = focused ? "#ffb13d" : hov ? "#3a4a57" : "#2b3a47";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+        ctx.textAlign = "left";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = TEXT.muted;
+        ctx.fillText("⌕", r.x + 5, r.y + r.h - 6);
+        const txt = this.branchSearch || (focused ? "" : "Search branches");
+        ctx.fillStyle = this.branchSearch ? "#e3ecf1" : "rgba(150,162,170,0.55)";
+        const caret = focused && this.frame % 16 < 8 ? "│" : "";
+        ctx.fillText(this.fitText(ctx, txt, r.w - 22) + caret, r.x + 13, r.y + r.h - 6);
+      }
     }
     ctx.textAlign = "left";
 
@@ -3278,67 +3614,73 @@ class PixelCrew {
       ctx.globalAlpha = 1;
     }
 
-    // branch rows (virtualized: skip off-view)
+    // rows (virtualized: skip off-view). Branch-centric on the Branches tab,
+    // PR-centric on the PRs tab.
     ctx.textAlign = "left";
     for (const { group, row, y, visible, send, open } of rows) {
       if (!visible) continue;
       const pr = row.pr;
       ctx.fillStyle = "rgba(255,255,255,0.05)"; // separator
       ctx.fillRect(x + 4, y, w - 8, 0.6);
-      // glyph zone starts at the leftmost action control
       const glyphLeft = send ? send.x : open ? open.x : x + w - 6;
-      // line 1: branch name (left) + a right-aligned default/worktree tag
-      let tag = "";
-      let tagColor: string = TEXT.muted;
-      if (row.isDefault) { tag = "default"; }
-      else if (row.hasWorktree) { tag = "● worktree"; tagColor = "#7fd0a4"; }
-      ctx.font = "6px 'IBM Plex Mono', monospace";
-      const tagW = tag ? ctx.measureText(tag).width + 4 : 0;
-      const nameMaxX = glyphLeft - 4 - tagW;
-      ctx.fillStyle = pr ? "#e3ecf1" : "#c4d0d8";
-      ctx.font = "600 7px 'IBM Plex Mono', monospace";
-      ctx.fillText(this.fitText(ctx, row.branch, nameMaxX - (x + 6)), x + 6, y + 9);
-      if (tag) {
-        ctx.fillStyle = tagColor;
-        ctx.font = "6px 'IBM Plex Mono', monospace";
-        ctx.textAlign = "right";
-        ctx.fillText(tag, glyphLeft - 4, y + 9);
+
+      if (bb.tab === "prs" && pr) {
+        // PR row — line 1: #num + title; line 2: author + checks + review
         ctx.textAlign = "left";
-      }
-      // line 2: #num + checks + review (or "no open PR")
-      if (pr) {
-        let sx = x + 6;
         ctx.font = "600 6px 'IBM Plex Mono', monospace";
         ctx.fillStyle = "#7fb8df";
-        const num = `#${pr.number}${pr.isDraft ? " draft" : ""}`;
-        ctx.fillText(num, sx, y + 18);
-        sx += ctx.measureText(num).width + 4;
-        // checks
-        ctx.font = "bold 6px 'Martian Mono', monospace";
-        if (pr.checksTotal > 0) {
-          if (pr.checksPass > 0) { ctx.fillStyle = "#3ee089"; const t = `${pr.checksPass}✓`; ctx.fillText(t, sx, y + 18); sx += ctx.measureText(t).width + 3; }
-          if (pr.checksFailed > 0) { ctx.fillStyle = "#ff6055"; const t = `${pr.checksFailed}✗`; ctx.fillText(t, sx, y + 18); sx += ctx.measureText(t).width + 3; }
-          if (pr.checksRunning > 0) {
-            const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
-            ctx.globalAlpha = pa; ctx.fillStyle = "#ffb13d";
-            ctx.beginPath(); ctx.arc(sx + 1.4, y + 16.5, 1.4, 0, Math.PI * 2); ctx.fill();
-            ctx.globalAlpha = 1; ctx.fillStyle = "#ffb13d";
-            ctx.fillText(`${pr.checksRunning}`, sx + 3.6, y + 18); sx += 3.6 + ctx.measureText(`${pr.checksRunning}`).width + 3;
-          }
+        const num = `#${pr.number}`;
+        ctx.fillText(num, x + 6, y + 9);
+        const numW = ctx.measureText(num).width + 4;
+        ctx.fillStyle = pr.isDraft ? "#9aa6ad" : "#e3ecf1";
+        ctx.font = "600 7px 'IBM Plex Mono', monospace";
+        ctx.fillText(this.fitText(ctx, pr.title || row.branch, glyphLeft - 4 - (x + 6 + numW)), x + 6 + numW, y + 9);
+        // line 2
+        let sx = x + 6;
+        if (pr.author) {
+          ctx.font = "6px 'IBM Plex Mono', monospace";
+          ctx.fillStyle = pr.isMine ? "#ffce85" : TEXT.muted;
+          const a = this.fitText(ctx, pr.author, w * 0.3);
+          ctx.fillText(a, sx, y + 18); sx += ctx.measureText(a).width + 5;
         }
-        // review state (compact): approved / changes / requested
-        ctx.font = "6px 'IBM Plex Mono', monospace";
-        const rseg = (label: string, on: string) => {
-          if (sx > glyphLeft - 4) return;
-          ctx.fillStyle = on; ctx.fillText(label, sx, y + 18); sx += ctx.measureText(label).width + 3;
-        };
-        if (pr.review === "approved") rseg(`✓${pr.approvals}`, "#3ee089");
-        else if (pr.review === "changes") rseg(`✗${pr.changesRequested}`, "#ff6055");
-        else if (pr.reviewersPending > 0) rseg(`◷${pr.reviewersPending}`, "#56c7ff");
+        sx = this.drawChecksInline(ctx, pr, sx, y + 18);
+        sx = this.drawReviewInline(ctx, pr, sx, y + 18, glyphLeft);
+        if (pr.reviewRequestedFromMe && sx < glyphLeft - 14) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = "#c58fff";
+          ctx.fillText("◉you", sx, y + 18);
+        }
       } else {
+        // Branch row — line 1: branch + updated; line 2: state / checks / behind-ahead / #PR
         ctx.font = "6px 'IBM Plex Mono', monospace";
-        ctx.fillStyle = "rgba(150,162,170,0.5)";
-        ctx.fillText("no open PR", x + 6, y + 18);
+        const upd = this.relTime(row.updatedAt);
+        const updW = row.updatedAt ? ctx.measureText(upd).width + 4 : 0;
+        ctx.textAlign = "left";
+        ctx.fillStyle = "#e3ecf1";
+        ctx.font = "600 7px 'IBM Plex Mono', monospace";
+        ctx.fillText(this.fitText(ctx, row.branch, glyphLeft - 4 - updW - (x + 6)), x + 6, y + 9);
+        if (row.updatedAt) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = TEXT.muted;
+          ctx.textAlign = "right"; ctx.fillText(upd, glyphLeft - 4, y + 9); ctx.textAlign = "left";
+        }
+        // line 2
+        let sx = x + 6;
+        if (row.isDefault) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = "#7fd0a4";
+          ctx.fillText("default", sx, y + 18); sx += ctx.measureText("default").width + 6;
+        } else if (row.hasWorktree) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = "#7fd0a4";
+          ctx.fillText("● worktree", sx, y + 18); sx += ctx.measureText("● worktree").width + 6;
+        }
+        if (pr) sx = this.drawChecksInline(ctx, pr, sx, y + 18);
+        if ((row.ahead || row.behind) && sx < glyphLeft - 28) {
+          ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.fillStyle = TEXT.muted;
+          const ab = `↓${row.behind} ↑${row.ahead}`;
+          ctx.fillText(ab, sx, y + 18); sx += ctx.measureText(ab).width + 6;
+        }
+        if (pr && sx < glyphLeft - 14) {
+          ctx.font = "600 6px 'IBM Plex Mono', monospace"; ctx.fillStyle = "#7fb8df";
+          ctx.fillText(`#${pr.number}`, sx, y + 18);
+        }
       }
       // send-to-worktree (+) — only when not already checked out locally
       if (send) {
@@ -3410,22 +3752,43 @@ class PixelCrew {
       ctx.strokeStyle = "#ffb13d";
       ctx.lineWidth = 1;
       ctx.strokeRect(m.rect.x + 0.5, m.rect.y + 0.5, m.rect.w - 1, m.rect.h - 1);
+      // search field (entity menus)
+      if (m.searchRect) {
+        const s = m.searchRect;
+        ctx.fillStyle = "rgba(255,255,255,0.04)";
+        ctx.fillRect(s.x + 1, s.y + 1, s.w - 2, s.h - 1);
+        ctx.fillStyle = "rgba(255,255,255,0.07)";
+        ctx.fillRect(s.x + 1, s.y + s.h - 1, s.w - 2, 0.6); // underline divider
+        ctx.textAlign = "left";
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = TEXT.muted;
+        ctx.fillText("⌕", s.x + 4, s.y + s.h - 4);
+        const focused = this.bbInput === "menuSearch";
+        const txt = this.menuSearch || (focused ? "" : "Filter");
+        ctx.fillStyle = this.menuSearch ? "#e3ecf1" : "rgba(150,162,170,0.55)";
+        const caret = focused && this.frame % 16 < 8 ? "│" : "";
+        ctx.fillText(this.fitText(ctx, txt, s.w - 18) + caret, s.x + 12, s.y + s.h - 4);
+      }
       for (const o of m.options) {
         const hov = this.hov("bbopt:" + m.key + ":" + o.value);
         if (o.selected || hov) {
           ctx.fillStyle = o.selected ? "rgba(255,177,61,0.2)" : "rgba(255,255,255,0.08)";
           ctx.fillRect(o.rect.x + 1, o.rect.y, o.rect.w - 2, o.rect.h);
         }
-        if (o.selected) { // a check mark on the active option
-          ctx.fillStyle = "#ffce85";
-          ctx.font = "6px 'IBM Plex Mono', monospace";
-          ctx.textAlign = "left";
+        // checkbox (multi / label) or check mark (single) on the selected option
+        if (m.multi) {
+          ctx.strokeStyle = o.selected ? "#ffce85" : "rgba(166,180,189,0.5)";
+          ctx.lineWidth = 0.8;
+          ctx.strokeRect(o.rect.x + 4, o.rect.y + o.rect.h / 2 - 3, 6, 6);
+          if (o.selected) { ctx.fillStyle = "#ffce85"; ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.textAlign = "left"; ctx.fillText("✓", o.rect.x + 4.6, o.rect.y + o.rect.h - 4); }
+        } else if (o.selected) {
+          ctx.fillStyle = "#ffce85"; ctx.font = "6px 'IBM Plex Mono', monospace"; ctx.textAlign = "left";
           ctx.fillText("✓", o.rect.x + 4, o.rect.y + o.rect.h - 4);
         }
         ctx.fillStyle = o.selected ? "#ffce85" : hov ? "#e3ecf1" : "#c4d0d8";
         ctx.font = "6px 'IBM Plex Mono', monospace";
         ctx.textAlign = "left";
-        ctx.fillText(this.fitText(ctx, o.label, m.rect.w - 18), o.rect.x + 12, o.rect.y + o.rect.h - 4);
+        ctx.fillText(this.fitText(ctx, o.label, m.rect.w - 18), o.rect.x + 13, o.rect.y + o.rect.h - 4);
       }
     }
   }
