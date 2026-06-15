@@ -180,8 +180,11 @@
 
   /* ---------- arrivals / departures feed ---------- */
   // opts.agentId makes the toast actionable: a "View agent" button (zooms to the
-  // dev and opens its panel) plus an "✕" to dismiss. opts.sticky keeps it up
-  // until acted on, so an actionable toast can't vanish before it's clicked.
+  // dev and opens its panel) plus an "✕" to dismiss. Every toast — actionable or
+  // not — fades out on its own after a few seconds; actionable ones linger a
+  // little longer so there's time to click them. At most two actionable toasts
+  // are shown at once; older ones are dropped so questions don't pile up.
+  const ACTIONABLE_MAX = 2;
   function pushFeed(html, color, opts) {
     opts = opts || {};
     const feed = $("#feed");
@@ -200,15 +203,18 @@
       const remove = () => { el.classList.add("expire"); setTimeout(() => el.remove(), 600); };
       $(".fa-view", el).onclick = () => { selectAgent(opts.agentId, true); remove(); };
       $(".fa-x", el).onclick = remove;
+      // cap the number of actionable toasts: drop the oldest so adding this one
+      // leaves at most ACTIONABLE_MAX on screen.
+      const live = feed.querySelectorAll(".feed-item.actionable");
+      for (let i = 0; i <= live.length - ACTIONABLE_MAX; i++) live[i].remove();
     } else {
       el.innerHTML = html;
     }
     feed.appendChild(el);
     while (feed.children.length > 5) feed.removeChild(feed.firstChild);
-    if (!opts.sticky) {
-      setTimeout(() => el.classList.add("expire"), 6500);
-      setTimeout(() => el.remove(), 7300);
-    }
+    const life = opts.agentId ? 9000 : 6500; // actionable toasts stay up a touch longer
+    setTimeout(() => el.classList.add("expire"), life);
+    setTimeout(() => el.remove(), life + 800);
   }
 
   function diffCrew(next) {
@@ -230,7 +236,7 @@
       if (prev === undefined) {
         pushFeed(`<span class="fi">▸</span><b>${esc(a.name)}</b> joined<span class="repo">${esc(a.repo)}</span>`, "var(--active)");
       } else if (prev !== a.state) {
-        if (a.state === "waiting") pushFeed(`<span class="fi">?</span><b>${esc(a.name)}</b> has a question<span class="repo">${esc(a.repo)}</span>`, "var(--waiting)", { agentId: a.id, sticky: true });
+        if (a.state === "waiting") pushFeed(`<span class="fi">?</span><b>${esc(a.name)}</b> has a question<span class="repo">${esc(a.repo)}</span>`, "var(--waiting)", { agentId: a.id });
         else if (a.state === "error") pushFeed(`<span class="fi">✗</span><b>${esc(a.name)}</b> hit an error<span class="repo">${esc(a.repo)}</span>`, "var(--error)");
         else if (a.state === "complete") pushFeed(`<span class="fi">✓</span><b>${esc(a.name)}</b> finished<span class="repo">${esc(a.repo)}</span>`, "var(--complete)");
       }

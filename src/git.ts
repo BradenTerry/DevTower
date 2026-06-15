@@ -674,6 +674,12 @@ export async function listBranches(cwd: string): Promise<string[]> {
   }
 }
 
+/** Switch `cwd` to an existing local branch (`git checkout <branch>`). Throws on
+ *  failure (dirty conflicts, unknown branch, etc.) so the caller can surface it. */
+export async function checkout(cwd: string, branch: string): Promise<void> {
+  await runGit(cwd, ["checkout", branch]);
+}
+
 /** Create a worktree checked out on an EXISTING branch (no -b). Worktrees live
  *  under <repoTopLevel>/.claude/worktrees/<branch-slug>. If the path already
  *  exists, suffixes -1, -2, … are tried. Returns { wtPath }. Throws on failure. */

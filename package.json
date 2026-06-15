@@ -281,6 +281,11 @@
         "command": "devtower.scmRefresh",
         "title": "Refresh",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "devtower.scmCheckout",
+        "title": "Switch Branch",
+        "icon": "$(git-branch)"
       }
     ],
     "submenus": [
