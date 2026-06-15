@@ -742,7 +742,7 @@
     const sig = JSON.stringify([
       a.id, a.name, a.repo, a.state, a.model, a.contextTokens,
       (a.skills || []).join("|"), a.question || "", !!a.external,
-      prFor(a.id) || null,
+      prFor(a.id) || null, a.aiTitle || "",
     ]);
     if (sig === panelSig) {
       const elEl = panel.querySelector(".el-elapsed");
@@ -776,6 +776,7 @@
           <b>${pct === null ? "—" : pct + "%"}${tokens ? `<span class="tk"> ${tokens}</span>` : ""}</b>
         </div>
         <div class="srow"><span class="sl">Model</span><b>${esc(a.model || "—")}</b></div>
+        ${a.aiTitle ? `<div class="srow ai-title-row"><span class="sl">Summary</span><span class="ai-title">${esc(a.aiTitle)}</span></div>` : ""}
         ${a.skills && a.skills.length ? `
         <div class="srow skills-row">
           <span class="sl">Skills</span>

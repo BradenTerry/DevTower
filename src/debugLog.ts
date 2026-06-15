@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
-import * as os from "os";
 
 /**
  * A gated, structured event log for debugging agent discovery, session binding,
@@ -9,8 +8,8 @@ import * as os from "os";
  * default; enable with the `devtower.debugLog` setting (toggled live, no
  * reload). When on, every event is appended as one JSON line to BOTH:
  *   - a "DevTower Debug" output channel (View > Output), for live tailing, and
- *   - <workspace>/.devtower/debug.log (or ~/.devtower/debug.log with no folder),
- *     so a whole session can be diffed/grepped after the fact.
+ *   - the extension's global storage dir (debug.log), so a whole session can be
+ *     diffed/grepped after the fact without leaving files in the workspace.
  *
  * Each line: { t: ISO time, n: monotonic seq, event: "category.name", ...data }.
  * Use dotted event names so a grep like `grep '"bind' debug.log` slices one
@@ -26,6 +25,7 @@ import * as os from "os";
 let channel: vscode.OutputChannel | undefined;
 let filePath: string | undefined;
 let errorFile: string | undefined; // ALWAYS-ON error sink (independent of `enabled`)
+let storageDir: string | undefined; // extension global storage dir, set on init
 let enabled = false;
 let seq = 0;
 
@@ -101,18 +101,14 @@ export function initDebugLog(context: vscode.ExtensionContext): void {
   channel = vscode.window.createOutputChannel("DevTower Debug");
   context.subscriptions.push(channel);
 
-  // Errors are captured UNCONDITIONALLY (the verbose debugLog setting only gates
-  // the chatty discovery/scene trace). They land in the extension's global
-  // storage so a crash can be diagnosed after the fact, even when the user never
-  // turned the trace on. The file is row-rotated by appendRotating (see elog),
-  // so it can't grow without bound; we only set up the directory here.
+  // Both the always-on errors.log and the optional verbose debug.log live in the
+  // extension's global storage (VS Code manages the directory, nothing leaks into
+  // the workspace, and it survives across projects).
   try {
-    const dir = context.globalStorageUri.fsPath;
-    fs.mkdirSync(dir, { recursive: true });
-    errorFile = path.join(dir, "errors.log");
+    storageDir = context.globalStorageUri.fsPath;
+    fs.mkdirSync(storageDir, { recursive: true });
+    errorFile = path.join(storageDir, "errors.log");
   } catch {
-    // any setup failure just disables the file sink — the output channel still
-    // receives errors.
     if (errorFile && !fs.existsSync(path.dirname(errorFile))) errorFile = undefined;
   }
 
@@ -120,13 +116,7 @@ export function initDebugLog(context: vscode.ExtensionContext): void {
     const on = vscode.workspace.getConfiguration("devtower").get<boolean>("debugLog", false);
     if (on === enabled) return;
     if (on) {
-      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
-      filePath = path.join(root, ".devtower", "debug.log");
-      try {
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      } catch {
-        filePath = undefined;
-      }
+      filePath = storageDir ? path.join(storageDir, "debug.log") : undefined;
       enabled = true;
       dlog("debuglog.start", { pid: process.pid, file: filePath, vscode: vscode.version });
     } else {
@@ -143,11 +133,9 @@ export function initDebugLog(context: vscode.ExtensionContext): void {
   );
 }
 
-/** Deterministic path of the verbose debug log, whether or not it exists yet
- *  (mirrors the resolution in initDebugLog so callers agree on the location). */
+/** Absolute path of the verbose debug log (in extension global storage). */
 export function debugLogPath(): string | undefined {
-  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
-  return path.join(root, ".devtower", "debug.log");
+  return storageDir ? path.join(storageDir, "debug.log") : undefined;
 }
 
 /** True when a non-empty verbose debug log is on disk (so the UI can offer to
@@ -176,10 +164,9 @@ export function debugLogArchiveCount(): number {
   return n;
 }
 
-/** Directory that holds the verbose debug log and its archives (.devtower). */
+/** Directory that holds the verbose debug log and its archives. */
 export function debugLogDir(): string | undefined {
-  const p = debugLogPath();
-  return p ? path.dirname(p) : undefined;
+  return storageDir;
 }
 
 /** Reveal the live "DevTower Debug" output channel. */
