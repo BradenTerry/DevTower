@@ -30,7 +30,7 @@ export interface GithubCapabilities {
 // Why each scope is requested, shown verbatim in the settings UI.
 export const SCOPE_HELP: { scope: string; why: string }[] = [
   { scope: "repo", why: "Read pull requests and CI checks on your PRIVATE repositories. Public-only? You can skip this, but private PRs will not appear." },
-  { scope: "read:org", why: "Resolve review requests assigned to you inside organizations (the 'PRs to review' billboard)." },
+  { scope: "read:org", why: "Resolve review requests assigned to you inside organizations." },
 ];
 
 let ctx: vscode.ExtensionContext | undefined;

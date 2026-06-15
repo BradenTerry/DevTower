@@ -5,7 +5,7 @@ import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeAddExisting, worktreeForPr, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
+import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
@@ -13,11 +13,6 @@ import { ClaudeDiscovery } from "./claude";
 import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
-
-/** POSIX single-quote a string so it survives as one shell argument. */
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
 
 /** One usage limit window (5-hour or weekly) from Claude's rate_limits feed. */
 interface UsageWindow {
@@ -403,17 +398,6 @@ export class ConsolePanel {
         // + WORKTREE on an island → create a new worktree room (no agent yet)
         if (typeof m.island === "string") await this.addWorktree(m.island);
         break;
-      case "assignReview":
-        if (m.pr && typeof m.pr === "object") {
-          await this.assignReview(m.pr, {
-            skills: Array.isArray(m.skills) ? m.skills.filter((s: any) => typeof s === "string") : undefined,
-            effort: typeof m.effort === "string" ? m.effort : undefined,
-            instructions: typeof m.instructions === "string" ? m.instructions : undefined,
-            agent: typeof m.agent === "string" ? m.agent : undefined,
-            saveDefault: !!m.saveDefault,
-          });
-        }
-        break;
       case "removeRoom":
         // note: must not truthiness-check — a legacy room can have name ""
         if (typeof m.room === "string") await this.removeRoom(m.room);
@@ -421,16 +405,8 @@ export class ConsolePanel {
       case "removeWorktree":
         if (typeof m.worktree === "string") await this.removeWorktree(m.worktree, typeof m.island === "string" ? m.island : "");
         break;
-      case "sendBranchToWorktree":
-        if (typeof m.repo === "string" && typeof m.branch === "string") {
-          await this.sendBranchToWorktree(m.repo, m.branch);
-        }
-        break;
       case "cdAgent":
         if (id) await this.cdAgent(id, m.room, m.ghost);
-        break;
-      case "refreshPrs":
-        void this.prs.refresh();
         break;
       case "getSettings":
         await this.postSettings();
@@ -445,7 +421,7 @@ export class ConsolePanel {
       case "clearGithubToken":
         await clearGithubToken();
         await this.postSettings();
-        void this.prs.reauth(); // drop the boards / PR billboard now that the token is gone
+        void this.prs.reauth(); // drop the boards now that the token is gone
         break;
       case "getHooks":
         await this.postHooks();
@@ -529,9 +505,6 @@ export class ConsolePanel {
       debug: cfg.get<boolean>("debugLog", false),
       debugLogExists: debugLogExists(),
       debugLogArchives: debugLogArchiveCount(),
-      reviewSkills: cfg.get<string[]>("reviewSkills", []),
-      reviewDefaults: cfg.get<object>("reviewDefaults", {}),
-      reviewAgents: this.discoverReviewAgents(),
     });
   }
 
@@ -540,8 +513,6 @@ export class ConsolePanel {
       type: "prs",
       crew: this.prs.getCrew(),
       review: this.prs.getReview(),
-      repos: this.prs.getRepos(),
-      viewer: this.prs.getViewer(),
       connected: this.prs.isConnected(),
       // first GitHub poll still in flight → the webview shows a spinner instead of
       // a premature "not connected" (isConnected() reads false until that completes)
@@ -915,41 +886,6 @@ export class ConsolePanel {
     }
   }
 
-  /** Send an existing branch to a new worktree room (from the billboard). Guards
-   *  against double-fire and idempotent on an already-checked-out branch. */
-  private async sendBranchToWorktree(shortName: string, branch: string): Promise<void> {
-    const key = `sbw::${shortName}::${branch}`;
-    if (this.addingRooms.has(key)) return;
-    this.addingRooms.add(key);
-    try {
-      const dir = this.dirForRepo(shortName);
-      if (!dir || !(await isRepo(dir))) {
-        vscode.window.showWarningMessage(`DevTower: no local repo found for "${shortName}".`);
-        return;
-      }
-      // Idempotent: if a worktree room already exists for this island+branch, do nothing
-      const existing = this.getWorktreeRooms().find((w) => w.island === shortName && w.branch === branch);
-      if (existing) return;
-
-      let wtPath: string;
-      try {
-        const result = await worktreeAddExisting(dir, branch);
-        wtPath = result.wtPath;
-      } catch (e) {
-        vscode.window.showErrorMessage(`DevTower: worktree creation failed — ${String(e).slice(0, 160)}`);
-        return;
-      }
-
-      const rows = this.getWorktreeRooms();
-      rows.push({ island: shortName, path: wtPath, branch });
-      await this.saveWorktreeRooms(rows);
-      this.postState();
-      void this.refreshState();
-    } finally {
-      this.addingRooms.delete(key);
-    }
-  }
-
   /** Start the agent's real Claude CLI session in its terminal (worktree cwd);
    *  devtower.launchCommand takes precedence if the user configured one. */
   private launchSession(id: string): void {
@@ -1069,27 +1005,6 @@ export class ConsolePanel {
       if (gp && branch) prTargets.push({ cwd: gp, repo: path.basename(gp), branch });
     }
     this.prs.setExtraTargets(prTargets);
-    // feed tracked repo roots to PrService for the branch board
-    const repoTargets: { cwd: string; shortName: string; checkedOutBranches: string[] }[] = [];
-    for (const room of this.getRooms()) {
-      if (!room.path || !fs.existsSync(room.path)) continue;
-      // collect branches checked out across this island's main checkout + worktree rooms
-      const checkedOut = new Set<string>();
-      const mainBranch = branches.get(room.path);
-      if (mainBranch) checkedOut.add(mainBranch);
-      for (const w of this.getWorktreeRooms()) {
-        if (w.island === room.name && w.branch) checkedOut.add(w.branch);
-      }
-      // also pick up any worktrees git knows about (covers worktrees added outside DevTower)
-      try {
-        const wtList = await worktreeList(room.path);
-        for (const entry of wtList) {
-          if (entry.branch && entry.branch !== "detached") checkedOut.add(entry.branch);
-        }
-      } catch { /* best effort */ }
-      repoTargets.push({ cwd: room.path, shortName: room.name, checkedOutBranches: [...checkedOut] });
-    }
-    this.prs.setRepoTargets(repoTargets);
     // only push (and wake the render loop) when something actually changed, so
     // the idle poll doesn't defeat the webview's park-when-quiet power saving
     const sig = JSON.stringify([...boards].sort());
@@ -1097,144 +1012,6 @@ export class ConsolePanel {
       this.lastWtSignature = sig;
       this.postState(); // pruned rooms also need a re-sync so they stop rendering
     }
-  }
-
-  /** Spawn a reviewer agent for a PR, configured by the Review Dispatch card:
-   *  drops a dev into the PR's repo, tags it with reviewOf (so the scene draws
-   *  the diegetic review), then seeds its Claude session — checkout the PR, run
-   *  each chosen skill as its own slash command, and append any free-text focus.
-   *  With no skills selected it falls back to a generic full review. */
-  private async assignReview(
-    pr: { number?: number; repo?: string; branch?: string; url?: string; title?: string },
-    opts: { skills?: string[]; effort?: string; instructions?: string; agent?: string; saveDefault?: boolean } = {}
-  ): Promise<void> {
-    if (typeof pr.number !== "number" || !pr.repo) return;
-    const key = `review-${pr.number}-${pr.repo}`.replace(/[^A-Za-z0-9_-]+/g, "-");
-    if (this.addingRooms.has(key)) return; // guard double-clicks
-    this.addingRooms.add(key);
-    try {
-      const repoDir = this.dirForRepo(pr.repo);
-      if (!repoDir) {
-        vscode.window.showWarningMessage(`DevTower: no local directory known for "${pr.repo}".`);
-        return;
-      }
-
-      const cfg = vscode.workspace.getConfiguration("devtower");
-      const skills = (opts.skills ?? []).map((s) => s.trim()).filter(Boolean);
-      const effort = (opts.effort ?? "").trim();
-      const instructions = (opts.instructions ?? "").trim();
-      const agentMd = (opts.agent ?? "").trim();
-
-      // persist the operator's choices as the new default dispatch when asked
-      if (opts.saveDefault) {
-        await cfg.update(
-          "reviewDefaults",
-          { skills, effort: effort || undefined, instructions: instructions || undefined, agent: agentMd || undefined },
-          vscode.ConfigurationTarget.Workspace
-        );
-      }
-
-      // review the PR in its OWN worktree so the main checkout is never disturbed.
-      // The worktree is added detached; `gh pr checkout` (below) brings the PR
-      // branch (incl. forks) into it. Falls back to the repo dir if not a git repo.
-      const island = this.getRooms().find((r) => r.name === pr.repo || r.name === pr.repo!.split("/").pop())?.name
-        ?? pr.repo.split("/").pop() ?? pr.repo;
-      let cwd = repoDir;
-      let wtCreated = false;
-      if (await isRepo(repoDir)) {
-        try {
-          const wt = await worktreeForPr(repoDir, pr.number);
-          cwd = wt.wtPath;
-          wtCreated = true;
-          // register it as a worktree room so the reviewer gets its own building
-          const rows = this.getWorktreeRooms().filter((w) => w.path !== wt.wtPath);
-          rows.push({ island, path: wt.wtPath, branch: pr.branch || `pr/${pr.number}`, base: wt.base });
-          await this.saveWorktreeRooms(rows);
-        } catch (e) {
-          vscode.window.showWarningMessage(`DevTower: couldn't create a review worktree — reviewing in the main checkout instead. ${String(e).slice(0, 120)}`);
-        }
-      }
-
-      this.store.apply({
-        id: key,
-        name: `review #${pr.number}`,
-        model: "—",
-        repo: island,
-        worktree: cwd,
-        branch: pr.branch || `pr/${pr.number}`,
-        state: "active",
-        task: `Reviewing PR #${pr.number}: ${pr.title ?? ""}`.trim(),
-        elapsed: "new",
-        reviewOf: { prId: `${pr.repo}#${pr.number}`, number: pr.number, repo: pr.repo, url: pr.url },
-      });
-      this.store.setSelected(key);
-      if (wtCreated) { this.postState(); void this.refreshState(); } // render the new room + board
-
-      // effort flag only applies to the review skills that take one
-      const EFFORT_SKILLS = new Set(["code-review", "review"]);
-      const skillLine = (s: string): string => `/${s}${effort && EFFORT_SKILLS.has(s) ? ` ${effort}` : ""}`;
-
-      const launch = cfg.get<string>("launchCommand", "").trim();
-      const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim() || "claude";
-      // a chosen agent md becomes the reviewer's system prompt (non-launch path)
-      const sysFlag = agentMd && !launch ? ` --append-system-prompt "$(cat ${shellQuote(agentMd)})"` : "";
-
-      if (skills.length) {
-        // interactive session: check out the PR branch into this worktree, then
-        // fire each chosen skill as its own slash command against that diff.
-        if (launch) this.terminals.reveal(key); // launchCommand runs on first open
-        else this.terminals.send(key, `${claudeCmd}${sysFlag}`);
-        if (wtCreated) this.terminals.send(key, `gh pr checkout ${pr.number}`);
-        for (const s of skills) this.terminals.send(key, skillLine(s));
-        if (instructions) this.terminals.send(key, instructions);
-      } else {
-        // no skills → generic one-shot review prompt (prior behavior)
-        const extra = instructions ? ` Focus on: ${instructions}.` : "";
-        const prompt =
-          `Please review pull request #${pr.number} in ${pr.repo} (${pr.url}). ` +
-          (wtCreated
-            ? `Run \`gh pr checkout ${pr.number}\` to bring the change into this worktree, then review the diff `
-            : `Use \`gh pr view ${pr.number}\` and \`gh pr diff ${pr.number}\` to read the change, then review it `) +
-          `with concrete, actionable feedback.${extra}`;
-        if (launch) {
-          this.terminals.reveal(key);
-          this.terminals.send(key, prompt);
-        } else {
-          this.terminals.send(key, `${claudeCmd}${sysFlag} ${shellQuote(prompt)}`);
-        }
-      }
-    } finally {
-      this.addingRooms.delete(key);
-    }
-  }
-
-  /** Discover reviewer agent definitions: markdown files under `.claude/agents`
-   *  in each workspace folder plus the user's global `~/.claude/agents`. Returns
-   *  {label, path} — label is the file stem (or a `name:` frontmatter value). */
-  private discoverReviewAgents(): { label: string; path: string }[] {
-    const dirs: string[] = [];
-    for (const f of vscode.workspace.workspaceFolders ?? []) dirs.push(path.join(f.uri.fsPath, ".claude", "agents"));
-    dirs.push(path.join(os.homedir(), ".claude", "agents"));
-    const out: { label: string; path: string }[] = [];
-    const seen = new Set<string>();
-    for (const d of dirs) {
-      let files: string[] = [];
-      try { files = fs.readdirSync(d); } catch { continue; }
-      for (const fn of files) {
-        if (!fn.endsWith(".md")) continue;
-        const p = path.join(d, fn);
-        if (seen.has(p)) continue;
-        seen.add(p);
-        let label = fn.replace(/\.md$/, "");
-        try {
-          const head = fs.readFileSync(p, "utf8").slice(0, 600);
-          const m = /^name:\s*(.+)$/m.exec(head);
-          if (m) label = m[1].trim().replace(/^["']|["']$/g, "");
-        } catch { /* keep the stem */ }
-        out.push({ label, path: p });
-      }
-    }
-    return out;
   }
 
   /** Best-effort working directory for a repo: a reserved room, an agent already
@@ -1588,7 +1365,6 @@ export class ConsolePanel {
     </div>
     <div class="spacer"></div>
     <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
-    <button class="iconbtn" id="prbtn" title="Pull requests">⇄<span class="nbadge" id="pr-badge" hidden>0</span></button>
     <button class="iconbtn" id="ecobtn" title="Efficiency mode (auto-on when on battery)">🔋</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
   </header>
@@ -1608,9 +1384,6 @@ export class ConsolePanel {
 
   <!-- settings overlay (GitHub token + capabilities) -->
   <div class="settings-scrim" id="settings" hidden></div>
-
-  <!-- review dispatch card (modal) -->
-  <div class="rd-scrim" id="reviewdispatch" hidden></div>
 
   <!-- arrivals / departures feed -->
   <div class="feed" id="feed"></div>

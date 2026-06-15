@@ -48,14 +48,7 @@
     window.DevTowerCrew.onCd((id, target) =>
       vscode.postMessage({ type: "cdAgent", id, room: target.room, ghost: target.ghost })
     );
-    window.DevTowerCrew.onAssignReview((pr) => openReviewDispatch(pr));
-    window.DevTowerCrew.onRefreshPrs(() => vscode.postMessage({ type: "refreshPrs" }));
     window.DevTowerCrew.onOpenPr((url) => vscode.postMessage({ type: "action", act: "openPr", url }));
-    if (window.DevTowerCrew.onSendBranchToWorktree) {
-      window.DevTowerCrew.onSendBranchToWorktree((repo, branch) =>
-        vscode.postMessage({ type: "sendBranchToWorktree", repo, branch })
-      );
-    }
     if (DevTowerCrew.onDebug) DevTowerCrew.onDebug((event, data) => vscode.postMessage({ type: "debug", event, data }));
     window.DevTowerCrew.start();
   }
@@ -229,117 +222,6 @@
   function prFor(agentId) {
     return prs.crew.find((p) => p.agentId === agentId);
   }
-
-  // count of PRs awaiting the operator's review, shown on the HUD PR button
-  function renderPrBadge() {
-    const n = prs.review.length;
-    const b = $("#pr-badge");
-    b.hidden = n === 0;
-    b.textContent = n;
-  }
-
-  /* ---------- review dispatch card ---------- */
-  let reviewSkills = ["code-review", "security-review", "review", "simplify", "verify"];
-  let reviewDefaults = {};
-  let reviewAgents = []; // {label, path} discovered from .claude/agents
-  const EFFORT_LEVELS = ["low", "medium", "high", "max"];
-  const EFFORT_SKILLS = new Set(["code-review", "review"]);
-
-  function openReviewDispatch(pr) {
-    const scrim = $("#reviewdispatch");
-    const sel = new Set((reviewDefaults.skills || []).filter((s) => reviewSkills.includes(s)));
-    let effort = reviewDefaults.effort || "high";
-    const instr = reviewDefaults.instructions || "";
-    let agent = reviewAgents.some((a) => a.path === reviewDefaults.agent) ? reviewDefaults.agent : "";
-
-    const chips = reviewSkills
-      .map((s) => `<span class="rd-chip ${sel.has(s) ? "on" : ""}" data-skill="${esc(s)}">${esc(s)}</span>`)
-      .join("");
-    const seg = EFFORT_LEVELS
-      .map((l) => `<button data-effort="${l}" class="${l === effort ? "on" : ""}">${l}</button>`)
-      .join("");
-    const agentOpts = [`<option value="" ${agent === "" ? "selected" : ""}>None (default prompt)</option>`]
-      .concat(reviewAgents.map((a) => `<option value="${esc(a.path)}" ${a.path === agent ? "selected" : ""}>${esc(a.label)}</option>`))
-      .join("");
-    const agentField = reviewAgents.length
-      ? `<div class="rd-field">
-          <span class="rd-label">Agent</span>
-          <select class="rd-select" id="rd-agent">${agentOpts}</select>
-        </div>`
-      : "";
-
-    scrim.innerHTML = `
-      <div class="rd-card" role="dialog" aria-modal="true">
-        <div class="rd-head">
-          <span class="rd-ic">⇄</span>
-          <div class="rd-t">
-            <div class="rd-kicker">Dispatch review</div>
-            <h2>${esc(pr.title || "")}</h2>
-            <div class="rd-sub">${esc(pr.repo)} · #${pr.number}</div>
-          </div>
-          <button class="rd-close" id="rd-close" title="Close (Esc)">✕</button>
-        </div>
-        <div class="rd-field">
-          <span class="rd-label">Skills</span>
-          <div class="rd-chips" id="rd-chips">${chips}</div>
-        </div>
-        <div class="rd-field" id="rd-effort-field">
-          <span class="rd-label">Effort</span>
-          <div class="rd-seg" id="rd-effort">${seg}</div>
-        </div>
-        ${agentField}
-        <div class="rd-field">
-          <span class="rd-label">Instructions</span>
-          <textarea class="rd-ta" id="rd-instr" placeholder="What should the reviewer focus on? (optional)">${esc(instr)}</textarea>
-        </div>
-        <div class="rd-foot">
-          <label class="rd-default"><input type="checkbox" id="rd-default" /> Save as default</label>
-          <span class="spacer"></span>
-          <button class="rd-btn" id="rd-cancel">Cancel</button>
-          <button class="rd-btn primary" id="rd-go">Dispatch</button>
-        </div>
-      </div>`;
-    scrim.hidden = false;
-
-    const effortField = $("#rd-effort-field", scrim);
-    const syncEffort = () => {
-      // effort only matters when a skill that takes one is selected
-      effortField.hidden = ![...sel].some((s) => EFFORT_SKILLS.has(s));
-    };
-    syncEffort();
-
-    $$(".rd-chip", scrim).forEach((c) => (c.onclick = () => {
-      const s = c.dataset.skill;
-      if (sel.has(s)) sel.delete(s); else sel.add(s);
-      c.classList.toggle("on");
-      syncEffort();
-    }));
-    $$("#rd-effort button", scrim).forEach((b) => (b.onclick = () => {
-      effort = b.dataset.effort;
-      $$("#rd-effort button", scrim).forEach((x) => x.classList.toggle("on", x === b));
-    }));
-
-    const close = () => { scrim.hidden = true; scrim.innerHTML = ""; };
-    $("#rd-close", scrim).onclick = close;
-    $("#rd-cancel", scrim).onclick = close;
-    scrim.onclick = (e) => { if (e.target === scrim) close(); };
-    $("#rd-go", scrim).onclick = () => {
-      const agentEl = $("#rd-agent", scrim);
-      vscode.postMessage({
-        type: "assignReview",
-        pr,
-        skills: [...sel],
-        effort,
-        instructions: $("#rd-instr", scrim).value.trim(),
-        agent: agentEl ? agentEl.value : "",
-        saveDefault: $("#rd-default", scrim).checked,
-      });
-      close();
-    };
-  }
-
-  function reviewDispatchOpen() { return !$("#reviewdispatch").hidden; }
-  function closeReviewDispatch() { const s = $("#reviewdispatch"); s.hidden = true; s.innerHTML = ""; }
 
   /* ---------- settings overlay (tabbed: General / Hooks / GitHub) ---------- */
   let settings = null; // last { caps, scopeHelp } pushed by the extension
@@ -882,12 +764,6 @@
   };
 
   /* ---------- global wiring ---------- */
-  // the HUD PR button flies the camera to the review billboard in the scene
-  // (and refreshes the PR list) rather than opening a side panel
-  $("#prbtn").onclick = () => {
-    vscode.postMessage({ type: "refreshPrs" });
-    if (window.DevTowerCrew) window.DevTowerCrew.focusReviewBoard();
-  };
   $("#settingsbtn").onclick = openSettings;
   $("#lbbtn").onclick = () => (leaderboardOpen() ? closeLeaderboard() : openLeaderboard());
 
@@ -895,7 +771,6 @@
     if (e.key === "Escape") {
       if (leaderboardOpen()) closeLeaderboard();
       else if (settingsOpen()) closeSettings();
-      else if (reviewDispatchOpen()) closeReviewDispatch();
       else if (panelOpen) closePanelToRoom();
     }
   });
@@ -917,7 +792,6 @@
       scheduleLeaderboard(); // patch the open board live, coalesced to one repaint/frame
     } else if (m.type === "prs") {
       prs = { crew: m.crew || [], review: m.review || [] };
-      renderPrBadge();
       if (panelOpen) renderPanel();
       // tell the tower which branches have an open PR (shown on each board)
       if (window.DevTowerCrew) {
@@ -925,11 +799,6 @@
         if (window.DevTowerCrew.setPrLoading) window.DevTowerCrew.setPrLoading(!!m.loading); // first poll → spinner
         const branches = [...prs.crew, ...prs.review].map((p) => p.branch).filter(Boolean);
         window.DevTowerCrew.setPrBranches(branches);
-        // feed the central billboard the grouped branch board (one group per repo,
-        // one row per branch) plus the viewer login that powers the "me" filters
-        if (window.DevTowerCrew.setBranchBoard) {
-          window.DevTowerCrew.setBranchBoard(Array.isArray(m.repos) ? m.repos : [], m.viewer);
-        }
       }
     } else if (m.type === "usage") {
       renderUsage(m.usage);
@@ -940,9 +809,6 @@
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk
       if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug); // mirror into the scene
       if (settingsOpen()) renderSettings(); // reflect an external toggle live
-      if (Array.isArray(m.reviewSkills) && m.reviewSkills.length) reviewSkills = m.reviewSkills;
-      if (m.reviewDefaults && typeof m.reviewDefaults === "object") reviewDefaults = m.reviewDefaults;
-      if (Array.isArray(m.reviewAgents)) reviewAgents = m.reviewAgents;
     } else if (m.type === "settings") {
       settings = { caps: m.caps, scopeHelp: m.scopeHelp };
       // Only the GitHub pane consumes caps; re-rendering the General pane here

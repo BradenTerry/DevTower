@@ -179,8 +179,8 @@ export const SCENARIOS: Scenario[] = [
     prs: { crew: [], review: [] },
   },
   {
-    // no GitHub token: the billboard + board PR cell show the disconnected glyph
-    // instead of mock data or a misleading empty state
+    // no GitHub token: the board PR cell shows the disconnected glyph instead of
+    // mock data or a misleading empty state
     name: "disconnected",
     config: { eco: false },
     connected: false,
@@ -203,7 +203,7 @@ export const SCENARIOS: Scenario[] = [
     settings: {
       scopeHelp: [
         { scope: "repo", why: "Read pull requests and CI checks on your PRIVATE repositories. Public-only? You can skip this, but private PRs will not appear." },
-        { scope: "read:org", why: "Resolve review requests assigned to you inside organizations (the 'PRs to review' billboard)." },
+        { scope: "read:org", why: "Resolve review requests assigned to you inside organizations." },
       ],
       caps: {
         connected: true, login: "BradenTerry", tokenType: "classic", scopes: ["repo", "read:org"],
