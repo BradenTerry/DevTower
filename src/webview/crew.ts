@@ -3203,9 +3203,25 @@ class PixelCrew {
     if (!bd || bd.missing || !bd.pr?.url) return null;
     const b = boardRect(r.x0, r.baseY);
     if (b.w < 20 || b.h < 14) return null;
-    const innerR = b.x + b.w - 4;
-    const bodyTop = b.y + 12;
-    return { x: innerR - 6, y: bodyTop, w: 6, h: 6, url: bd.pr.url };
+    // x math mirrors drawBoard's PR cell: the ↗ sits right after the #number,
+    // which sits right after the "PR" heading (and an optional DRAFT badge).
+    const pad = 4;
+    const innerL = b.x + pad;
+    const innerR = b.x + b.w - pad;
+    const prW = Math.min(96, (innerR - innerL) * 0.42);
+    const gitR = innerR - prW - 4;
+    const px = gitR + 4;
+    const py = b.y + 12 + 3; // bodyTop + 3, the heading baseline
+    const ctx = this.ctx;
+    ctx.font = "3px 'IBM Plex Mono', monospace";
+    let nx = px + ctx.measureText("PR").width + 3;
+    if (bd.pr.draft) {
+      ctx.font = "bold 2.8px 'Martian Mono', monospace";
+      nx += ctx.measureText("DRAFT").width + 2;
+    }
+    ctx.font = "bold 6px 'Martian Mono', monospace";
+    const x = nx + ctx.measureText(`#${bd.pr.number}`).width + 3;
+    return { x, y: py - 5, w: 6, h: 6, url: bd.pr.url };
   }
 
   /** Draw a number, rolling the old value up and out while the new value rises in
@@ -3490,7 +3506,7 @@ class PixelCrew {
       }
     });
 
-    /* ---- right: PR ---- */
+    /* ---- right: PR (heading · #number · ↗ grouped together, left-aligned) ---- */
     const px = gitR + 4;
     cellGlow(gitR + 2, innerR - gitR - 2, cp.pr);
     ctx.fillStyle = "rgba(120,150,170,0.14)";
@@ -3505,18 +3521,21 @@ class PixelCrew {
     const loadingPr = !bd.pr && (!bd.prReady || this.prLoading);
     const pr = bd.pr;
     if (pr) {
-      if (pr.draft) { // draft badge by the PR label
+      // number + ↗ sit right next to "PR" and share its baseline, instead of
+      // floating off at the right edge (x math mirrored in prOpenButton).
+      ctx.font = "3px 'IBM Plex Mono', monospace";
+      let nx = px + ctx.measureText("PR").width + 3;
+      if (pr.draft) { // draft badge between the label and the number
         ctx.font = "bold 2.8px 'Martian Mono', monospace";
         ctx.fillStyle = "rgba(180,190,198,0.85)";
-        ctx.fillText("DRAFT", px + 7, py);
+        ctx.fillText("DRAFT", nx, py);
+        nx += ctx.measureText("DRAFT").width + 2;
       }
       ctx.font = "bold 6px 'Martian Mono', monospace";
       ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
-      ctx.textAlign = "right";
-      ctx.fillText(`#${pr.number}`, innerR - 8, py + 0.4); // leave room for the ↗ button
-      ctx.textAlign = "left";
-      // open-in-GitHub button (↗) at the top-right of the PR cell
-      const ob = { x: innerR - 6, y: bodyTop, w: 6, h: 6 };
+      ctx.fillText(`#${pr.number}`, nx, py);
+      // open-in-GitHub button (↗) right after the number, centred on its line
+      const ob = { x: nx + ctx.measureText(`#${pr.number}`).width + 3, y: py - 5, w: 6, h: 6 };
       const obHov = !!bd.pr?.url && this.hov("openpr:" + bd.pr.url);
       ctx.fillStyle = obHov ? "rgba(127,184,223,0.44)" : "rgba(127,184,223,0.20)"; // accent chip, brighter on hover
       ctx.fillRect(ob.x, ob.y, ob.w, ob.h);
