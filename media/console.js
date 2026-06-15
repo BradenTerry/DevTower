@@ -520,10 +520,15 @@
       <h3>General</h3>
       <div class="s-row">
         <div class="s-row-t">
-          <div class="s-row-name">Efficiency mode</div>
-          <div class="s-row-sub">Reduce animation and CPU use. Turns on automatically when on battery.</div>
+          <div class="s-row-name">Performance</div>
+          <div class="s-row-sub">Animation frame rate while the tower is moving. It still parks when nothing animates.</div>
         </div>
-        <button class="s-toggle ${eco ? "on" : ""}" id="s-eco" role="switch" aria-checked="${eco}"><span class="knob"></span></button>
+        <div class="s-seg" id="s-perf" role="radiogroup" aria-label="Performance mode">
+          ${PERF_MODES.map((p) => `
+            <button class="s-seg-btn ${perf === p.id ? "on" : ""}" data-perf="${p.id}" role="radio" aria-checked="${perf === p.id}">
+              <span class="s-seg-name">${p.name}</span><span class="s-seg-fps">${p.fps} fps</span>
+            </button>`).join("")}
+        </div>
       </div>`;
   }
 
@@ -623,9 +628,17 @@
     const clear = $("#s-clear", s);
     if (clear) clear.onclick = () => vscode.postMessage({ type: "clearGithubToken" });
 
-    // General-tab wiring
-    const ecoT = $("#s-eco", s);
-    if (ecoT) ecoT.onclick = () => { applyEco(!eco); vscode.postMessage({ type: "setEco", on: eco }); renderSettings(); };
+    // General-tab wiring: pick a performance mode (segmented control)
+    const perfSeg = $("#s-perf", s);
+    if (perfSeg) perfSeg.querySelectorAll("[data-perf]").forEach((btn) => {
+      btn.onclick = () => {
+        const mode = btn.getAttribute("data-perf");
+        if (mode === perf) return;
+        applyPerf(mode);
+        vscode.postMessage({ type: "setPerf", mode });
+        renderSettings();
+      };
+    });
 
     // Debug-tab wiring: flip locally for an instant response, mirror into the
     // scene, and persist to devtower.debugLog (the host echoes it back via config)
@@ -757,18 +770,23 @@
     }));
   }
 
-  /* ---------- efficiency mode ---------- */
-  // defaults off; the saved setting arrives via the "config" message, and each
-  // click persists the new choice back to settings
-  let eco = false;
+  /* ---------- performance mode ---------- */
+  // defaults to "balanced"; the saved setting arrives via the "config" message,
+  // and each pick persists the new choice back to settings
+  const PERF_MODES = [
+    { id: "smooth", name: "Smooth", fps: 15 },
+    { id: "balanced", name: "Balanced", fps: 10 },
+    { id: "eco", name: "Eco", fps: 6 },
+  ];
+  let perf = "balanced";
   let debug = false; // devtower.debugLog; arrives via the "config" message
   let dbgLogExists = false; // whether a captured log is on disk (config message)
   let dbgArchives = 0; // number of rotated archive files on disk (config message)
-  function applyEco(on) {
-    eco = !!on;
-    if (window.DevTowerCrew) window.DevTowerCrew.setEco(eco);
+  function applyPerf(mode) {
+    perf = PERF_MODES.some((p) => p.id === mode) ? mode : "balanced";
+    if (window.DevTowerCrew && DevTowerCrew.setPerf) DevTowerCrew.setPerf(perf);
   }
-  applyEco(false);
+  applyPerf("balanced");
 
   /* ---------- global wiring ---------- */
   $("#settingsbtn").onclick = openSettings;
@@ -810,7 +828,7 @@
     } else if (m.type === "usage") {
       renderUsage(m.usage);
     } else if (m.type === "config") {
-      applyEco(!!m.eco); // saved efficiency-mode preference (default off)
+      applyPerf(m.perf || "balanced"); // saved performance-mode preference
       debug = !!m.debug; // authoritative devtower.debugLog state from the host
       dbgLogExists = !!m.debugLogExists; // a captured log is on disk
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk

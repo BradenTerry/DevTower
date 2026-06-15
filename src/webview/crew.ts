@@ -7,7 +7,8 @@
  * - Bound rooms show a "+ DEV" button: spawn an agent there (the extension
  *   asks worktree vs project dir).
  *
- * Power model: ~10fps animation tick (6fps eco); renders only on ticks or
+ * Power model: perf-mode animation tick (smooth 15fps / balanced 10fps /
+ * eco 6fps); renders only on ticks or
  * camera motion; hard-stop when hidden. Same window.DevTowerCrew API as before,
  * plus setRooms / onReserve / onAddAgent. */
 
@@ -544,7 +545,8 @@ class PixelCrew {
   private frame = 0;
   private marqueeOn = false; // a PR title marquee is scrolling → keep the loop awake
   private dirty = true;
-  private eco = false;
+  private eco = false; // reduced-particle mode (perf "eco")
+  private tickMs = 100; // animation tick interval; set by perf mode (100=10fps)
   // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
   // viewport so rooms frame into the visible area and stay clickable.
   // insetL/insetR are the TARGETs; curInsetL/curInsetR are the animated values
@@ -612,6 +614,9 @@ class PixelCrew {
       return { mx: e.clientX - rect.left, my: e.clientY - rect.top };
     };
     canvas.addEventListener("pointerdown", (e) => {
+      // the scene owns this gesture (pan / drag-to-relocate); stop the browser
+      // from starting a native selection that would highlight the page instead.
+      e.preventDefault();
       canvas.setPointerCapture(e.pointerId);
       // grabbing a toon begins a drag-to-relocate gesture, not a camera pan.
       // An active agent can't be relocated (its session is mid-task), so the
@@ -1569,9 +1574,17 @@ class PixelCrew {
     }
     this.invalidate();
   }
-  setEco(on: boolean) {
-    this.eco = on;
+  /** Apply a performance mode: sets the animation tick rate and whether the
+   *  cheap particle effects are suppressed. "smooth" 15fps, "balanced" 10fps
+   *  (full effects), "eco" 6fps (reduced particles). */
+  setPerf(mode: string) {
+    this.tickMs = mode === "smooth" ? 66 : mode === "eco" ? 166 : 100;
+    this.eco = mode === "eco";
     this.invalidate();
+  }
+  /** Back-compat for the old boolean toggle. */
+  setEco(on: boolean) {
+    this.setPerf(on ? "eco" : "balanced");
   }
 
   resize() {
@@ -1672,7 +1685,7 @@ class PixelCrew {
       const dt = Math.min(250, now - this.lastNow);
       this.lastNow = now;
 
-      const tickMs = this.eco ? 166 : 100;
+      const tickMs = this.tickMs;
       this.acc += dt;
       let ticked = false;
       while (this.acc >= tickMs) {
@@ -4276,6 +4289,9 @@ class PixelCrew {
   },
   setEco(on: boolean) {
     this._instance?.setEco(on);
+  },
+  setPerf(mode: string) {
+    this._instance?.setPerf(mode);
   },
   setInsets(left: number, right: number) {
     this._instance?.setInsets(left, right);

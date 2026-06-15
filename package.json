@@ -350,7 +350,23 @@
         "devtower.efficiencyMode": {
           "type": "boolean",
           "default": false,
-          "description": "Reduce animation/particle work in the tower to save CPU. Toggle from the ⚡ button in the tower; your choice is saved here."
+          "deprecationMessage": "Replaced by devtower.performanceMode. A saved `true` is read as the \"eco\" mode.",
+          "description": "Deprecated: use devtower.performanceMode. Reduce animation/particle work in the tower to save CPU."
+        },
+        "devtower.performanceMode": {
+          "type": "string",
+          "default": "balanced",
+          "enum": [
+            "smooth",
+            "balanced",
+            "eco"
+          ],
+          "enumDescriptions": [
+            "Smooth - 15 fps animation. Most fluid motion, highest CPU.",
+            "Balanced - 10 fps animation, full effects. The default.",
+            "Eco - 6 fps animation, reduced particles. Lowest CPU/battery use."
+          ],
+          "description": "How much animation work the tower does. The scene still only redraws while something is moving and parks when idle; this sets the frame rate (and particle detail) while it is animating. Pick from the General tab in the tower's Settings."
         },
         "devtower.claudeCommand": {
           "type": "string",

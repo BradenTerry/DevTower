@@ -290,9 +290,9 @@ export class ConsolePanel {
           this.panel.webview.postMessage({ type: "openSettings", tab });
         }
         break;
-      case "setEco":
-        // operator toggled efficiency mode → persist their choice
-        await this.persistToggle("efficiencyMode", !!m.on);
+      case "setPerf":
+        // operator picked a performance mode → persist their choice
+        await this.persistValue("performanceMode", String(m.mode));
         break;
       case "setDebug": {
         // operator toggled debug logging from the Settings > Debug tab. Persisting
@@ -496,13 +496,18 @@ export class ConsolePanel {
    *  while logging kept running. Mirror the new value into every scope that
    *  currently defines the key so the override can't keep the old state. */
   private async persistToggle(key: string, on: boolean): Promise<void> {
+    await this.persistValue(key, on);
+  }
+
+  /** Like persistToggle but for any value type (e.g. the performanceMode enum). */
+  private async persistValue(key: string, value: unknown): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("devtower");
-    const info = cfg.inspect<boolean>(key);
-    await cfg.update(key, on, vscode.ConfigurationTarget.Global);
+    const info = cfg.inspect(key);
+    await cfg.update(key, value, vscode.ConfigurationTarget.Global);
     if (info?.workspaceValue !== undefined)
-      await cfg.update(key, on, vscode.ConfigurationTarget.Workspace);
+      await cfg.update(key, value, vscode.ConfigurationTarget.Workspace);
     if (info?.workspaceFolderValue !== undefined)
-      await cfg.update(key, on, vscode.ConfigurationTarget.WorkspaceFolder);
+      await cfg.update(key, value, vscode.ConfigurationTarget.WorkspaceFolder);
   }
 
   /** Push the persisted efficiency-mode + debug-log prefs and review-dispatch
@@ -510,9 +515,15 @@ export class ConsolePanel {
    *  the scene's debug emission tracks the setting without a reopen. */
   private postConfig(): void {
     const cfg = vscode.workspace.getConfiguration("devtower");
+    // Migrate the deprecated boolean: a saved efficiencyMode=true reads as "eco"
+    // unless the operator has explicitly chosen a performanceMode.
+    const perfInfo = cfg.inspect<string>("performanceMode");
+    const perfSet =
+      perfInfo?.globalValue ?? perfInfo?.workspaceValue ?? perfInfo?.workspaceFolderValue;
+    const perf = perfSet ?? (cfg.get<boolean>("efficiencyMode", false) ? "eco" : "balanced");
     this.panel.webview.postMessage({
       type: "config",
-      eco: cfg.get<boolean>("efficiencyMode", false),
+      perf,
       debug: cfg.get<boolean>("debugLog", false),
       debugLogExists: debugLogExists(),
       debugLogArchives: debugLogArchiveCount(),
