@@ -149,6 +149,17 @@ export class ConsolePanel {
     this.prs.onChange(() => this.postPrs(), null, this.disposables);
     this.prs.onChange(() => void this.refreshState(), null, this.disposables); // PR → board column
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    // Pause the always-on pollers while this tab isn't visible — the discovery
+    // scan (ps/lsof + transcript walk) and the GitHub PR poll only matter when
+    // the tower is on screen. Becoming visible again refreshes both immediately,
+    // so nothing looks stale.
+    const applyVisibility = () => {
+      this.discovery?.setVisible(this.panel.visible);
+      this.prs.setVisible(this.panel.visible);
+      if (this.panel.visible) this.postUsage(); // catch up on any missed-while-hidden usage
+    };
+    this.panel.onDidChangeViewState(applyVisibility, null, this.disposables);
+    applyVisibility();
     // mirror a live devtower.debugLog toggle into the scene so shred/toon events
     // start (or stop) without reopening the console
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -1286,9 +1297,13 @@ export class ConsolePanel {
    *  interval as a fallback in case the watch misses an atomic replace. */
   private startUsage(): void {
     this.postUsage();
-    this.usageTimer = setInterval(() => this.postUsage(), 60_000);
+    this.usageTimer = setInterval(() => {
+      if (this.panel.visible) this.postUsage();
+    }, 60_000);
     try {
-      this.usageWatcher = fs.watch(this.usageFile(), () => this.postUsage());
+      this.usageWatcher = fs.watch(this.usageFile(), () => {
+        if (this.panel.visible) this.postUsage();
+      });
     } catch {
       /* file may not exist yet — the interval will pick it up once it appears */
     }
