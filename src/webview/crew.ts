@@ -2659,10 +2659,10 @@ class PixelCrew {
       ctx.fillStyle = building ? "rgba(190,245,210,0.95)" : "rgba(170,180,186,0.75)";
       ctx.font = `600 ${clamp(3 * this.cam.z, 8, 12)}px 'Martian Mono', monospace`;
       ctx.textAlign = "center";
-      ctx.fillText(building ? "+ WORKTREE" : "+ RESERVE", s.x, s.y - 2);
+      ctx.fillText(building ? "+ WORKTREE" : "+ PROJECT", s.x, s.y - 2);
       ctx.font = `${clamp(2.4 * this.cam.z, 7, 10)}px 'IBM Plex Mono', monospace`;
       // subtitle tracks its header: the "+ WORKTREE" green, a touch darker for
-      // contrast; "+ RESERVE" keeps the neutral gray under its gray header
+      // contrast; "+ PROJECT" keeps the neutral gray under its gray header
       ctx.fillStyle = building ? "rgba(150,200,170,0.9)" : "rgba(140,150,156,0.6)";
       ctx.fillText(building ? "new branch room" : "pick a directory", s.x, s.y + 11);
     }

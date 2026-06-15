@@ -4,7 +4,7 @@ import * as path from "path";
 import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
-import { currentBranch, isRepo } from "./git";
+import { currentBranch, isRepo, canonicalDir } from "./git";
 import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers } from "./hooks";
 import { dlog, elog } from "./debugLog";
 
@@ -16,9 +16,28 @@ function execP(cmd: string, args: string[]): Promise<string> {
   });
 }
 
+/** Pull the session uuids a live `claude` process is bound to out of its argv.
+ *  Both a fresh launch (`--session-id <uuid>`) and a RESUMED session
+ *  (`--resume <uuid>` / `-r <uuid>`) name their transcript explicitly, and the
+ *  transcript file is `<uuid>.jsonl`, so this maps a running process to its exact
+ *  transcript — far stronger than the per-cwd freshness fallback. Missing the
+ *  resume forms is the phantom-ghost bug: a resumed session's live process is
+ *  counted in the cwd total but, unpinned, its slot gets spent on a stale sibling
+ *  transcript by mtime, and the SessionEnd guard fails to recognize it as live so
+ *  it stays retired. A bare `claude` (or `--continue`) names no uuid and is left
+ *  to the count budget. */
+export function parseLiveSessionIds(argv: string): Set<string> {
+  const ids = new Set<string>();
+  const re = /(?:--session-id|--resume|-r)[= ]([0-9a-fA-F-]{36})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(argv))) ids.add(m[1].toLowerCase());
+  return ids;
+}
+
 /** Liveness of running `claude` processes, used to filter out phantom sessions.
  *  - perCwd: exact count per working directory (Unix, via ps + lsof). `sessionIds`
- *    are the live processes' `--session-id` argv values, when present — these let
+ *    are the live processes' bound uuids (`--session-id` or `--resume`/`-r` argv
+ *    values), when present — these let
  *    the caller keep transcripts by EXACT session identity instead of guessing by
  *    mtime (which mis-fires when a session exits: its final write makes it the
  *    freshest, so the newest-first heuristic would evict an older but still-live
@@ -363,17 +382,16 @@ export class ClaudeDiscovery {
         const cwd = line.slice(1).trim();
         counts.set(cwd, (counts.get(cwd) ?? 0) + 1);
       }
-      // Pull each live process's `--session-id <uuid>` from argv. The transcript
-      // file is named <session-id>.jsonl, so this maps a running process to its
-      // exact transcript — far stronger than the per-cwd freshness fallback. Not
-      // every session has the flag in argv (a bare `claude` won't), so this is a
-      // best-effort overlay; processes without it fall back to the count budget.
-      const sessionIds = new Set<string>();
+      // Pull each live process's bound session uuid (`--session-id` for a launch,
+      // `--resume`/`-r` for a resumed session) from argv. The transcript file is
+      // named <uuid>.jsonl, so this maps a running process to its exact transcript
+      // — far stronger than the per-cwd freshness fallback. Not every session names
+      // a uuid (a bare `claude` or `--continue` won't), so this is a best-effort
+      // overlay; processes without one fall back to the count budget.
+      let sessionIds = new Set<string>();
       try {
         const args = await execP("ps", ["-p", pids.join(","), "-o", "args="]);
-        const re = /--session-id[= ]([0-9a-fA-F-]{36})/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(args))) sessionIds.add(m[1].toLowerCase());
+        sessionIds = parseLiveSessionIds(args);
       } catch {
         // argv unavailable — leave sessionIds empty, freshness fallback applies
       }
@@ -864,16 +882,21 @@ export class ClaudeDiscovery {
       // shown wherever it really is. The hold expires so a failed /cd is dropped.
       const cwd = f.cwd;
       const pend = this.cdPending.get(id);
+      // match through canonicalization, not raw `===`: the reserved room's stored
+      // path (picker/migrated form) and the transcript's cwd (Claude's canonical
+      // realpath) routinely differ by symlink (/Users vs /private), trailing slash
+      // or case — a raw compare never confirms a /cd into the main checkout.
+      const cdArrived = pend !== undefined && canonicalDir(cwd) === canonicalDir(pend.dir);
       let cdRoom: string | undefined;
       if (pend) {
-        if (cwd === pend.dir) {
+        if (cdArrived) {
           cdRoom = pend.room; // confirmed — relocate to the requested room
           this.cdPending.delete(id);
         } else if (Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
           this.cdPending.delete(id);
         }
       }
-      const cdConfirmed = cdRoom !== undefined || (pend !== undefined && cwd === pend.dir);
+      const cdConfirmed = cdRoom !== undefined || cdArrived;
       const cachedBranch = this.branchCache.get(cwd);
       let branch: string;
       if (cachedBranch && Date.now() - cachedBranch.at < ClaudeDiscovery.BRANCH_TTL_MS) {
