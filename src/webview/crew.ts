@@ -1568,6 +1568,26 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** Pull back from a tight dev zoom to an overview of the room that dev is in.
+   *  Used when the agent's stat panel is closed (its ✕ / Esc): instead of leaving
+   *  the camera pinned on the dev, frame their room. No-op (returns false) when
+   *  we aren't currently zoomed onto an agent, so other close paths are untouched.
+   *  Also a no-op if the user has since panned or zoomed the camera themselves
+   *  (focusAgent resets pan/zoom to 0/1, so any nonzero value means they moved):
+   *  if they've wandered off, snapping them back to the room would be jarring. */
+  zoomOutToAgentRoom() {
+    const id = this.focusAgentId;
+    if (!id) return false;
+    const moved =
+      Math.abs(this.panX) > 0.5 || Math.abs(this.panY) > 0.5 || Math.abs(this.zoomMul - 1) > 0.01;
+    if (moved) return false;
+    const tn = this.toons.get(id);
+    const room = tn?.bkey ? this.rooms.get(tn.bkey) : undefined;
+    if (room) this.focusOn(room.name);
+    else this.clearFocus();
+    return true;
+  }
+
   clearFocus(resetZoom = true, preservePan = false) {
     this.focusRoom_ = null;
     this.focusAgentId = null;
@@ -4317,6 +4337,9 @@ class PixelCrew {
   },
   clearFocus() {
     this._instance?.clearFocus();
+  },
+  zoomOutToAgentRoom() {
+    return this._instance?.zoomOutToAgentRoom() ?? false;
   },
   setEco(on: boolean) {
     this._instance?.setEco(on);
