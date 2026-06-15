@@ -802,7 +802,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "package": "npx --yes @vscode/vsce package --readme-path MARKETPLACE.md",
-    "screenshots": "playwright test"
+    "screenshots": "playwright test",
+    "gen:media": "bash scripts/gen-md-media.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
