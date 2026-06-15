@@ -1285,6 +1285,7 @@ export class ConsolePanel {
       agents,
       selectedId: this.store.getSelectedId(),
       usedDir: this.usedDirRoom,
+      selectedDir: collapseHome(this.store.getSelectedDir()),
       rooms,
       boards: Object.fromEntries(this.boardsByPath),
     });
@@ -1381,11 +1382,16 @@ export class ConsolePanel {
 
   <!-- top HUD -->
   <header class="hud-top">
-    <div class="telemetry">
-      <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
-      <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
-      <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
-      <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
+    <div class="hud-left">
+      <div class="telemetry">
+        <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
+        <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
+        <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
+        <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
+      </div>
+      <div class="seldir" id="seldir" hidden>
+        <span class="lbl">dir</span><span class="seldir-path" id="seldir-path"></span>
+      </div>
     </div>
     <div class="spacer"></div>
     <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
@@ -1440,6 +1446,17 @@ export class ConsolePanel {
 </body>
 </html>`;
   }
+}
+
+/** Collapse the user's home prefix to `~` so the HUD's selected-directory label
+ *  reads compactly (the webview truncates the rest from the left). */
+function collapseHome(dir: string | undefined): string | undefined {
+  if (!dir) return undefined;
+  const home = os.homedir();
+  if (home && (dir === home || dir.startsWith(home + path.sep))) {
+    return "~" + dir.slice(home.length);
+  }
+  return dir;
 }
 
 function makeNonce(): string {
