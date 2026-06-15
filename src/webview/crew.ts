@@ -3311,7 +3311,7 @@ class PixelCrew {
       ctx.font = "bold 2.8px 'Martian Mono', monospace";
       nx += ctx.measureText("DRAFT").width + 2;
     }
-    ctx.font = "bold 6px 'Martian Mono', monospace";
+    ctx.font = "bold 3px 'Martian Mono', monospace"; // mirror drawBoard's PR-number size
     const x = nx + ctx.measureText(`#${bd.pr.number}`).width + 3;
     return { x, y: py - 5, w: 6, h: 6, url: bd.pr.url };
   }
@@ -3623,7 +3623,7 @@ class PixelCrew {
         ctx.fillText("DRAFT", nx, py);
         nx += ctx.measureText("DRAFT").width + 2;
       }
-      ctx.font = "bold 6px 'Martian Mono', monospace";
+      ctx.font = "bold 3px 'Martian Mono', monospace"; // match the "PR" heading size
       ctx.fillStyle = pr.draft ? "rgba(180,188,196,0.9)" : "#b98cff";
       ctx.fillText(`#${pr.number}`, nx, py);
       // open-in-GitHub button (↗) right after the number, centred on its line

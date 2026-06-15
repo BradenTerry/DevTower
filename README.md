@@ -10,9 +10,9 @@ A pixel office tower (VS Code extension) for your coding agents. Each repo is a 
 
 ## The problem it solves
 
-Running several coding agents means several worktrees, each in its own directory - and the usual workflow is a window (or terminal tab) per directory. You alt-tab to find which session is waiting on input, `cd` around to run `git status` in each, and switch editor windows to review diffs. That context-switching tax grows fast once more than one or two are running.
+Running several coding agents means several worktrees, each in its own directory - and the usual workflow is a window (or terminal tab) per directory. You alt-tab to find which session is waiting on input, `cd` around to run `git status` in each, and switch editor windows to review diffs. That context-switching adds up fast once you have more than a couple of agents running.
 
-DevTower collapses it into **a single view**. Every repo, worktree, and live session is a room in one campus, so you watch **multiple directories and worktrees at once - without switching windows**: who is active, who is blocked waiting on you, who finished or errored, each branch's unstaged / staged / commit counts, and each PR's checks and review status. Click a dev to act, click a room to focus its crew, and the diff or terminal you need opens in place.
+DevTower collapses it into **a single view**. Every repo and worktree is a room in one campus and every live session a dev at a desk, so you watch **multiple directories and worktrees at once - without switching windows**: who is active, who is blocked waiting on you, who finished or errored, each branch's unstaged / staged / commit counts, and each PR's checks and review status. Click a dev to act, click a room to focus its crew, and the diff or terminal you need opens in place.
 
 ![The campus at a glance: the top-left telemetry strip counts run / wait / err / crew across every room, the PRs-to-review billboard lists PRs that want your eyes, and each room's board shows its branch and change counts - all without leaving this window.](media/shot-campus.png)
 
@@ -31,7 +31,7 @@ To see PRs and checks, add a GitHub token in **Settings** (the ⚙ gear, top rig
 
 ## What's in the tower
 
-- **The campus** (Canvas2D pixel scene): each repo is a cutaway office room - tinted walls, dusk window, whiteboard, desks/monitors, plant and hash-picked decor. Rooms stack into a tower, sharing floors and ceilings; a **ghost slot** on top of each tower lets you stack the next worktree, and a reserve slot lets you add another repo as its own tower.
+- **The campus** (Canvas2D pixel scene): each repo is a cutaway office room - tinted walls, dusk window, whiteboard, desks/monitors, a plant, and hash-picked decor. Rooms stack into a tower, sharing floors and ceilings; a **ghost slot** on top of each tower lets you stack the next worktree, and a reserve slot lets you add another repo as its own tower.
 - **Pixel devs**: one sprite per agent with a deterministic persona (hair/shirt/cap/glasses from the id hash). State drives the animation - active types, waiting raises a hand, complete cheers, error slumps, idle breathes. Two or more active agents in a room huddle at the whiteboard.
 - **Arrivals/departures**: a joining agent walks in through the door (with a room construction animation on a new repo); a leaver walks to the edge, climbs a fire-escape ladder down, and an emptied room deconstructs after they exit.
 - **Click a dev** to select it (amber ring) and open the agent panel. Click a room to zoom to its crew, click away for the overview; scroll to zoom, click-drag to pan.
@@ -51,7 +51,7 @@ See [FEATURES.md](FEATURES.md) for the full capability map and the data-core / p
 The two trees in the **◆ DevTower** activity-bar container turn the focused worktree into a place you can actually work, without opening a second window:
 
 - **Selected Directory** is a full file viewer for the worktree (every file, not just changed ones). Open a file to edit it inline; **drag** a file or folder onto a folder to move it; **right-click -> Delete** to send it to Trash. Both moving and deleting confirm once, with a **"don't ask again"** option.
-- **Changes** is the SCM-style split of Staged / unstaged changes for the same worktree, with inline stage/unstage and click-to-diff into the native VS Code diff editor.
+- **Changes** is the SCM-style split of staged / unstaged changes for the same worktree, with inline stage/unstage and click-to-diff into the native VS Code diff editor.
 
 ## Real git, real terminals, real PRs
 
@@ -69,7 +69,7 @@ DevTower drives your existing CLIs; it makes no network calls of its own (git/gh
 | **VS Code** 1.85+ | required | host |
 | **git** | required | Changes view, native diffs, `git worktree add`, per-room push/pull/fetch |
 | **claude** ([Claude Code](https://claude.com/claude-code) CLI) | required for live agents | spawning/resuming sessions in terminals (`devtower.claudeCommand`); session discovery reads `~/.claude/projects` transcripts |
-| **gh** ([GitHub CLI](https://cli.github.com)) | optional | PR board, review-requested billboard, review dispatch, create/view PR. Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
+| **gh** ([GitHub CLI](https://cli.github.com)) | optional | PR board, review-requested billboard, review dispatch, PR view/checkout (DevTower never creates PRs). Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
 | **ps** / **lsof** (macOS / Linux) | optional | phantom-session filter - show only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower instead counts running `claude` processes tower-wide via WMI (`Get-CimInstance Win32_Process`) and caps shown sessions to that many, newest-first; if even that is unavailable it falls back to a 15-min freshness window |
 
 What it accesses currently:
@@ -145,7 +145,7 @@ echo '{"hook_event_name":"Notification","cwd":"'$PWD'","session_id":"s1","messag
 
 ## Releasing
 
-DevTower follows a tag-driven release to the VS Code Marketplace (regular channel; the `preview` flag in `package.json` only badges the listing while features settle, it does not gate installs).
+DevTower follows a tag-driven release to the VS Code Marketplace (regular channel; the `preview` flag in `package.json` only badges the listing while features settle; it does not gate installs).
 
 The git tag is the single source of truth for the version (the committed `version` is a placeholder). Pushing a `v*` tag runs `.github/workflows/release.yml`, which typechecks, builds, packages the `.vsix` (using `MARKETPLACE.md` as the Marketplace readme), creates a GitHub release with the `.vsix` attached, and publishes to the Marketplace when the `VSCE_PAT` secret is set.
 
