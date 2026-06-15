@@ -5,11 +5,18 @@ name: Release
 # time (the committed "version" is just a placeholder and is never edited by hand).
 # The job typechecks, builds, packages the extension as a .vsix, creates a GitHub release
 # with auto-generated notes and the .vsix attached, and publishes to the VS Code
-# Marketplace (regular channel) when VSCE_PAT is set.
+# Marketplace when VSCE_PAT is set.
 #
-# DevTower publishes to the regular Marketplace channel (not the pre-release channel).
+# Release channel is chosen by a "-" suffix on the tag:
+#   plain  vX.Y.Z        (v1.0.0)      -> regular release channel
+#   suffix vX.Y.Z-<tag>  (v1.0.1-pre)  -> pre-release channel (--pre-release)
+# The Marketplace version can't contain "-", so the suffix is stripped before
+# publishing; it only flips the channel and names the git tag/GitHub release.
+# Publishing a pre-release is what makes the "Switch to Pre-Release Version"
+# button appear on the listing.
 #
-#   git tag v0.2.0 && git push origin v0.2.0
+#   git tag v0.2.0     && git push origin v0.2.0       # regular release  -> publishes 0.2.0
+#   git tag v0.2.1-pre && git push origin v0.2.1-pre   # pre-release      -> publishes 0.2.1
 on:
   push:
     tags:
@@ -35,8 +42,22 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Determine version and release channel from tag
+        id: channel
+        run: |
+          raw="${GITHUB_REF_NAME#v}"      # e.g. 1.0.1-pre  or  1.0.1
+          version="${raw%%-*}"            # strip any -suffix -> 1.0.1 (Marketplace forbids "-")
+          if [ "$raw" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME has a -suffix -> pre-release channel (publishing $version)"
+            echo "pre_release_flag=--pre-release" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $GITHUB_REF_NAME is plain -> regular channel (publishing $version)"
+            echo "pre_release_flag=" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Set version from tag
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+        run: npm version "${{ steps.channel.outputs.version }}" --no-git-tag-version --allow-same-version
 
       - run: npm ci
 
@@ -47,13 +68,18 @@ jobs:
         run: npm run build
 
       - name: Package extension
-        run: npx --yes @vscode/vsce package --readme-path MARKETPLACE.md --out DevTower.vsix
+        run: npx --yes @vscode/vsce package ${{ steps.channel.outputs.pre_release_flag }} --readme-path MARKETPLACE.md --out DevTower.vsix
 
       - name: Create GitHub release with .vsix
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" DevTower.vsix --title "$GITHUB_REF_NAME" --generate-notes
+          PRERELEASE_FLAG: ${{ steps.channel.outputs.pre_release_flag }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" DevTower.vsix \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            ${PRERELEASE_FLAG:+--prerelease}
 
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
-        run: npx --yes @vscode/vsce publish --packagePath DevTower.vsix -p "$VSCE_PAT"
+        run: npx --yes @vscode/vsce publish ${{ steps.channel.outputs.pre_release_flag }} --packagePath DevTower.vsix -p "$VSCE_PAT"

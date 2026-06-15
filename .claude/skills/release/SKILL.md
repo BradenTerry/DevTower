@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a DevTower release (patch/minor/major) by pushing a version tag. Use when asked to "release", "cut a release", "ship a version", "publish the extension", or "build a patch/minor/major release". ALWAYS derives the next version from the latest existing tag, never from package.json.
+description: Cut a DevTower release (patch/minor/major) or pre-release by pushing a version tag. Use when asked to "release", "cut a release", "ship a version", "publish the extension", "build a patch/minor/major release", or "publish a pre-release/beta". A "-" suffix on the tag picks the channel (plain = regular, vX.Y.Z-pre = pre-release). ALWAYS derives the next version from the latest existing tag, never from package.json.
 ---
 
 # Releasing DevTower
@@ -9,6 +9,25 @@ A release is cut by pushing a `vX.Y.Z` tag. That triggers
 `.github/workflows/release.yml`, which sets the version from the tag, builds,
 packages the `.vsix`, creates the GitHub release, and publishes to the public
 VS Code Marketplace.
+
+## Release vs pre-release channel (a "-" suffix on the tag decides)
+
+Versions are **one continuous line that always increments** - there is no
+odd/even or separate numbering. Every release, regular or pre-release, just
+takes the next number above the latest tag. A `-` suffix on the tag is the only
+thing that decides which channel that version lands on:
+
+- **Plain** `vX.Y.Z` (`v1.0.0`) -> **regular** release channel.
+- **`-` suffix** `vX.Y.Z-<anything>` (`v1.0.1-pre`, `v1.0.1-beta`) ->
+  **pre-release** channel (`vsce publish --pre-release`). This is what makes the
+  "Switch to Pre-Release Version" button show on the listing; users opt in
+  per-install.
+
+The Marketplace version can't contain `-`, so the workflow **strips the suffix**
+before publishing (`v1.0.1-pre` publishes as `1.0.1`); the suffix only flips the
+channel and names the git tag/GitHub release. So a normal sequence might be
+`v1.0.0` (regular), `v1.0.1-pre` (pre-release), `v1.0.2` (regular),
+`v1.0.3-pre` (pre-release) - always climbing, channel decided per tag.
 
 ## The version lives in the git tag, not package.json
 
@@ -19,8 +38,10 @@ the next version from `package.json`, and never hand-edit it to "bump".
 
 ## Steps
 
-1. **Find the latest released version.** Do this first, every time. Do not
-   assume or reuse a number from earlier in the conversation.
+1. **Find the latest tag across both channels.** Versions are one continuous
+   line, so the next number is above the highest existing tag whether it was a
+   regular or a pre-release. Do this first, every time. Do not assume or reuse a
+   number from earlier in the conversation.
 
    ```sh
    git fetch --tags
@@ -34,6 +55,11 @@ the next version from `package.json`, and never hand-edit it to "bump".
    - patch: bump Z (`v0.7.1` -> `v0.7.2`) - bug fixes, packaging, docs, screenshots
    - minor: bump Y, reset Z (`v0.7.1` -> `v0.8.0`) - new features
    - major: bump X (`v0.7.1` -> `v1.0.0`) - breaking changes
+
+   For a **pre-release** build, bump the same way but add a `-` suffix to the
+   tag (see the channel rule above): e.g. latest is `v1.0.0` -> tag `v1.0.1-pre`.
+   The workflow strips the suffix and publishes `1.0.1` to the pre-release
+   channel.
 
    Confirm the computed tag does not already exist
    (`git tag | grep -x vX.Y.Z` returns nothing).
