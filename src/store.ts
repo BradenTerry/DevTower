@@ -61,6 +61,10 @@ export interface Agent {
    *  terminal). DevTower must not open/resume a terminal for it — it's managed
    *  in its own session. */
   external?: boolean;
+  /** A discovered external session that runs inside a VS Code integrated terminal
+   *  IN THIS WINDOW. DevTower holds a live Terminal handle so reveal/send work
+   *  exactly as for owned sessions. Must never be resumed via `claude --resume`. */
+  attached?: boolean;
   /** The terminal's launch id (the `--session-id` its claude process started
    *  with), captured once and kept across /clear so the next clear's marker can
    *  rebind to exactly this dev regardless of how many sessions share its cwd. */
@@ -115,6 +119,9 @@ export interface StateEvent {
    *  tasks, so the last-known value is kept. */
   tasks?: { done: number; total: number } | null;
   external?: boolean;
+  /** Whether this discovered external session runs inside an integrated terminal
+   *  in this window (DevTower holds a live handle so reveal/send work). */
+  attached?: boolean;
   /** The terminal's stable launch id, recorded when first observed. */
   launchId?: string;
   /** PID of the VS Code terminal shell DevTower opened for this dev (diagnostic). */
@@ -290,6 +297,7 @@ export class DevTowerStore {
       // old count (e.g. 3/4) stuck on the desk TV forever.
       tasks: ev.tasks === null ? undefined : (ev.tasks ?? existing?.tasks),
       external: ev.external ?? existing?.external,
+      attached: ev.attached ?? existing?.attached,
       launchId: ev.launchId ?? existing?.launchId,
       terminalPid: ev.terminalPid ?? existing?.terminalPid,
       clearedSession: ev.clearedSession ?? existing?.clearedSession,

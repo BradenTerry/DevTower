@@ -13,6 +13,9 @@ import { dlog } from "./debugLog";
  */
 export class TerminalManager {
   private terminals = new Map<string, vscode.Terminal>();
+  /** shell PID -> Terminal, rebuilt by refreshTerminalShellPids(). Used to bind
+   *  external sessions that live inside integrated terminals in this window. */
+  private shellPidIndex = new Map<number, vscode.Terminal>();
   /** Called when an OWNED dev's terminal closes (its claude process dies with the
    *  PTY) so discovery can retire it now + suppress its transcript from
    *  rediscovery, rather than leaving an orphan to resurface as a ghost. */
@@ -35,7 +38,7 @@ export class TerminalManager {
         const dropped = !!(agent && !agent.transcriptPath);
         dlog("terminal.closed", { agentId: id, droppedPlaceholder: dropped });
         if (dropped) this.store.remove(id);
-        else if (agent && !agent.external) this.onOwnedClose?.(id);
+        else if (agent && (!agent.external || agent.attached)) this.onOwnedClose?.(id);
         break;
       }
     });
@@ -47,10 +50,54 @@ export class TerminalManager {
     this.onOwnedClose = cb;
   }
 
+  /** Rebuild the shellPidIndex from the current set of VS Code integrated
+   *  terminals. Returns the set of shell PIDs (for ClaudeDiscovery). */
+  async refreshTerminalShellPids(): Promise<Set<number>> {
+    this.shellPidIndex.clear();
+    const out = new Set<number>();
+    for (const term of vscode.window.terminals) {
+      const pid = await term.processId;
+      if (pid !== undefined) {
+        this.shellPidIndex.set(pid, term);
+        out.add(pid);
+      }
+    }
+    return out;
+  }
+
+  /** Bind a VS Code integrated terminal (already running) as the handle for an
+   *  attached (external but in-window) agent. After this call, reveal/send/close
+   *  all work for the agent exactly as for an owned dev. */
+  bindAttached(agentId: string, shellPid: number): void {
+    const term = this.shellPidIndex.get(shellPid);
+    if (!term) return;
+    if (this.terminals.get(agentId) === term) return; // already bound
+    this.terminals.set(agentId, term);
+    dlog("terminal.bindAttached", { agentId, shellPid });
+  }
+
   private ensure(agentId: string): vscode.Terminal | undefined {
     const agent = this.store.get(agentId);
     if (!agent) return undefined;
     let term = this.terminals.get(agentId);
+
+    // An attached agent already has a live terminal in this window — never create
+    // a new one and never send --resume (the claude session is already running).
+    if (!term && agent.attached) {
+      // Try a late bind by terminalPid (in case bindAttached ran before the index
+      // was seeded, or the index was rebuilt after the bind).
+      if (agent.terminalPid !== undefined) {
+        const found = this.shellPidIndex.get(agent.terminalPid);
+        if (found) {
+          this.terminals.set(agentId, found);
+          term = found;
+        }
+      }
+      // Still nothing — can't conjure a terminal we don't control; return undefined
+      // rather than spawning a shell (that would create a duplicate conflicting PTY).
+      return term;
+    }
+
     if (!term) {
       const cwd = resolveCwd(agent);
       term = vscode.window.createTerminal({

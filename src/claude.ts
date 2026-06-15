@@ -27,8 +27,8 @@ function execP(cmd: string, args: string[]): Promise<string> {
  *    caps kept sessions to this many, newest-first).
  *  - null:   process info unavailable → caller falls back to mtime freshness. */
 type LiveCounts =
-  | { mode: "perCwd"; counts: Map<string, number>; sessionIds?: Set<string> }
-  | { mode: "total"; total: number }
+  | { mode: "perCwd"; counts: Map<string, number>; sessionIds?: Set<string>; sessionShellPids?: Map<string, number> }
+  | { mode: "total"; total: number; sessionShellPids?: Map<string, number> }
   | null;
 
 /** Identity of a session DevTower launched, persisted so a window reload can
@@ -152,6 +152,13 @@ export class ClaudeDiscovery {
       endedDir?: string;
       activeDir?: string;
       persist?: LaunchPersist;
+      /** Returns the shell PIDs of all integrated terminals in the current VS Code
+       *  window. Used to detect whether a discovered external session is actually
+       *  running inside one of this window's integrated terminals ("attached"). */
+      terminalShellPids?: () => Promise<Set<number>>;
+      /** Called when a discovered session is matched to a VS Code integrated
+       *  terminal shell PID so its Terminal handle can be bound proactively. */
+      bindAttached?: (agentId: string, shellPid: number) => void;
     } = {}
   ) {}
 
@@ -218,7 +225,7 @@ export class ClaudeDiscovery {
    *  own terminal, so closing DevTower's shell doesn't end them — left alone. */
   retireOwned(agentId: string): void {
     const a = this.store.get(agentId);
-    if (!a || a.external) return;
+    if (!a || (a.external && !a.attached)) return;
     const uuids = new Set<string>();
     if (a.transcriptPath) uuids.add(path.basename(a.transcriptPath, ".jsonl").toLowerCase());
     if (a.launchId) uuids.add(a.launchId.toLowerCase());
@@ -344,16 +351,24 @@ export class ClaudeDiscovery {
   private async liveCwdCounts(): Promise<LiveCounts> {
     if (process.platform === "win32") return this.liveClaudeCountWindows();
     try {
-      const ps = await execP("ps", ["-axo", "pid=,comm="]);
+      // pid, ppid, comm — split on first two whitespace tokens; rest is comm
+      // (which may include path separators).
+      const ps = await execP("ps", ["-axo", "pid=,ppid=,comm="]);
       const pids: string[] = [];
+      const ppids = new Map<number, number>(); // pid -> ppid
       for (const line of ps.split("\n")) {
         const t = line.trim();
-        const sp = t.indexOf(" ");
-        if (sp < 0) continue;
-        const comm = t.slice(sp + 1).trim();
-        if (comm === "claude" || comm.endsWith("/claude")) pids.push(t.slice(0, sp));
+        if (!t) continue;
+        const parts = t.split(/\s+/);
+        if (parts.length < 3) continue;
+        const pid = parts[0];
+        const ppid = parseInt(parts[1], 10);
+        const comm = parts.slice(2).join(" ");
+        if (comm === "claude" || comm.endsWith("/claude")) pids.push(pid);
+        const pidNum = parseInt(pid, 10);
+        if (!isNaN(pidNum) && !isNaN(ppid)) ppids.set(pidNum, ppid);
       }
-      if (!pids.length) return { mode: "perCwd", counts: new Map() };
+      if (!pids.length) return { mode: "perCwd", counts: new Map(), sessionShellPids: new Map() };
       // -a -d cwd → exactly one cwd record per pid; counting them per path
       // yields the number of live claude processes rooted at that directory.
       const out = await execP("lsof", ["-a", "-d", "cwd", "-p", pids.join(","), "-Fn"]);
@@ -369,15 +384,28 @@ export class ClaudeDiscovery {
       // every session has the flag in argv (a bare `claude` won't), so this is a
       // best-effort overlay; processes without it fall back to the count budget.
       const sessionIds = new Set<string>();
+      const sessionPids = new Map<string, number>(); // sessionId(lc) -> claude pid
       try {
-        const args = await execP("ps", ["-p", pids.join(","), "-o", "args="]);
-        const re = /--session-id[= ]([0-9a-fA-F-]{36})/g;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(args))) sessionIds.add(m[1].toLowerCase());
+        const args = await execP("ps", ["-p", pids.join(","), "-o", "pid=,args="]);
+        for (const line of args.split("\n")) {
+          const t = line.trim();
+          if (!t) continue;
+          const sp = t.indexOf(" ");
+          if (sp < 0) continue;
+          const argvPid = parseInt(t.slice(0, sp), 10);
+          const rest = t.slice(sp + 1);
+          const m = /--session-id[= ]([0-9a-fA-F-]{36})/i.exec(rest);
+          if (m) {
+            const lc = m[1].toLowerCase();
+            sessionIds.add(lc);
+            if (!isNaN(argvPid)) sessionPids.set(lc, argvPid);
+          }
+        }
       } catch {
-        // argv unavailable — leave sessionIds empty, freshness fallback applies
+        // argv unavailable — leave sessionIds/sessionPids empty, freshness fallback applies
       }
-      return { mode: "perCwd", counts, sessionIds };
+      const sessionShellPids = await this.resolveAttached(sessionPids, ppids);
+      return { mode: "perCwd", counts, sessionIds, sessionShellPids };
     } catch {
       return null;
     }
@@ -396,16 +424,78 @@ export class ClaudeDiscovery {
    */
   private async liveClaudeCountWindows(): Promise<LiveCounts> {
     const script =
-      "@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { " +
+      "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { " +
       "$_.Name -ieq 'claude.exe' -or ($_.CommandLine -and $_.CommandLine -match 'claude-code') " +
-      "}).Count";
+      "} | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress";
     try {
       const out = await execP("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
-      const total = parseInt(out.trim(), 10);
-      return Number.isFinite(total) ? { mode: "total", total } : null;
+      const trimmed = out.trim();
+      if (!trimmed) return { mode: "total", total: 0, sessionShellPids: new Map() };
+      let procs: Array<{ ProcessId?: number; ParentProcessId?: number; CommandLine?: string }>;
+      try {
+        const parsed = JSON.parse(trimmed);
+        procs = Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        // JSON parse failed — fall back to counting by line (old behavior degraded)
+        const total = parseInt(trimmed, 10);
+        return Number.isFinite(total) ? { mode: "total", total } : null;
+      }
+      const total = procs.length;
+      const ppids = new Map<number, number>();
+      const sessionPids = new Map<string, number>();
+      for (const p of procs) {
+        if (p.ProcessId != null && p.ParentProcessId != null) {
+          ppids.set(p.ProcessId, p.ParentProcessId);
+        }
+        if (p.CommandLine && p.ProcessId != null) {
+          const m = /--session-id[= ]([0-9a-fA-F-]{36})/i.exec(p.CommandLine);
+          if (m) sessionPids.set(m[1].toLowerCase(), p.ProcessId);
+        }
+      }
+      const sessionShellPids = await this.resolveAttached(sessionPids, ppids);
+      return { mode: "total", total, sessionShellPids };
     } catch {
       return null;
     }
+  }
+
+  /** Default enumerator: collect shell PIDs from all integrated terminals in the
+   *  current VS Code window. Used when no `terminalShellPids` dep is injected. */
+  private async defaultTerminalShellPids(): Promise<Set<number>> {
+    const out = new Set<number>();
+    for (const term of vscode.window.terminals) {
+      const pid = await term.processId;
+      if (pid !== undefined) out.add(pid);
+    }
+    return out;
+  }
+
+  /** Walk process ancestry (up to 5 hops) for each sessionId->claudePid pair,
+   *  checking whether any ancestor is a VS Code integrated terminal shell PID.
+   *  Returns a map of sessionId(lc) -> matched shell PID for "attached" sessions. */
+  private async resolveAttached(
+    sessionPids: Map<string, number>,
+    ppids: Map<number, number>
+  ): Promise<Map<string, number>> {
+    if (sessionPids.size === 0) return new Map();
+    const shellPids = await (this.deps.terminalShellPids ?? (() => this.defaultTerminalShellPids()))();
+    if (shellPids.size === 0) return new Map();
+    const result = new Map<string, number>();
+    for (const [sessionId, claudePid] of sessionPids) {
+      const visited = new Set<number>();
+      let cur: number | undefined = claudePid;
+      for (let hop = 0; hop < 5; hop++) {
+        if (cur === undefined) break;
+        if (visited.has(cur)) break; // cycle guard
+        visited.add(cur);
+        if (shellPids.has(cur)) {
+          result.set(sessionId, cur);
+          break;
+        }
+        cur = ppids.get(cur);
+      }
+    }
+    return result;
   }
 
   /** Scan + sync into the store. Returns how many sessions were found. */
@@ -446,6 +536,10 @@ export class ClaudeDiscovery {
     // stops a CLOSED session whose dir was later reused/renamed from borrowing a
     // newer session's live process at the same path (the phantom-agent bug).
     const liveCounts = await (this.deps.liveCounts ?? (() => this.liveCwdCounts()))();
+    // sessionId(lc) -> shell PID for sessions running inside an integrated terminal
+    // in this window ("attached"). Extracted once here; applied in the store loop below.
+    const sessionShellPids: Map<string, number> =
+      (liveCounts && 'sessionShellPids' in liveCounts ? liveCounts.sessionShellPids : undefined) ?? new Map();
     // live processes' --session-id argv values: the terminals' LAUNCH IDs. A
     // transcript whose uuid is one of these is an un-cleared launch session, so
     // its uuid IS the launch id — stamped onto the agent (below) and kept across
@@ -908,6 +1002,7 @@ export class ClaudeDiscovery {
           subagents: f.subagents,
           tasks: f.tasks ?? null, // null = authoritatively no list now → clear stale count
           external: cleared ? !!this.store.get(id)?.external : false,
+          attached: false, // adopted/owned agents are never attached
           launchId,
           clearedSession: cleared,
         });
@@ -915,6 +1010,14 @@ export class ClaudeDiscovery {
         // a discovered agent (or a just-confirmed /cd) is placed at its real cwd.
         // On a confirmed move, honor the requested room name; keep an adopted
         // agent's own name rather than renaming it.
+        const shellPid = sessionShellPids.get(f.sessionId.toLowerCase());
+        const isExternal = cleared ? !!this.store.get(id)?.external : !isAdopted;
+        const isAttached = !isAdopted && isExternal && shellPid != null;
+        if (isAttached && shellPid != null) {
+          // bind the VS Code integrated terminal handle proactively so close-retire
+          // and reveal/send work before the user interacts with it
+          this.deps.bindAttached?.(id, shellPid);
+        }
         this.store.apply({
           id,
           name: isAdopted ? undefined : `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
@@ -934,7 +1037,9 @@ export class ClaudeDiscovery {
           tasks: f.tasks ?? null, // null = authoritatively no list now → clear stale count
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
-          external: cleared ? !!this.store.get(id)?.external : !isAdopted,
+          external: isExternal,
+          attached: isAttached,
+          terminalPid: isAttached ? shellPid : undefined,
           launchId,
           clearedSession: cleared,
         });

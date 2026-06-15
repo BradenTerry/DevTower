@@ -365,7 +365,7 @@ export class ConsolePanel {
           // chat is right there. External sessions live in their own terminal
           // outside DevTower, so there's nothing of ours to reveal.
           const sel = this.store.get(id);
-          if (sel && !sel.external) this.terminals.reveal(id);
+          if (sel && (!sel.external || sel.attached)) this.terminals.reveal(id);
         }
         break;
       case "pickRoom":

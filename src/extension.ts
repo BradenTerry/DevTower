@@ -25,6 +25,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       get: (key, def) => context.workspaceState.get(key, def),
       set: (key, val) => void context.workspaceState.update(key, val),
     },
+    // detect sessions running in integrated terminals of this window ("attached")
+    terminalShellPids: () => terminals.refreshTerminalShellPids(),
+    bindAttached: (id, pid) => terminals.bindAttached(id, pid),
   });
   // an owned dev's terminal closing retires it (kills the orphan transcript)
   terminals.setOwnedCloseHandler((id) => discovery.retireOwned(id));
