@@ -5,6 +5,9 @@
   --glass-2:rgba(20,28,33,0.85);
   --solid:#0f1518; --raise:#1b242a; --raise-2:#27323a;
   --edge:rgba(255,255,255,0.14); --edge-soft:rgba(255,255,255,0.07);
+  /* leaderboard progress track: lighter fill + a clearer outline than --edge-soft
+     so the bar's shape reads against the near-black modal */
+  --lb-track:rgba(255,255,255,0.13); --lb-track-edge:rgba(255,255,255,0.24);
   --text:#f0f5f7; --text-dim:#a8b3b7; --text-faint:#6f7a7f;
   --amber:#ffb13d; --on-amber:#0a0c0d;
   --active:#3ee089; --waiting:#ffb13d; --complete:#56c7ff; --error:#ff6055; --idle:#5b666b;
@@ -18,6 +21,7 @@
   --glass-2:rgba(255,255,255,0.9);
   --solid:#f4f1ea; --raise:#ffffff; --raise-2:#ffffff;
   --edge:rgba(40,40,30,0.18); --edge-soft:rgba(40,40,30,0.08);
+  --lb-track:rgba(40,40,30,0.13); --lb-track-edge:rgba(40,40,30,0.30);
   --text:#12171a; --text-dim:#4c534f; --text-faint:#7a8079;
   --amber:#9c5f08; --on-amber:#fffaf0;
   --active:#0f7340; --waiting:#9c5f08; --complete:#0e5d8f; --error:#b32d23; --idle:#8d938b;
@@ -218,7 +222,7 @@ button{ font-family:inherit; }
 .lb-row .lb-id b{ font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .lb-row .lb-id small{ color:var(--text-faint); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .lb-row .lb-model{ color:var(--text-dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.lb-row .lb-bar{ height:7px; border-radius:5px; background:var(--edge-soft); overflow:hidden; }
+.lb-row .lb-bar{ height:7px; box-sizing:border-box; border-radius:5px; background:var(--lb-track); border:1px solid var(--lb-track-edge); overflow:hidden; }
 .lb-row .lb-bar i{ display:block; height:100%; border-radius:5px; background:var(--complete); transition:width .3s ease; }
 .lb-row .lb-bar.warm i{ background:var(--waiting); }
 .lb-row .lb-bar.hot i{ background:var(--error); }
