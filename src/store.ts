@@ -106,8 +106,11 @@ export interface StateEvent {
   skills?: string[];
   /** In-flight sub-agent count from this poll's transcript window. */
   subagents?: number;
-  /** Task-tool checklist progress read this poll (2+ tasks only). */
-  tasks?: { done: number; total: number };
+  /** Task-tool checklist progress read this poll (2+ tasks only). `null` means the
+   *  poll authoritatively found no list (cleared, or dropped below 2) and the
+   *  stale count must be cleared; `undefined` means this writer didn't report
+   *  tasks, so the last-known value is kept. */
+  tasks?: { done: number; total: number } | null;
   external?: boolean;
   /** The terminal's stable launch id, recorded when first observed. */
   launchId?: string;
@@ -276,9 +279,12 @@ export class DevTowerStore {
       // a fresh poll reports the current in-flight count (0 when settled), so
       // honor it directly; fall back to last-known only when absent this poll
       subagents: ev.subagents ?? existing?.subagents,
-      // a fresh transcript poll reports the live list each time; keep last-known
-      // only when this event carries none (e.g. a state.jsonl writer)
-      tasks: ev.tasks ?? existing?.tasks,
+      // a fresh transcript poll reports the live list each time. `null` is an
+      // explicit "no list now" (cleared / dropped below 2) → clear the stale
+      // count; `undefined` means this writer didn't report tasks → keep last-known
+      // (e.g. a state.jsonl writer). Without the null case a cleared list left the
+      // old count (e.g. 3/4) stuck on the desk TV forever.
+      tasks: ev.tasks === null ? undefined : (ev.tasks ?? existing?.tasks),
       external: ev.external ?? existing?.external,
       launchId: ev.launchId ?? existing?.launchId,
       terminalPid: ev.terminalPid ?? existing?.terminalPid,
