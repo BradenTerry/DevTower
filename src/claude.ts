@@ -103,8 +103,15 @@ export class ClaudeDiscovery {
   // fires exactly once.
   private _onPrCreated = new vscode.EventEmitter<void>();
   readonly onPrCreated = this._onPrCreated.event;
+  // Fires when a watched session just ran `gh pr merge`/`close`, so the PR poller
+  // can refresh right away and drop the no-longer-open PR from the board instead
+  // of waiting out its lazy tick. Gated like `onPrCreated` so a pre-existing close
+  // never fires on startup.
+  private _onPrClosed = new vscode.EventEmitter<void>();
+  readonly onPrClosed = this._onPrClosed.event;
   private knownSessions = new Set<string>();
   private prCreatedSeen = new Map<string, number>();
+  private prClosedSeen = new Map<string, number>();
 
   constructor(
     private store: DevTowerStore,
@@ -151,6 +158,7 @@ export class ClaudeDiscovery {
   dispose(): void {
     if (this.timer) clearInterval(this.timer);
     this._onPrCreated.dispose();
+    this._onPrClosed.dispose();
   }
 
   /**
@@ -806,18 +814,26 @@ export class ClaudeDiscovery {
     // trigger a fetch on startup); a create that advances the stamp on an already
     // known session fires the event.
     let prJustCreated = false;
+    let prJustClosed = false;
     for (const f of found) {
       const known = this.knownSessions.has(f.sessionId);
       this.knownSessions.add(f.sessionId);
-      if (!f.prCreatedAt) continue;
-      if (f.prCreatedAt > (this.prCreatedSeen.get(f.sessionId) ?? 0)) {
+      if (f.prCreatedAt && f.prCreatedAt > (this.prCreatedSeen.get(f.sessionId) ?? 0)) {
         this.prCreatedSeen.set(f.sessionId, f.prCreatedAt);
         if (known) prJustCreated = true;
+      }
+      if (f.prClosedAt && f.prClosedAt > (this.prClosedSeen.get(f.sessionId) ?? 0)) {
+        this.prClosedSeen.set(f.sessionId, f.prClosedAt);
+        if (known) prJustClosed = true;
       }
     }
     if (prJustCreated) {
       dlog("discovery.prCreated", {});
       this._onPrCreated.fire();
+    }
+    if (prJustClosed) {
+      dlog("discovery.prClosed", {});
+      this._onPrClosed.fire();
     }
     // Per-agent binding snapshot: exactly which claude session each agent is tied
     // to this poll, how it got bound, whether it's owned or external, and the
@@ -929,6 +945,7 @@ export class ClaudeDiscovery {
           subagents: meta.subagents,
           tasks,
           prCreatedAt: meta.prCreatedAt,
+          prClosedAt: meta.prClosedAt,
         });
       }
     }
@@ -953,6 +970,7 @@ interface Found {
   subagents?: number;
   tasks?: { done: number; total: number };
   prCreatedAt?: number; // ms time of this session's most recent `gh pr create`
+  prClosedAt?: number; // ms time of this session's most recent `gh pr merge`/`close`
 }
 
 /** Count an agent's task list from `~/.claude/tasks/<sessionId>/*.json` — the
@@ -1003,7 +1021,7 @@ export async function newestSubMtime(projectDir: string, sessionId: string): Pro
 export async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; working?: boolean; prCreatedAt?: number }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; working?: boolean; prCreatedAt?: number; prClosedAt?: number }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -1082,6 +1100,11 @@ export async function readMeta(
     // new PR wait out the poller's lazy ~60s tick.
     const prCreateTools = new Set<string>();
     let prCreatedAt = 0;
+    // same idea for `gh pr merge` / `gh pr close`: when the result lands the PR is
+    // no longer open, so the discovery loop kicks an immediate refresh to drop it
+    // from the board instead of letting it linger until the poller's lazy ~60s tick.
+    const prCloseTools = new Set<string>();
+    let prClosedAt = 0;
     const reNote = /<task-id>\s*([A-Za-z0-9_-]+)\s*<\/task-id>[\s\S]*?<status>\s*(?:completed|failed|cancelled|canceled|killed|error|stopped)\s*<\/status>/g;
     for (const raw of full.split("\n")) {
       const t = raw.trim();
@@ -1098,11 +1121,19 @@ export async function readMeta(
           } else if (b.type === "tool_use" && b.name === "Bash" &&
                      typeof b.input?.command === "string" && /\bgh\s+pr\s+(?:create|new)\b/.test(b.input.command)) {
             prCreateTools.add(b.id);
+          } else if (b.type === "tool_use" && b.name === "Bash" &&
+                     typeof b.input?.command === "string" && /\bgh\s+pr\s+(?:merge|close)\b/.test(b.input.command)) {
+            prCloseTools.add(b.id);
           } else if (b.type === "tool_result" && b.tool_use_id) {
             if (prCreateTools.has(b.tool_use_id)) {
               prCreateTools.delete(b.tool_use_id);
               const ts = Date.parse(rec.timestamp ?? "");
               if (Number.isFinite(ts)) prCreatedAt = Math.max(prCreatedAt, ts);
+            }
+            if (prCloseTools.has(b.tool_use_id)) {
+              prCloseTools.delete(b.tool_use_id);
+              const ts = Date.parse(rec.timestamp ?? "");
+              if (Number.isFinite(ts)) prClosedAt = Math.max(prClosedAt, ts);
             }
             const txt = typeof b.content === "string" ? b.content : flatten(b.content);
             const ack = /agentId:\s*([A-Za-z0-9_-]+)/.exec(txt);
@@ -1198,7 +1229,7 @@ export async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents, working, prCreatedAt: prCreatedAt || undefined };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents, working, prCreatedAt: prCreatedAt || undefined, prClosedAt: prClosedAt || undefined };
   } finally {
     await fh.close();
   }
