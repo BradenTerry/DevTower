@@ -191,6 +191,29 @@ const CAR_SPEED = 64; // vertical travel speed (world units / sec)
 // car/shaft center, just outside the tower's right wall (x0 + ROOM_W)
 const shaftX = (x0: number) => x0 + ROOM_W + SHAFT_GAP + SHAFT_W / 2;
 
+// The lift door is set into the right side wall and follows its perspective
+// slant. `sideAt(t)` walks the wall's floor line from the near-right corner
+// (t=0) back toward the far-right corner (t=1); the door's jambs and leaf hang
+// off it. Shared by the renderer and the walk logic so a dev disappears exactly
+// where the wall edge is. `rightEdge` is that occluding edge (the near jamb): a
+// dev walking out is clipped here so the wall reads as standing in front of it.
+const doorGeom = (x0: number, base: number) => {
+  const x = x0;
+  const bw = backWall(x, base);
+  const sideAt = (t: number) => ({ x: x + ROOM_W + (bw.x1 - (x + ROOM_W)) * t, y: base + (bw.yBot - base) * t });
+  const dn = sideAt(0.18), df = sideAt(0.5); // near + far jamb feet
+  const pn = sideAt(0.22), pf = sideAt(0.46); // door-leaf inner bounds
+  return { dn, df, pn, pf, rightEdge: dn.x };
+};
+// where a dev stands to walk through the door (just shy of the wall edge)
+const doorThreshold = (x0: number) => x0 + ROOM_W + 2;
+// the door sill sits up the perspective slant, so a dev walking through steps
+// BACK into the room (a render-only lift, like the back row) as it nears the
+// door — otherwise its feet hug the near floor and it reads as passing through
+// the wall below the door. Ramps in over the last DOOR_APPROACH px.
+const DOOR_LIFT = 11;
+const DOOR_APPROACH = 40;
+
 // Island layout: an island is one repo/directory drawn as a vertical tower one
 // column wide — the main (root) checkout on the ground, each worktree stacked a
 // floor higher. Towers stand ISLAND_GAP columns apart so they read as distinct
@@ -233,6 +256,7 @@ interface Room {
   dying?: boolean; // queued for demolition once its leavers are out
   agents: CrewAgent[];
   decor: number;
+  doorOpen: number; // 0 shut .. 1 swung open; eased while a dev passes through
   plan?: SeatPlan; // desks grouped by worktree (recomputed each layout)
   board?: BoardData; // latest live git/PR data from the extension (incoming)
   boardShown?: BoardData; // what the screen currently renders; swapped in when a beam lands
@@ -1292,7 +1316,7 @@ class PixelCrew {
           x0: cellX0(info.col), baseY: floorBase(info.floor), path: info.path,
           hue: hash(info.island) % 360, built: 0,
           delay: newIdx++ * 0.45, // buildings rise one after another
-          agents: [], decor: hash(key + "decor"),
+          agents: [], decor: hash(key + "decor"), doorOpen: 0,
           statSig: "", statPulse: 0,
           cellPulse: { unstaged: 0, staged: 0, commits: 0, pr: 0 },
           numAnim: {},
@@ -1380,6 +1404,7 @@ class PixelCrew {
           } else {
             tn.x = room.x0 + ROOM_W + 8; // walk in through the ground-floor door
             tn.enterPhase = "walk";
+            tn.lift = DOOR_LIFT; // emerge already at the door's depth (no upward pop)
           }
         }
       });
@@ -1982,6 +2007,7 @@ class PixelCrew {
         tn.base = room.baseY;
         tn.riding = false;
         tn.enterPhase = "walk";
+        tn.lift = DOOR_LIFT; // step out at the door's depth (no upward pop)
         this.retargetToon(tn); // step out of the car and cross to the desk
       }
     }
@@ -2003,7 +2029,16 @@ class PixelCrew {
         (!!tn.errand && tn.errand.phase !== "back") ||
         (!!tn.shred && (tn.shred.phase === "shelf" || tn.shred.phase === "place"));
       const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred;
-      const targetLift = atDesk ? tn.row * ROW_DY : atShelf ? SHELF_LIFT : 0;
+      // a dev walking through the lift door steps back to the door's depth so it
+      // lines up with the raised sill instead of clipping the wall below it
+      const thruDoor =
+        ((tn.leaving && tn.leavePhase === "walk") ||
+          (tn.entering && tn.enterPhase === "walk")) && !tn.riding;
+      let targetLift = atDesk ? tn.row * ROW_DY : atShelf ? SHELF_LIFT : 0;
+      if (thruDoor) {
+        const dist = tn.x0 + ROOM_W - tn.x; // px left of the near corner
+        targetLift = Math.max(targetLift, clamp(1 - dist / DOOR_APPROACH, 0, 1) * DOOR_LIFT);
+      }
       tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
     }
     // advance book errands now that this frame's walk has been applied: arrive at
@@ -2069,32 +2104,22 @@ class PixelCrew {
       const tn = this.leaving[i];
       if (!tn.leavePhase) {
         tn.riding = false; // clear any stale entry-ride state
-        const floor = Math.round(-tn.base / FLOOR_STEP);
-        if (floor > 0) {
-          // upper floor: walk to the elevator on this floor, then ride down
-          tn.targetX = shaftX(tn.x0);
-        } else {
-          // ground floor: walk straight out to the building's edge
-          let maxC = -Infinity;
-          for (const r of this.rooms.values()) {
-            if (r.floor === floor) maxC = Math.max(maxC, r.col);
-          }
-          const edge = isFinite(maxC) ? cellX0(maxC) + ROOM_W : tn.x0 + ROOM_W;
-          tn.targetX = edge + 5;
-        }
+        // every dev exits through the lift door on its own right wall: walk to
+        // the threshold (the wall clips it as it steps through), then ride down
+        // (upper floors) or vanish into the ground lobby.
+        tn.targetX = doorThreshold(tn.x0);
         tn.leavePhase = "walk";
       }
-      const atX = Math.abs(tn.x - tn.targetX) <= 1.5;
-      if (tn.leavePhase === "walk" && atX) {
+      const atDoor = tn.x >= tn.x0 + ROOM_W - 0.5; // fully behind the wall edge
+      if (tn.leavePhase === "walk" && atDoor) {
         if (Math.abs(tn.base) > 1) {
-          // not at ground level → board the car and ride down the shaft
+          // upper floor: now hidden behind the wall → step into the car, ride down
           tn.leavePhase = "elevator";
           tn.riding = true;
           tn.x = shaftX(tn.x0);
           tn.targetX = tn.x;
         } else {
-          tn.leavePhase = "away";
-          tn.targetX = tn.x + 28;
+          this.leaving.splice(i, 1); // ground floor: through the door, out of the building
         }
       } else if (tn.leavePhase === "elevator") {
         tn.x = shaftX(tn.x0);
@@ -2104,12 +2129,26 @@ class PixelCrew {
         if (Math.abs(tn.base) <= 0.5) {
           tn.base = 0;
           tn.riding = false;
-          tn.leavePhase = "away";
-          tn.targetX = tn.x + 28; // step out and walk off the edge
+          this.leaving.splice(i, 1); // alighted at the ground lobby — gone
         }
-      } else if (tn.leavePhase === "away" && atX) {
-        this.leaving.splice(i, 1);
       }
+    }
+
+    // swing each room's lift door open while a dev is walking through it (on foot,
+    // entering or leaving — not riding the car) and ease it shut once clear.
+    const wantOpen = new Set<string>();
+    const transiting: Toon[] = [
+      ...this.leaving.filter((t) => t.leavePhase === "walk"),
+      ...[...this.toons.values()].filter((t) => t.entering && t.enterPhase === "walk" && !t.riding),
+    ];
+    for (const tn of transiting) {
+      if (!tn.bkey) continue;
+      if (Math.abs(tn.x - (tn.x0 + ROOM_W)) < 38) wantOpen.add(tn.bkey);
+    }
+    for (const r of this.rooms.values()) {
+      const target = wantOpen.has(r.name) ? 1 : 0;
+      r.doorOpen += (target - r.doorOpen) * Math.min(1, dt * 9);
+      if (Math.abs(target - r.doorOpen) < 0.01) r.doorOpen = target;
     }
 
     // complete devs no longer throw confetti: they kick back with a coffee
@@ -2474,14 +2513,29 @@ class PixelCrew {
         // outside-DevTower sessions render translucent (here) and desaturated
         // (palette swap in drawToon) so they read as "not one of ours"
         const ghost = tn.agent.external;
-        if (ghost) {
-          ctx.save();
-          ctx.globalAlpha *= 0.62;
+        // a dev walking through the lift door (on foot, not riding) is clipped at
+        // the wall's near jamb so the wall hides it as it steps through — it
+        // disappears INTO the doorway instead of skating across the wall.
+        const thru =
+          (tn.leaving && tn.leavePhase === "walk") ||
+          (tn.entering && tn.enterPhase === "walk" && !tn.riding);
+        if (ghost || thru) ctx.save();
+        if (ghost) ctx.globalAlpha *= 0.62;
+        if (thru) {
+          const edge = doorGeom(tn.x0, tn.base).rightEdge;
+          ctx.beginPath();
+          ctx.rect(tn.x0 - ROOM_W, tn.base - ROOM_H - 60, edge - (tn.x0 - ROOM_W), ROOM_H + 80);
+          ctx.clip();
         }
         this.drawToon(ctx, tn);
-        if (ghost) ctx.restore();
+        if (ghost || thru) ctx.restore();
       }
       for (const r of this.rooms.values()) this.drawDesks(ctx, r, row);
+    }
+    // re-draw an open door's leaf + jamb ON TOP of the crew so a dev passing
+    // through reads as behind it — the wall stands in front, not the dev.
+    for (const r of this.rooms.values()) {
+      if (r.built >= 1 && r.doorOpen > 0.01) this.drawDoor(ctx, r, "overlay");
     }
     // particles
     for (const p of this.particles) {
@@ -3100,28 +3154,9 @@ class PixelCrew {
     }
 
     // door to the lift, set into the right side wall so it follows the
-    // perspective slant instead of floating on the floor
-    const sideAt = (t: number) => ({ x: x + w + (bw.x1 - (x + w)) * t, y: base + (bw.yBot - base) * t });
-    const dn = sideAt(0.18), df = sideAt(0.5); // near (front) + far (back) jambs
-    ctx.fillStyle = "#4a3520"; // frame
-    ctx.beginPath();
-    ctx.moveTo(dn.x, dn.y);
-    ctx.lineTo(dn.x, dn.y - 31);
-    ctx.lineTo(df.x, df.y - 26);
-    ctx.lineTo(df.x, df.y);
-    ctx.closePath();
-    ctx.fill();
-    const pn = sideAt(0.22), pf = sideAt(0.46); // panel inset
-    ctx.fillStyle = "#6e522f";
-    ctx.beginPath();
-    ctx.moveTo(pn.x, pn.y - 1.5);
-    ctx.lineTo(pn.x, pn.y - 29);
-    ctx.lineTo(pf.x, pf.y - 24.5);
-    ctx.lineTo(pf.x, pf.y - 1.5);
-    ctx.closePath();
-    ctx.fill();
-    ctx.fillStyle = "#d9b34a"; // handle on the far (latch) jamb
-    ctx.fillRect(pf.x + 0.4, pf.y - 14, 1.4, 1.6);
+    // perspective slant instead of floating on the floor. It swings open while a
+    // dev walks through it (drawDoor reads r.doorOpen, driven in tick).
+    this.drawDoor(ctx, r, "frame");
 
     // the elevator shaft rides the right side wall (the lift door above); devs
     // travel it between floors, so no internal staircase is drawn here.
@@ -3132,6 +3167,63 @@ class PixelCrew {
       ctx.fillRect(x + 1.5, base - H, w - 3, H);
     }
     ctx.globalAlpha = 1;
+  }
+
+  /** The lift door on a room's right side wall. `mode` "frame" draws the whole
+   *  door (the dark lift beyond, the frame, the swinging leaf) inside the room
+   *  before the crew, so a dev walking out shows in the opening. "overlay"
+   *  re-draws just the jamb + leaf AFTER the crew, so for a room a dev is
+   *  passing through they read as standing IN FRONT of the dev — the wall, not
+   *  the dev, wins the doorway. The leaf swings by r.doorOpen (0 shut..1 open),
+   *  hinged on the near jamb with its free edge arcing out toward the viewer. */
+  private drawDoor(ctx: CanvasRenderingContext2D, r: Room, mode: "frame" | "overlay") {
+    const base = r.baseY, x = r.x0, w = ROOM_W;
+    const g = doorGeom(x, base);
+    const { dn, df, pn, pf } = g;
+    const open = clamp(r.doorOpen, 0, 1);
+    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+    // the opening (the hole in the wall): near + far jamb feet, raised to a lintel
+    const oNB = { x: dn.x, y: dn.y }, oNT = { x: dn.x, y: dn.y - 31 };
+    const oFT = { x: df.x, y: df.y - 26 }, oFB = { x: df.x, y: df.y };
+
+    if (mode === "frame") {
+      // the dark lift lobby seen once the leaf swings clear
+      ctx.fillStyle = "#0a0e12";
+      ctx.beginPath();
+      ctx.moveTo(oNB.x, oNB.y); ctx.lineTo(oNT.x, oNT.y);
+      ctx.lineTo(oFT.x, oFT.y); ctx.lineTo(oFB.x, oFB.y); ctx.closePath(); ctx.fill();
+      // a faint call-light glow on the back wall of the lobby
+      if (open > 0.04) {
+        ctx.fillStyle = "rgba(150,180,210,0.10)";
+        ctx.fillRect(df.x, df.y - 19, Math.max(1, dn.x - df.x), 15);
+      }
+    }
+
+    // frame: near jamb post + top lintel (drawn behind the leaf)
+    ctx.fillStyle = "#3c2a18";
+    ctx.fillRect(dn.x - 0.4, oNT.y, 2, oNB.y - oNT.y);
+    ctx.beginPath();
+    ctx.moveTo(oNT.x, oNT.y); ctx.lineTo(oFT.x, oFT.y);
+    ctx.lineTo(oFT.x, oFT.y - 2.2); ctx.lineTo(oNT.x, oNT.y - 2.2); ctx.closePath(); ctx.fill();
+
+    // the swinging leaf, hinged on the near jamb (pn); the free edge (pf) arcs
+    // from flush-with-the-wall (shut) out toward the near corner (open)
+    const nbC = { x: pn.x, y: pn.y - 1.5 }, ntC = { x: pn.x, y: pn.y - 29 };
+    const fbC = { x: pf.x, y: pf.y - 1.5 }, ftC = { x: pf.x, y: pf.y - 24.5 };
+    const fbO = { x: x + w - 1, y: base + 1 }, ftO = { x: x + w - 1, y: base - 23 };
+    const fb = { x: lerp(fbC.x, fbO.x, open), y: lerp(fbC.y, fbO.y, open) };
+    const ft = { x: lerp(ftC.x, ftO.x, open), y: lerp(ftC.y, ftO.y, open) };
+    ctx.fillStyle = open > 0.02 ? "#79592f" : "#6e522f"; // inner face lifts a touch when ajar
+    ctx.beginPath();
+    ctx.moveTo(nbC.x, nbC.y); ctx.lineTo(ntC.x, ntC.y);
+    ctx.lineTo(ft.x, ft.y); ctx.lineTo(fb.x, fb.y); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#4a3520"; // shaded leading edge so the open leaf reads as a slab
+    ctx.beginPath();
+    ctx.moveTo(ft.x - 0.6, ft.y); ctx.lineTo(ft.x + 0.6, ft.y);
+    ctx.lineTo(fb.x + 0.6, fb.y); ctx.lineTo(fb.x - 0.6, fb.y); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#d9b34a"; // handle rides the free edge
+    ctx.fillRect(fb.x - 1.1, lerp(pf.y - 14, fb.y - 12, open), 1.4, 1.6);
   }
 
   /** The room's stat-tracker TV on the far wall: a flat panel showing the branch
