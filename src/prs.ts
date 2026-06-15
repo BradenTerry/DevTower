@@ -174,6 +174,8 @@ export class PrService {
   private connected = false; // is a GitHub token present (drives the disconnected UI)
   private chasing = false; // a just-opened PR is being chased onto the board
   private disposed = false;
+  private visible = true; // is the DevTower tab visible? (gates the poll)
+  private started = false; // has start() run?
   /** Per-branch ETag cache: a settled PR's last fetch + its PR-resource ETag, so
    *  the next poll can short-circuit with a free 304 when nothing changed. */
   private prCache = new Map<string, { etag: string; info: PrInfo }>();
@@ -214,11 +216,27 @@ export class PrService {
    *  (Kept conservative — each poll is N gh API calls, and bursts trip GitHub's
    *  secondary rate limit.) */
   start(delayMs = 4_000): void {
+    this.started = true;
     this.timer = setTimeout(() => void this.tick(), delayMs);
   }
 
+  /** Called by the console panel as its tab gains/loses visibility. PR data only
+   *  feeds the panel's boards, so polling GitHub while the tab is hidden is wasted
+   *  battery + API budget. Pause when hidden; on re-show, refresh now and resume
+   *  the adaptive cadence so the boards are current the moment they're seen. */
+  setVisible(visible: boolean): void {
+    if (visible === this.visible) return;
+    this.visible = visible;
+    if (!this.started || this.disposed) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    if (visible) void this.tick(); // refresh now, then reschedule itself
+  }
+
   private async tick(): Promise<void> {
+    if (this.disposed || !this.visible) return; // paused while hidden
     await this.refresh();
+    if (this.disposed || !this.visible) return;
     const running = [...this.crew, ...this.review].some((p) => p.checksRunning > 0);
     this.timer = setTimeout(() => void this.tick(), running ? 10_000 : 60_000);
   }

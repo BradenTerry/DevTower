@@ -66,7 +66,12 @@ interface LaunchPersist {
  * conversation via session.ts.
  */
 export class ClaudeDiscovery {
-  private timer?: ReturnType<typeof setInterval>;
+  private timer?: ReturnType<typeof setTimeout>;
+  private baseInterval = 8_000; // configured foreground poll interval
+  private visible = true; // is the DevTower tab currently visible?
+  private started = false; // has start() run (discovery enabled)?
+  private disposed = false;
+  private lastFound = 0; // sessions found on the last scan (drives idle backoff)
   private mine = new Set<string>(); // agent ids this service created
   // cwd → its git branch, with the time we read it. A short TTL is essential: a
   // dev that switches branches mid-session (e.g. `git checkout -b feature/...`)
@@ -270,14 +275,53 @@ export class ClaudeDiscovery {
     dlog("discovery.expectSession", { agentId, sessionId });
   }
 
+  /** Adaptive poll cadence. Foreground polls at the configured interval so a new
+   *  session appears promptly; backgrounded (the DevTower tab isn't visible) it
+   *  drops to a slow heartbeat — and slower still when nothing is running — since
+   *  the scan spawns `ps`/`lsof` and walks `~/.claude/projects` every tick. Coming
+   *  back to the foreground refreshes immediately, so the tower is never stale. */
   start(intervalMs = 8_000): void {
-    this.timer = setInterval(() => {
-      this.refresh().catch((e) => elog("discovery.poll", { message: String(e), stack: (e as any)?.stack }));
-    }, intervalMs);
+    this.baseInterval = intervalMs;
+    this.started = true;
+    this.schedule(this.nextDelay());
+  }
+
+  /** Called by the console panel when its tab gains/loses visibility. */
+  setVisible(visible: boolean): void {
+    if (visible === this.visible) return;
+    this.visible = visible;
+    if (!this.started || this.disposed) return; // polling not active (discovery off)
+    if (visible) {
+      void this.poll(); // foreground again → refresh now, then resume fast cadence
+    } else {
+      this.schedule(this.nextDelay()); // stretch the pending tick out to the heartbeat
+    }
+  }
+
+  private nextDelay(): number {
+    if (this.visible) return this.baseInterval; // foreground: stay responsive
+    // backgrounded: heartbeat only, even slower when no sessions were found.
+    return this.lastFound > 0 ? Math.max(this.baseInterval, 30_000) : 60_000;
+  }
+
+  private schedule(delayMs: number): void {
+    if (this.timer) clearTimeout(this.timer);
+    if (this.disposed) return;
+    this.timer = setTimeout(() => void this.poll(), delayMs);
+  }
+
+  private async poll(): Promise<void> {
+    try {
+      this.lastFound = await this.refresh();
+    } catch (e) {
+      elog("discovery.poll", { message: String(e), stack: (e as any)?.stack });
+    }
+    if (!this.disposed) this.schedule(this.nextDelay());
   }
 
   dispose(): void {
-    if (this.timer) clearInterval(this.timer);
+    this.disposed = true;
+    if (this.timer) clearTimeout(this.timer);
     this._onPrCreated.dispose();
     this._onPrClosed.dispose();
   }
