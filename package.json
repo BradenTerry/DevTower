@@ -119,6 +119,11 @@
         "icon": "$(remove)"
       },
       {
+        "command": "devtower.scmDiscardAll",
+        "title": "Discard All Changes",
+        "icon": "$(discard)"
+      },
+      {
         "command": "devtower.scmStash",
         "title": "Stash Changes",
         "icon": "$(archive)"
@@ -222,6 +227,11 @@
           "group": "1_modification@2"
         },
         {
+          "command": "devtower.scmDiscardAll",
+          "when": "scmProvider == devtower",
+          "group": "1_modification@3"
+        },
+        {
           "command": "devtower.scmStash",
           "when": "scmProvider == devtower",
           "group": "2_main@1"
@@ -281,6 +291,11 @@
           "group": "inline@1"
         },
         {
+          "command": "devtower.scmDiscardAll",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "inline@2"
+        },
+        {
           "command": "devtower.scmUnstageAll",
           "when": "scmProvider == devtower && scmResourceGroup == staged",
           "group": "inline@1"
@@ -291,7 +306,44 @@
           "group": "1_modification@1"
         },
         {
+          "command": "devtower.scmDiscardAll",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "1_modification@2"
+        },
+        {
           "command": "devtower.scmUnstageAll",
+          "when": "scmProvider == devtower && scmResourceGroup == staged",
+          "group": "1_modification@1"
+        }
+      ],
+      "scm/resourceFolder/context": [
+        {
+          "command": "devtower.scmDiscard",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "inline@1"
+        },
+        {
+          "command": "devtower.scmStage",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "inline@2"
+        },
+        {
+          "command": "devtower.scmUnstage",
+          "when": "scmProvider == devtower && scmResourceGroup == staged",
+          "group": "inline@1"
+        },
+        {
+          "command": "devtower.scmDiscard",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "devtower.scmStage",
+          "when": "scmProvider == devtower && scmResourceGroup == changes",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "devtower.scmUnstage",
           "when": "scmProvider == devtower && scmResourceGroup == staged",
           "group": "1_modification@1"
         }
@@ -307,6 +359,10 @@
         },
         {
           "command": "devtower.scmDiscard",
+          "when": "false"
+        },
+        {
+          "command": "devtower.scmDiscardAll",
           "when": "false"
         },
         {
