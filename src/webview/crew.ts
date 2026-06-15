@@ -2489,9 +2489,10 @@ class PixelCrew {
     for (const g of this.ghosts) this.drawGhost(ctx, g);
 
     // external elevator shafts: a track bolted to the right exterior wall of
-    // every tower that has an upper floor; the car (below) rides inside it.
+    // every tower; the car (below) rides inside it. A ground-only first floor
+    // still gets its shaft so it reads as a real building.
     for (const [col, rng] of this.colRange) {
-      if (rng.max <= 0) continue; // ground-only towers need no lift
+      if (rng.max < 0) continue; // every tower gets a shaft; only skip empty columns
       const sx = shaftX(cellX0(col));
       const left = sx - SHAFT_W / 2;
       const top = floorBase(rng.max) - ROOM_H;
