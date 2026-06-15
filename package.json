@@ -53,6 +53,11 @@
         "icon": "$(screen-full)"
       },
       {
+        "command": "devtower.openMini",
+        "title": "DevTower: Open Mini View",
+        "icon": "$(list-flat)"
+      },
+      {
         "command": "devtower.refresh",
         "title": "DevTower: Refresh Agents",
         "icon": "$(refresh)"

@@ -23,7 +23,7 @@ npm run build >/dev/null
 echo "==> Capturing scenarios"
 # stills (campus/room/agent-panel/settings via capture.shot.ts; marketplace-room
 # is its own shot) plus the agent-stream frame sequence.
-npx playwright test -g "capture: (campus|room|agent-panel|settings|marketplace-room|agent-stream)"
+npx playwright test -g "capture: (campus|room|agent-panel|settings|marketplace-room|agent-stream|mini)"
 
 echo "==> Assembling the cable-stream GIF"
 ffmpeg -y -framerate 25 -i "$OUT/agentstream/frame-%03d.png" \
@@ -43,5 +43,6 @@ copy room.png            room.png                # readme + MARKETPLACE room cut
 copy agent-panel.png     shot-agent-panel.png    # readme + MARKETPLACE agent side-panel
 copy marketplace-room.png shot-room.png          # MARKETPLACE single room w/ sub-agent badge
 copy settings-github.png shot-settings-github.png # readme + MARKETPLACE GitHub access page
+copy mini-landing.png    shot-mini.png           # readme + MARKETPLACE mini-view popout landing
 
 echo "==> Done. Review 'git diff -- media/' and commit the updated assets."
