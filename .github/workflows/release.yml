@@ -7,9 +7,7 @@ name: Release
 # with auto-generated notes and the .vsix attached, and publishes to the VS Code
 # Marketplace (regular channel) when VSCE_PAT is set.
 #
-# DevTower publishes to the regular Marketplace channel (it carries the "preview" flag in
-# package.json while features settle, which only badges the listing, it does not gate
-# installs like the pre-release channel would).
+# DevTower publishes to the regular Marketplace channel (not the pre-release channel).
 #
 #   git tag v0.2.0 && git push origin v0.2.0
 on:

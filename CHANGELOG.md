@@ -2,16 +2,42 @@
 
 All notable changes to the DevTower extension are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/) and [Semantic Versioning](https://semver.org/).
-DevTower is published on the VS Code Marketplace (flagged as a Preview). Older releases
-are listed at [GitHub Releases](https://github.com/BradenTerry/DevTower/releases).
+DevTower is published on the VS Code Marketplace. Older releases are listed at
+[GitHub Releases](https://github.com/BradenTerry/DevTower/releases).
 
-## [Unreleased]
+## [1.0.0] - 2026-06-15
+
+First general-availability release: DevTower leaves preview and ships as 1.0 on the VS Code
+Marketplace.
+
+### Added
+
+- **Worktree-switch animation.** Switching a room to another worktree rides the elevator between
+  floors instead of snapping, so it is clear which floor you landed on.
+- **Native Source Control view** for the active worktree, in its own titled section with a branch
+  switcher. A toggle excludes agent worktrees from Source Control, and the view follows the
+  selected directory.
+- **AI-generated session summary** in the agent stats panel, so you can see what a session is doing
+  without opening its terminal.
+- **"Send Home" button** on the agent panel to retire a dev, plus zoom-to-dev when an agent is
+  selected from outside the canvas.
+
+### Changed
+
+- **Performance mode.** The single efficiency toggle is replaced by a 3-way `devtower.performanceMode`
+  picker - `smooth` (15 fps), `balanced` (10 fps, default), or `eco` (6 fps, lowest CPU). Background
+  pollers also pause while DevTower is hidden.
+- **Rooms decluttered.** Removed the potted-plant and server-rack decor so the board and dev read
+  cleaner; lift-door open/close is animated instead of clipping the wall.
+- Debug logging moved from the workspace `.devtower/` to the extension's global storage.
 
 ### Removed
 
 - The central **"Branches & PRs" billboard**, its HUD ⇄ zoom button, and the **Review Dispatch**
   modal. Per-worktree PR status (number, checks, review) still shows on each room's board. The
   branch/PR board will return as a dedicated feature in a later release.
+- The standalone **Changes view** and the desk-TV git-sync buttons, folded into the Source Control
+  view above.
 
 ## [0.5.0] - 2026-06-13
 

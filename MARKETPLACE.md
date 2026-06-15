@@ -6,8 +6,6 @@
 
 ![An agent runs a full git turn at its desk: it edits a file, stages, commits, pushes, then opens a PR. Each step streams up the network cable to the room's board, where the UNSTAGED, STAGED, COMMITS and PR cells update live.](media/agent-stream.gif)
 
-> **Early Preview.** DevTower is on the VS Code Marketplace, flagged as a Preview while features settle. Install it, kick the tires, and [file issues](https://github.com/BradenTerry/DevTower/issues) - feedback shapes future releases.
-
 ![Inside a room: the cutaway board shows the worktree's branch, unstaged / staged / commit counts with line stats, a synced indicator, and the PR cell (#142 with its checks and review status); the agent works at their desk.](media/room.png)
 
 ## The problem it solves
@@ -89,7 +87,7 @@ The GitHub access page - connected account, scopes, the features your token unlo
 | `devtower.pollIntervalMs` | `8000` | How often to rescan for live sessions. |
 | `devtower.sessionMaxAgeHours` | `24` | How far back to scan transcripts for sessions. |
 | `devtower.showRecentSessions` | `false` | Also show recent sessions with no running process (as idle rooms). |
-| `devtower.efficiencyMode` | `false` | Reduce animation work to save CPU (also the 🔋 button in the tower). |
+| `devtower.performanceMode` | `balanced` | Animation frame rate / particle detail: `smooth` (15 fps), `balanced` (10 fps), or `eco` (6 fps, lowest CPU). Pick from the tower's Settings. |
 | `devtower.claudeCommand` | `claude` | Command launched in a new agent's terminal. |
 | `devtower.launchCommand` | `` | Overrides `claudeCommand`; placeholders `${worktree}`, `${branch}`, `${id}`. |
 | `devtower.reviewSkills` | code-review, security-review, review, simplify, verify | Skills offered as chips in the Review Dispatch card. |
