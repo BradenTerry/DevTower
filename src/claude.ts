@@ -861,7 +861,7 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
           skills: f.skills,
           subagents: f.subagents,
-          tasks: f.tasks,
+          tasks: f.tasks ?? null, // null = authoritatively no list now → clear stale count
           external: cleared ? !!this.store.get(id)?.external : false,
           launchId,
           clearedSession: cleared,
@@ -886,7 +886,7 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
           skills: f.skills,
           subagents: f.subagents,
-          tasks: f.tasks,
+          tasks: f.tasks ?? null, // null = authoritatively no list now → clear stale count
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
           external: cleared ? !!this.store.get(id)?.external : !isAdopted,

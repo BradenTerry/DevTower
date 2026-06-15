@@ -14,6 +14,21 @@ describe("DevTowerStore.apply", () => {
     expect(a.worktree).toBe(""); // no silent "." fallback
   });
 
+  it("clears a stale task count when a poll reports null, but preserves it on undefined", () => {
+    const s = newStore();
+    s.apply({ id: "a1", tasks: { done: 3, total: 4 } });
+    expect(s.get("a1")!.tasks).toEqual({ done: 3, total: 4 });
+
+    // a writer that doesn't report tasks (undefined) keeps the last-known count
+    s.apply({ id: "a1", state: "active" });
+    expect(s.get("a1")!.tasks).toEqual({ done: 3, total: 4 });
+
+    // an authoritative poll finding no list (null) clears it — otherwise the desk
+    // TV stays stuck at 3/4 after the list is cleared / drops below 2
+    s.apply({ id: "a1", tasks: null });
+    expect(s.get("a1")!.tasks).toBeUndefined();
+  });
+
   it("ignores events without an id", () => {
     const s = newStore();
     s.apply({ id: "" });
