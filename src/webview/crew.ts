@@ -1556,7 +1556,12 @@ class PixelCrew {
   }
 
   private targetZoom(): number {
-    const cw = Math.max(80, (this.container.clientWidth || 1) - this.curInsetL - this.curInsetR);
+    // Fit against the FINAL inset, not the animating one. While the panel is
+    // sliding closed (clicking off a dev), curInset is still wide for a few
+    // frames, which would make the fit zoom out too far and then glide back in
+    // as the inset shrinks - a visible zoom-out-then-in. The horizontal centring
+    // (cx in draw) keeps using curInset so the view still slides in step.
+    const cw = Math.max(80, (this.container.clientWidth || 1) - this.insetL - this.insetR);
     const ch = this.container.clientHeight || 1;
     const fitW = (cw * 0.9) / this.focus.spanW;
     const fitH = (ch * 0.86) / this.focus.spanH;
