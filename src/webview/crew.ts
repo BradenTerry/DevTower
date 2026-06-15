@@ -3028,29 +3028,6 @@ class PixelCrew {
     // in front of the bookshelf's near end
     this.drawShredder(ctx, r, onWall);
 
-    // plant + hash decor
-    const px = x + w - DOOR_W - 6;
-    ctx.fillStyle = "#7a4a2a";
-    ctx.fillRect(px, base - 4.5, 4, 3);
-    ctx.fillStyle = "#3f8a4a";
-    ctx.fillRect(px + 0.5, base - 9, 1.4, 4.5);
-    ctx.fillRect(px + 2.2, base - 8, 1.4, 3.5);
-    ctx.fillRect(px - 0.8, base - 7.5, 1.4, 3);
-    // floor-standing decor only (a high wall poster used to live here too, but it
-    // collided with the full-wall task board, so it was removed; the water cooler
-    // that shared this slot was removed too). A small blinking server rack stands
-    // by the door on some rooms for variety.
-    if (r.decor % 2) {
-      const sx = x + w - DOOR_W - 14;
-      ctx.fillStyle = "#171c21";
-      ctx.fillRect(sx, base - 16, 6, 14.5);
-      for (let i = 0; i < 4; i++) {
-        const on = (this.frame + i * 3 + (r.decor % 7)) % 8 < 4;
-        ctx.fillStyle = on ? (i === 2 ? "#3ee089" : "#ffb13d") : "#2a3138";
-        ctx.fillRect(sx + 4.2, base - 14.5 + i * 3.2, 1, 1);
-      }
-    }
-
     // ceiling pendants: just the fixtures + a tight bulb glow — the room's actual
     // lighting is the soft floor gradient above, so no big distracting cones
     const LAMPS = 3;
