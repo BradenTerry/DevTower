@@ -10,7 +10,7 @@ import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
-import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath } from "./debugLog";
+import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
 
@@ -322,14 +322,29 @@ export class ConsolePanel {
         break;
       }
       case "clearDebugLog": {
+        const archives = debugLogArchiveCount();
+        const detail = archives
+          ? `This permanently deletes the captured debug log and its ${archives} archived file${archives === 1 ? "" : "s"}.`
+          : "This permanently deletes the captured debug log.";
         const pick = await vscode.window.showWarningMessage(
           "Clear the DevTower debug log?",
-          { modal: true, detail: "This permanently deletes the captured debug log." },
+          { modal: true, detail },
           "Clear log"
         );
         if (pick === "Clear log") {
           clearDebugLog();
           this.postConfig();
+        }
+        break;
+      }
+      case "openLogFolder": {
+        // reveal the .devtower folder (with debug.log selected when present) in
+        // the OS file manager so the operator can see the active log + archives
+        const dir = debugLogDir();
+        if (dir) {
+          const p = debugLogPath();
+          const target = p && fs.existsSync(p) ? p : dir;
+          await vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(target));
         }
         break;
       }
@@ -508,6 +523,7 @@ export class ConsolePanel {
       eco: cfg.get<boolean>("efficiencyMode", false),
       debug: cfg.get<boolean>("debugLog", false),
       debugLogExists: debugLogExists(),
+      debugLogArchives: debugLogArchiveCount(),
       reviewSkills: cfg.get<string[]>("reviewSkills", []),
       reviewDefaults: cfg.get<object>("reviewDefaults", {}),
       reviewAgents: this.discoverReviewAgents(),
