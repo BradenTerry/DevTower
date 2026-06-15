@@ -2501,7 +2501,7 @@ class PixelCrew {
     for (const g of this.ghosts) {
       const s = this.screenOf(g.x0 + ROOM_W / 2, g.base - ROOM_H / 2);
       const building = g.kind === "building";
-      ctx.fillStyle = building ? "rgba(110,210,150,0.8)" : "rgba(170,180,186,0.75)";
+      ctx.fillStyle = building ? "rgba(190,245,210,0.95)" : "rgba(170,180,186,0.75)";
       ctx.font = `600 ${clamp(3 * this.cam.z, 8, 12)}px 'Martian Mono', monospace`;
       ctx.textAlign = "center";
       ctx.fillText(building ? "+ WORKTREE" : "+ RESERVE", s.x, s.y - 2);
