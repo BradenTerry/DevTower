@@ -4302,6 +4302,9 @@ class PixelCrew {
   clearFocus() {
     this._instance?.clearFocus();
   },
+  focusAgent(id: string) {
+    this._instance?.focusAgent(id);
+  },
   zoomOutToAgentRoom() {
     return this._instance?.zoomOutToAgentRoom() ?? false;
   },
