@@ -45,6 +45,8 @@ export interface Agent {
   transcriptPath?: string;
   /** Tokens currently in the session's context window. */
   contextTokens?: number;
+  /** AI-generated session title (from `ai-title` transcript records). */
+  aiTitle?: string;
   /** Skills (slash commands / Skill tool) this session has used, accumulated in
    *  order of first use. Drives the tower's bookshelf trips and the panel list. */
   skills?: string[];
@@ -102,6 +104,7 @@ export interface StateEvent {
   /** the actual question the agent asked, when one exists */
   question?: string;
   contextTokens?: number;
+  aiTitle?: string;
   /** Skills seen in this poll's transcript window; unioned into the agent. */
   skills?: string[];
   /** In-flight sub-agent count from this poll's transcript window. */
@@ -270,6 +273,7 @@ export class DevTowerStore {
       session: existing?.session,
       transcriptPath: ev.transcriptPath ?? existing?.transcriptPath,
       contextTokens: ev.contextTokens ?? existing?.contextTokens,
+      aiTitle: ev.aiTitle ?? existing?.aiTitle,
       // union, preserving first-seen order, so the full per-session set persists
       // even as individual Skill calls scroll out of the transcript tail
       skills: mergeSkills(existing?.skills, ev.skills),

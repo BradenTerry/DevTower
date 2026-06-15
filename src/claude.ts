@@ -853,6 +853,7 @@ export class ClaudeDiscovery {
         this.store.apply({
           id,
           model: f.model,
+          aiTitle: f.aiTitle,
           state: f.state,
           elapsed: ago(f.mtime),
           transcriptPath: f.file,
@@ -873,6 +874,7 @@ export class ClaudeDiscovery {
           id,
           name: isAdopted ? undefined : `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
           model: f.model,
+          aiTitle: f.aiTitle,
           repo: cdRoom ?? path.basename(cwd),
           worktree: cwd,
           branch: branch || "—",
@@ -1102,6 +1104,7 @@ export class ClaudeDiscovery {
           state,
           task: meta.task || "Claude session",
           model: meta.model || "claude",
+          aiTitle: meta.aiTitle,
           question:
             state !== "waiting" ? undefined : waitingByHook ? marker!.message || meta.question : meta.question,
           contextTokens: meta.contextTokens,
@@ -1128,6 +1131,7 @@ interface Found {
   state: AgentState;
   task: string;
   model: string;
+  aiTitle?: string;
   question?: string;
   contextTokens?: number;
   skills?: string[];
@@ -1185,7 +1189,7 @@ export async function newestSubMtime(projectDir: string, sessionId: string): Pro
 export async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; working?: boolean; prCreatedAt?: number; prClosedAt?: number }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; aiTitle?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; working?: boolean; prCreatedAt?: number; prClosedAt?: number }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -1221,6 +1225,7 @@ export async function readMeta(
     // newest real model id — synthetic/meta turns carry "model":"<synthetic>",
     // which must not become the agent's displayed model
     const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g, (v) => v !== "<synthetic>");
+    const aiTitle = lastMatch(tail, /"aiTitle"\s*:\s*"([^"]+)"/g);
 
     // skills the agent used, visible in the tail. Two ways a skill shows up:
     //   1. the model called the Skill tool ("name":"Skill", input.skill), and
@@ -1393,7 +1398,7 @@ export async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents, working, prCreatedAt: prCreatedAt || undefined, prClosedAt: prClosedAt || undefined };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, aiTitle, question, contextTokens, skills, subagents, working, prCreatedAt: prCreatedAt || undefined, prClosedAt: prClosedAt || undefined };
   } finally {
     await fh.close();
   }
