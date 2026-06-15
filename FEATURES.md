@@ -6,7 +6,7 @@ Capability map, independent of the current visual theme. The **data contracts** 
 
 | Layer | Files | Re-theme impact |
 |---|---|---|
-| Data core: store, state feed, git, PRs, terminals, sessions, diff provider | `src/store.ts`, `src/git.ts`, `src/prs.ts`, `src/terminals.ts`, `src/session.ts`, `src/diffProvider.ts`, `src/changesView.ts` | none |
+| Data core: store, state feed, git, PRs, terminals, sessions, diff provider, native SCM, file viewer | `src/store.ts`, `src/git.ts`, `src/prs.ts`, `src/terminals.ts`, `src/session.ts`, `src/diffProvider.ts`, `src/scmView.ts`, `src/directoryView.ts` | none |
 | Bridge: webview messages (`state`, `session`, `changes`, `prs` / `select`, `send`, `action`, `request*`) | `src/consolePanel.ts` | none (contract is theme-agnostic) |
 | Presentation: 3D scene + HUD | `src/webview/crew.ts`, `media/console.{js,css}` | replaced/reskinned |
 
@@ -40,17 +40,19 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | Agent panel: chat view (full conversation) | ✅ | Operator/Agent/Tool/Result message kinds |
 | Continue session: composer + state-aware quick actions | ✅ | Waiting → inline question callout with Approve / Request changes |
 | Live "now" strip (what the agent is doing/asking) | ✅ | From task/question fields |
-| Changes tab: per-worktree file list with +/− counts | ✅ | Real `git status --porcelain` + numstat |
-| Stage / unstage per file + stage all / unstage all | ✅ | In-panel and in native Changes tree |
+| Native Source Control view: per-worktree file list with +/− counts | ✅ | `vscode.scm.createSourceControl` in `src/scmView.ts`; real `git status --porcelain` + numstat; follows the focused worktree, agent-worktree hide toggle |
+| Stage / unstage / discard per file + stage-all / unstage-all / discard-all | ✅ | Native Source Control resource actions; folder-level stage/unstage/discard in tree mode; `discard-all` behind a modal confirm |
+| Commit from the Source Control input box | ✅ | `devtower.scmCommit` via the accept-input title-bar check; per-room push/pull/fetch on the board |
 | Native diff editor (HEAD ↔ working tree), opens beside console | ✅ | Virtual content provider; worktree-scoped, never workspace cwd |
 | Per-agent native terminal rooted in its worktree | ✅ | `devtower.launchCommand` to attach a real session |
 | PR board: worktree PRs (checks + review status) | ✅ | `gh pr list --head <branch>` per worktree; 2-min poll |
 | PR board: PRs requesting my review | ✅ | `gh search prs --review-requested=@me`; badge count in HUD |
 | PR chip on agent panel + View PR link | ✅ | Opens the worktree's existing PR; no create-PR button (prompt the agent to open the PR how you want it) |
-| File viewer: drag-to-move + right-click delete | ✅ | *Selected Directory* tree: `TreeDragAndDropController` renames within the worktree; `devtower.deleteFile` removes to Trash; each confirms once with a "don't ask again" opt-out (`devtower.confirmFileMove` / `devtower.confirmFileDelete` in globalState; reset via `devtower.resetFilePrompts`) |
-| Review Dispatch modal: skills + instructions + effort + agent md, save defaults | ⛔ removed | Removed with the billboard (see CHANGELOG [Unreleased]); returns when the branch/PR board is rebuilt |
+| File viewer: drag-to-move + multi-select right-click delete | ✅ | *Selected Directory* tree (`src/directoryView.ts`): `TreeDragAndDropController` renames within the worktree; `devtower.deleteFile` removes a multi-selection (shift/cmd-click) to Trash in one action; each confirms once with a "don't ask again" opt-out (`devtower.confirmFileMove` / `devtower.confirmFileDelete` / `devtower.confirmFolderDelete` in globalState; reset via `devtower.resetFilePrompts`) |
+| Mini view: compact DOM-table popout (Projects → Worktrees → Agents) | ✅ | `src/miniPanel.ts`; All-agents / All-PRs tabs, per-branch git stats, PR/CI status; same live feed as the scene, decoupled from the tower lifecycle (`DevTower: Open Mini View`) |
+| Review Dispatch modal: skills + instructions + effort + agent md, save defaults | ⛔ removed | Removed with the billboard (see CHANGELOG [1.0.0]); returns when the branch/PR board is rebuilt |
 | Review in an isolated worktree | ⚠️ no entry point | `worktreeForPr` (`src/git.ts`) and the verdict wiring still exist, but the only launcher (the Review Dispatch modal) was removed |
-| Central "PRs to review" billboard | ⛔ removed | Removed for v1 (see CHANGELOG [Unreleased]); the branch/PR board returns as a dedicated feature later |
+| Central "PRs to review" billboard | ⛔ removed | Removed for v1 (see CHANGELOG [1.0.0]); the branch/PR board returns as a dedicated feature later |
 | Diegetic review: reviewer pose (magnifier + printout) + verdict stamp | ⚠️ no entry point | `reviewOf` → verdict rendering still lives in `crew.ts`, but nothing assigns `reviewOf` now that Review Dispatch is gone |
 | Light/dark theme toggle | ✅ | Token-driven; presentation-only |
 
@@ -73,11 +75,9 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | Rebuild the branch/PR board (was the billboard + Review Dispatch) | Re-add the canvas board, its data feed (`fetchRepos`-style branch/PR listing), and a launcher for review dispatch; all removed for v1 |
 | Merge/close PR from the board | `gh pr merge` + confirmation UX |
 | PR event toasts (checks went red, review approved) | Diff PR snapshots between polls → feed |
-| Commit + push from Changes tab | Commit message input + `git commit/push`; sits next to stage/unstage |
 | Quick-jump roster / minimap for large towers | HUD strip of avatar chips |
 | Camera orbit (rotate around the scene) | Extend drag handler with a modifier/right-button orbit |
 | Multi-select / bulk agent actions (pause all in repo) | Selection model extension |
-| Discard file changes | `git checkout -- <file>` + confirm |
 | Agent-to-agent handoff visualization (walking between islands) | Animation + state semantics |
 | Sound cues (agent needs input) | Optional, off by default |
 

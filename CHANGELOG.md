@@ -5,6 +5,52 @@ All notable changes to the DevTower extension are documented here. This project 
 DevTower is published on the VS Code Marketplace. Older releases are listed at
 [GitHub Releases](https://github.com/BradenTerry/DevTower/releases).
 
+## [1.4.0] - 2026-06-15
+
+### Added
+
+- **Mini view (compact popout).** A canvas-free DOM-table window beside the tower that drills
+  **Projects -> Worktrees -> Agents**, with **All agents** and **All PRs** tabs, per-branch git
+  stats (committed / staged / unstaged with ahead-behind), and PR/CI status. From the list you can
+  add projects and worktrees, spawn or remove agents, view or chat with an agent, switch the
+  selected directory, and jump to a PR. It runs off the same live feed as the scene and is
+  **decoupled from the tower's lifecycle**: open it on its own with **DevTower: Open Mini View**, and
+  it keeps updating even when the tower is closed.
+- **Multi-select delete in the file viewer.** Shift-click a range and cmd/ctrl-click to toggle in the
+  Selected Directory tree, then delete every selected file or folder in one action. Folder deletes
+  use a separate "don't ask again" confirmation key from file deletes.
+- **Discard all / folder-level actions in Source Control.** A **discard-all** command in the Changes
+  group (title bar and context menu) reverts every unstaged change behind one modal confirm, and
+  folder rows in tree mode gain stage / unstage / discard actions over everything beneath them.
+- **Merged-PR badge on the board.** A just-merged PR lingers on its room's board with a purple
+  **MERGED** badge for a few minutes (from merge time) before it clears.
+- **Selected-directory HUD chip.** A chip under the top-left telemetry pill shows the currently
+  selected worktree (truncated from the left so the tail stays visible; full path on hover), and is
+  hidden when nothing is selected.
+
+### Changed
+
+- The tower's ghost-slot labels are clearer: **+ PROJECT** reserves another repo as its own tower and
+  **+ WORKTREE** stacks the next worktree floor.
+- **Release publishing.** Pre-releases are cut by running the Release workflow manually (with the
+  prerelease box ticked) rather than via a tag suffix; versions stay one continuous line of plain
+  `vX.Y.Z` numbers.
+
+### Fixed
+
+- **Phantom unpushed commits.** After a merged PR's remote branch is deleted, the board no longer
+  shows a phantom "to push" count; commit counts now ignore branches whose remote is gone.
+- **Elevator-down rider pose.** The descending lift passenger now stands upright instead of reclining
+  with their legs poking out of the car.
+- **`/cd` relocation.** An agent that runs `/cd` into the main checkout now relocates correctly; the
+  worktree match canonicalizes both paths (symlinks, trailing slashes, case).
+- **Notification "View agent".** The console toast's **View agent** action now pans and zooms the
+  canvas to the selected agent.
+- **Theme-aware panel icon.** The DevTower panel tab icon uses light/dark variants so it stays
+  visible in both editor themes.
+- **Source Control cleanup.** Already-open worktree repos are closed when you hide agent worktrees
+  from the Source Control panel.
+
 ## [1.0.0] - 2026-06-15
 
 First general-availability release: DevTower leaves preview and ships as 1.0 on the VS Code
