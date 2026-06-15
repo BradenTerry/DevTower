@@ -126,6 +126,7 @@ const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per 
 // here, feeds them in, then walks back.
 const SHRED_REACH = 21; // world x (from room left) a dev stands at to shred (just right of the bin)
 const SHRED_FEED = 1.6; // seconds spent feeding the stack into the shredder
+const SHELF_PLACE = 0.7; // seconds spent slotting returned books back onto the shelf
 // Room depth: the interior is a shallow one-point-perspective box. The far wall
 // is inset by DEPTH_X on each side and its floor line sits DEPTH_Y above the
 // near floor; the floor, ceiling and side walls are drawn as trapezoids between
@@ -340,8 +341,10 @@ interface Toon {
   errand?: { phase: "out" | "grab" | "back"; grab: number };
   // context-clear (/clear) trip: a session replaced by a new one in the SAME
   // worktree keeps this dev, which carries its context papers to the shredder
-  // ("out"), feeds the stack in ("feed"), then walks back to its seat ("back").
-  shred?: { phase: "out" | "feed" | "back"; t: number };
+  // ("out"), feeds the stack in ("feed"), then carries its skill books on to the
+  // shelf ("shelf") and slots them back ("place") before walking to its seat
+  // ("back"). `books` is how many it left the desk carrying, drawn in its arms.
+  shred?: { phase: "out" | "feed" | "shelf" | "place" | "back"; t: number; books: number };
   // last /clear session id this toon has reacted to. A change (the dev's session
   // was replaced in place, owned or external) kicks off a fresh shred trip; we
   // dedupe on it so a re-render with the same value doesn't replay the walk.
@@ -843,11 +846,17 @@ class PixelCrew {
         this.dbg("shred.swap", { from: id, to: next.id, worktree: key, wasExternal: !!tn.agent.external, nowExternal: !!next.external });
         this.toons.delete(id);
         tn.agent = next;
-        tn.shred = { phase: "out", t: 0 };
+        // carry the old context's papers to the shredder AND return its skill books
+        // to the shelf — but ONLY the books whose skill the fresh session no longer
+        // carries. A skill that persists into the new context keeps its book on the
+        // desk (shown statically); returning then instantly re-fetching it would be
+        // a pointless round trip (e.g. /clear while a skill marker still lingers).
+        const newSkills = [...(next.skills ?? [])];
+        const kept = tn.skills.filter((s) => newSkills.includes(s)).length;
+        tn.shred = { phase: "out", t: 0, books: Math.max(0, tn.booksShown + tn.booksInHand - kept) };
         tn.errand = undefined;
-        // the shredded context resets the dev's skills/books to the fresh session
-        tn.skills = [...(next.skills ?? [])];
-        tn.booksShown = tn.skills.length;
+        tn.skills = newSkills;
+        tn.booksShown = newSkills.length;
         tn.booksInHand = 0;
         this.toons.set(next.id, tn);
       }
@@ -919,9 +928,17 @@ class PixelCrew {
       // trip — carry the context papers over, feed them in, walk back to its seat.
       const nextClear = a.clearedSession;
       if (nextClear && tn.clearedSession !== nextClear && !tn.entering && !tn.leaving && !tn.shred) {
-        tn.shred = { phase: "out", t: 0 };
+        // carry the context papers to the shredder AND return the skill books to the
+        // shelf — but ONLY books whose skill the fresh context no longer carries. A
+        // skill that survives the /clear keeps its book on the desk (shown
+        // statically); returning then instantly re-fetching it would be a pointless
+        // round trip (e.g. /clear while a skill marker still lingers in the tail).
+        const newSkills = [...(a.skills ?? [])];
+        const kept = tn.skills.filter((s) => newSkills.includes(s)).length;
+        tn.shred = { phase: "out", t: 0, books: Math.max(0, tn.booksShown + tn.booksInHand - kept) };
         tn.errand = undefined;
-        tn.booksShown = tn.skills.length;
+        tn.skills = newSkills;
+        tn.booksShown = newSkills.length;
         tn.booksInHand = 0;
         this.invalidate(); // wake the loop so the walk plays now, not at the next event
       }
@@ -1937,8 +1954,12 @@ class PixelCrew {
       }
       // out/grab: head for (and hold at) the shelf; back: keep the desk aim above
       if (tn.errand && tn.errand.phase !== "back") tn.targetX = room.x0 + SHELF_REACH;
-      // the shred trip overrides the desk aim toward the shredder until it heads back
-      if (tn.shred && tn.shred.phase !== "back") tn.targetX = room.x0 + SHRED_REACH;
+      // the /clear trip overrides the desk aim: first toward the shredder (out/feed),
+      // then on to the shelf to return the books (shelf/place), then back to the seat
+      if (tn.shred) {
+        if (tn.shred.phase === "out" || tn.shred.phase === "feed") tn.targetX = room.x0 + SHRED_REACH;
+        else if (tn.shred.phase === "shelf" || tn.shred.phase === "place") tn.targetX = room.x0 + SHELF_REACH;
+      }
     }
 
     // upper-floor arrivals ride the elevator up the shaft to their door
@@ -1993,8 +2014,9 @@ class PixelCrew {
         tn.errand = undefined;
       }
     }
-    // advance the shred trip: arrive at the shredder → feed the stack in → walk
-    // back to the desk. Mirrors the book errand but carries nothing home.
+    // advance the /clear trip: arrive at the shredder → feed the papers in → carry
+    // the books on to the shelf → slot them back → walk to the desk empty-handed.
+    // A dev with no books to return skips straight from feeding to heading back.
     for (const tn of this.toons.values()) {
       const sh = tn.shred;
       if (!sh) continue;
@@ -2002,6 +2024,11 @@ class PixelCrew {
       if (sh.phase === "out") {
         if (arrived) { sh.phase = "feed"; sh.t = SHRED_FEED; }
       } else if (sh.phase === "feed") {
+        sh.t -= dt;
+        if (sh.t <= 0) sh.phase = sh.books > 0 ? "shelf" : "back";
+      } else if (sh.phase === "shelf") {
+        if (arrived) { sh.phase = "place"; sh.t = SHELF_PLACE; }
+      } else if (sh.phase === "place") {
         sh.t -= dt;
         if (sh.t <= 0) sh.phase = "back";
       } else if (arrived) {
@@ -4140,17 +4167,33 @@ class PixelCrew {
       }
     }
 
-    // the stack of context papers a dev carries to the shredder on /clear. It
-    // leaves the desk with a full stack ("out") that thins as it feeds it in
-    // ("feed"); on the way back ("back") its arms are empty.
+    // what a dev carries on its /clear trip, held to its left (toward the bin and
+    // shelf it is walking to). It leaves the desk with its context papers AND its
+    // skill books: the papers thin as they feed into the shredder ("feed") and are
+    // gone once it heads to the shelf; the books thin as they slot back ("place").
+    // On the final "back" leg its arms are empty.
     if (tn.shred && tn.shred.phase !== "back") {
-      const sheets = tn.shred.phase === "feed"
-        ? Math.ceil(clamp(tn.shred.t / SHRED_FEED, 0, 1) * 4)
-        : 4;
-      // the bin sits to the dev's left, so hold the stack on that side (toward it)
+      const sh = tn.shred;
       const bx = x - 2.4;
+      // skill books carried back to the shelf, held below the papers
+      const booksLeft = sh.phase === "place"
+        ? Math.ceil(clamp(sh.t / SHELF_PLACE, 0, 1) * sh.books)
+        : sh.books;
+      for (let k = 0; k < booksLeft; k++) {
+        const hue = BOOK_HUES[k % BOOK_HUES.length];
+        const by = ty + 3 - k * 1.4;
+        ctx.fillStyle = `hsl(${hue} 45% 46%)`;
+        ctx.fillRect(bx, by - 1.4, 4, 1.4);
+        ctx.fillStyle = `hsl(${hue} 45% 56%)`;
+        ctx.fillRect(bx, by - 1.4, 4, 0.4);
+      }
+      // context papers stacked on top of the books, only while shredder-bound
+      const sheets = sh.phase === "out" ? 4
+        : sh.phase === "feed" ? Math.ceil(clamp(sh.t / SHRED_FEED, 0, 1) * 4)
+        : 0;
+      const top = ty + 3 - booksLeft * 1.4; // rest the papers above the book stack
       for (let k = 0; k < sheets; k++) {
-        const by = ty + 3 - k * 1.2;
+        const by = top - k * 1.2;
         ctx.fillStyle = "#e9e3d2"; // white paper
         ctx.fillRect(bx, by - 1.2, 4, 1.2);
         ctx.fillStyle = "#cfc9b6"; // edge shadow line
