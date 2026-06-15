@@ -16,6 +16,7 @@ import {
   pull,
   fetch,
   stashSave,
+  worktreeList,
   GitFile,
 } from "./git";
 import { openGitFileDiff } from "./diffProvider";
@@ -41,7 +42,10 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
   stagedGroup.hideWhenEmpty = true;
   changesGroup.hideWhenEmpty = true;
   sc.acceptInputCommand = { command: "devtower.scmCommit", title: "Commit" };
-  sc.inputBox.placeholder = "Message";
+  // accept-input (scm.acceptInput) is ⌘Enter on macOS, Ctrl+Enter elsewhere —
+  // surface it in the placeholder the way the built-in Git box does.
+  const commitKey = process.platform === "darwin" ? "⌘Enter" : "Ctrl+Enter";
+  sc.inputBox.placeholder = `Message (${commitKey} to commit)`;
 
   // the worktree the SCM currently reflects, resolved fresh each sync. Commands
   // act on this cwd; null when nothing committable is selected.
@@ -81,6 +85,62 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
     };
   };
 
+  // ── Worktree repo visibility ────────────────────────────────────────────
+  // VS Code's built-in Git auto-opens every agent worktree (under
+  // .claude/worktrees/) as its own repo, cluttering the Source Control panel.
+  // A title-bar toggle adds/removes those paths from `git.ignoredRepositories`
+  // (workspace), which the Git extension honors live — no reload needed.
+  const WT_MARK = `${path.sep}.claude${path.sep}worktrees${path.sep}`;
+  const isManagedRepo = (p: string): boolean => p.includes(WT_MARK);
+  const worktreesHidden = (): boolean =>
+    context.workspaceState.get<boolean>("devtower.worktreeReposHidden", false);
+
+  /** Reconcile `git.ignoredRepositories` with the toggle: when hidden, ignore
+   *  every agent worktree (minus any open workspace folder); when shown, drop
+   *  the ones we manage. Leaves the user's own entries untouched; only writes
+   *  when the list actually changes (so it's safe to call from sync). */
+  const applyWorktreeVisibility = async (): Promise<void> => {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const repoDir = folders[0]?.uri.fsPath ?? curCwd;
+    const open = new Set(folders.map((f) => f.uri.fsPath));
+    const cfg = vscode.workspace.getConfiguration("git");
+    // Workspace settings require a folder/workspace; in an empty window fall back
+    // to user settings so the toggle never throws "no workspace is opened".
+    const hasWs =
+      !!vscode.workspace.workspaceFile || (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
+    const target = hasWs
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    // read the value at the scope we'll write so we don't duplicate inherited entries
+    const info = cfg.inspect<string[]>("ignoredRepositories");
+    const scoped = (hasWs ? info?.workspaceValue : info?.globalValue) ?? [];
+    const kept = scoped.filter((p) => !isManagedRepo(p)); // entries the user owns
+    let next = kept;
+    if (worktreesHidden() && repoDir) {
+      const managed = (await worktreeList(repoDir).catch(() => []))
+        .map((w) => w.path)
+        .filter((p) => isManagedRepo(p) && !open.has(p));
+      next = [...kept, ...managed];
+    }
+    const same =
+      next.length === scoped.length &&
+      [...next].sort().join("\n") === [...scoped].sort().join("\n");
+    if (same) return;
+    try {
+      await cfg.update("ignoredRepositories", next, target);
+    } catch (e) {
+      vscode.window.showWarningMessage(
+        `DevTower: couldn't update worktree visibility — ${String(e).slice(0, 160)}`
+      );
+    }
+  };
+
+  const setWorktreesHidden = async (hidden: boolean): Promise<void> => {
+    await context.workspaceState.update("devtower.worktreeReposHidden", hidden);
+    await vscode.commands.executeCommand("setContext", "devtower.worktreeReposHidden", hidden);
+    await applyWorktreeVisibility();
+  };
+
   let syncing = false;
   let queued = false;
   const sync = async (): Promise<void> => {
@@ -98,7 +158,7 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
         stagedGroup.resourceStates = [];
         changesGroup.resourceStates = [];
         sc.count = 0;
-        sc.inputBox.placeholder = "Message";
+        sc.inputBox.placeholder = `Message (${commitKey} to commit)`;
         return;
       }
       const st = await status(cwd).catch(() => null);
@@ -111,8 +171,10 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
       stagedGroup.resourceStates = st.staged.map((f) => toState(cwd, f));
       changesGroup.resourceStates = st.unstaged.map((f) => toState(cwd, f));
       sc.count = st.staged.length + st.unstaged.length;
-      // branch-aware placeholder, e.g. Message (commit on "main")
-      sc.inputBox.placeholder = `Message (commit on "${st.branch || "HEAD"}")`;
+      // branch-aware placeholder, e.g. Message (⌘Enter to commit on "main")
+      sc.inputBox.placeholder = `Message (${commitKey} to commit on "${st.branch || "HEAD"}")`;
+      // keep newly-created worktrees ignored while the toggle is on
+      if (worktreesHidden()) void applyWorktreeVisibility();
     } finally {
       syncing = false;
       if (queued) {
@@ -222,6 +284,9 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
     }),
     vscode.commands.registerCommand("devtower.scmRefresh", () => void sync()),
 
+    vscode.commands.registerCommand("devtower.scmHideWorktrees", () => setWorktreesHidden(true)),
+    vscode.commands.registerCommand("devtower.scmShowWorktrees", () => setWorktreesHidden(false)),
+
     vscode.commands.registerCommand("devtower.scmStash", async () => {
       if (!curCwd) return;
       // reuse the commit message box as the stash message (blank → default WIP)
@@ -259,6 +324,10 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
       void sync();
     })
   );
+
+  // restore the persisted toggle state (drives the title-bar icon) and enforce it
+  void vscode.commands.executeCommand("setContext", "devtower.worktreeReposHidden", worktreesHidden());
+  void applyWorktreeVisibility();
 
   // seed the branch placeholder + initial file list
   void sync();
