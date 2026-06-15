@@ -12,9 +12,9 @@
 
 ## The problem it solves
 
-Running several coding agents means several worktrees, each in its own directory - and the usual workflow is a window (or terminal tab) per directory. You alt-tab to find which session is waiting on input, `cd` around to run `git status` in each, and switch editor windows to review diffs. That context-switching tax adds up fast once you have more than one or two going.
+Running several coding agents means several worktrees, each in its own directory - and the usual workflow is a window (or terminal tab) per directory. You alt-tab to find which session is waiting on input, `cd` around to run `git status` in each, and switch editor windows to review diffs. That context-switching adds up fast once you have more than a couple of agents running.
 
-DevTower collapses it into **a single view**. Every repo, worktree, and live session is a room in one campus, so you watch **multiple directories and worktrees at once - without switching windows**: who is active, who is blocked waiting on you, who finished or errored, each branch's unstaged / staged / commit counts, and each PR's checks and review status. Click a dev to act on it, click a room to focus its crew, and the diff or terminal you need opens in place. Your crew has a *place* instead of being scattered across windows.
+DevTower collapses it into **a single view**. Every repo and worktree is a room in one campus and every live session a dev at a desk, so you watch **multiple directories and worktrees at once - without switching windows**: who is active, who is blocked waiting on you, who finished or errored, each branch's unstaged / staged / commit counts, and each PR's checks and review status. Click a dev to act on it, click a room to focus its crew, and the diff or terminal you need opens in place. Your crew has a *place* instead of being scattered across windows.
 
 ## What you get
 
@@ -43,7 +43,7 @@ DevTower drives your existing command-line tools and makes **no network calls of
 | **VS Code** 1.85+ | required | host |
 | **git** | required | the Changes view, native diffs, `git worktree add`, and per-room push / pull / fetch |
 | **Claude Code CLI** (`claude`) | required for live agents | spawning and resuming sessions in terminals; discovering sessions from `~/.claude/projects` |
-| **GitHub CLI** (`gh`) | optional | the PR board, review-requested billboard, review dispatch, and create / view PR. Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
+| **GitHub CLI** (`gh`) | optional | the PR board, review-requested billboard, review dispatch, and PR view / checkout (DevTower never creates PRs). Authenticated with the token you set in Settings (not your `gh auth login`). Without a token, PR areas show a disconnected placeholder |
 | **ps** / **lsof** (macOS / Linux) | optional | showing only sessions whose `claude` process is still running, counted per directory. On **Windows**, DevTower counts running `claude` processes tower-wide via WMI (PowerShell) and caps shown sessions to that many; if unavailable it uses a freshness fallback |
 
 **What it reads and writes:**
@@ -89,7 +89,7 @@ The GitHub access page - connected account, scopes, the features your token unlo
 | `devtower.pollIntervalMs` | `8000` | How often to rescan for live sessions. |
 | `devtower.sessionMaxAgeHours` | `24` | How far back to scan transcripts for sessions. |
 | `devtower.showRecentSessions` | `false` | Also show recent sessions with no running process (as idle rooms). |
-| `devtower.efficiencyMode` | `false` | Reduce animation work to save CPU (also the ⚡ button in the tower). |
+| `devtower.efficiencyMode` | `false` | Reduce animation work to save CPU (also the 🔋 button in the tower). |
 | `devtower.claudeCommand` | `claude` | Command launched in a new agent's terminal. |
 | `devtower.launchCommand` | `` | Overrides `claudeCommand`; placeholders `${worktree}`, `${branch}`, `${id}`. |
 | `devtower.reviewSkills` | code-review, security-review, review, simplify, verify | Skills offered as chips in the Review Dispatch card. |
