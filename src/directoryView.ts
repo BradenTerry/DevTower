@@ -281,41 +281,68 @@ export function registerDirectory(
     treeDataProvider: provider,
     showCollapseAll: true,
     dragAndDropController: provider,
+    // allow shift-click ranges and cmd/ctrl-click toggles so a context-menu
+    // Delete can act on every highlighted row, not just the one clicked
+    canSelectMany: true,
   });
   provider.view = view;
   provider.refresh();
   context.subscriptions.push(
     view,
     vscode.commands.registerCommand("devtower.refreshDirectory", () => provider.refresh()),
-    vscode.commands.registerCommand("devtower.deleteFile", async (node: FsNode) => {
-      if (!node?.fsPath) return;
-      const isDir = node.contextValue === "dir";
-      const label = path.basename(node.fsPath);
-      const confirmed = await confirm(
-        context,
-        "devtower.confirmFileDelete",
-        `Delete "${label}"?`,
-        isDir
-          ? `This will delete the folder and all its contents.`
-          : `File: ${tildify(node.fsPath)}`,
-        "Delete"
-      );
-      if (!confirmed) return;
-      try {
-        await vscode.workspace.fs.delete(vscode.Uri.file(node.fsPath), {
-          recursive: true,
-          useTrash: true,
-        });
-        provider.refresh();
-      } catch (err: unknown) {
-        vscode.window.showErrorMessage(
-          `Delete failed: ${err instanceof Error ? err.message : String(err)}`
-        );
+    vscode.commands.registerCommand("devtower.deleteFile", async (node: FsNode, nodes?: FsNode[]) => {
+      // With canSelectMany, VS Code invokes a view/item/context command as
+      // (focusedItem, allSelectedItems) — honor the whole selection so a Delete
+      // wipes every highlighted row. Fall back to the single clicked node.
+      const targets = (nodes?.length ? nodes : node ? [node] : []).filter((n) => n?.fsPath);
+      if (!targets.length) return;
+      const hasDir = targets.some((n) => n.contextValue === "dir");
+
+      let message: string;
+      let detail: string;
+      if (targets.length === 1) {
+        const t = targets[0];
+        const label = path.basename(t.fsPath);
+        const isDir = t.contextValue === "dir";
+        message = isDir ? `Delete folder "${label}"?` : `Delete "${label}"?`;
+        detail = isDir
+          ? "This will delete the folder and all its contents."
+          : `File: ${tildify(t.fsPath)}`;
+      } else {
+        message = `Delete ${targets.length} items?`;
+        const names = targets
+          .map((n) => `  • ${path.basename(n.fsPath)}${n.contextValue === "dir" ? "/" : ""}`)
+          .join("\n");
+        detail = (hasDir ? "Folders will be deleted with all their contents.\n\n" : "") + names;
       }
+
+      // A recursive folder delete is harder to undo than a single file, so it
+      // gets its OWN "don't ask again" preference: opting out of file-delete
+      // prompts must never silently wipe a directory.
+      const key = hasDir ? "devtower.confirmDirDelete" : "devtower.confirmFileDelete";
+      const confirmed = await confirm(context, key, message, detail, "Delete");
+      if (!confirmed) return;
+
+      for (const t of targets) {
+        try {
+          await vscode.workspace.fs.delete(vscode.Uri.file(t.fsPath), {
+            recursive: true,
+            useTrash: true,
+          });
+        } catch (err: unknown) {
+          vscode.window.showErrorMessage(
+            `Delete failed for "${path.basename(t.fsPath)}": ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
+      provider.refresh();
     }),
     vscode.commands.registerCommand("devtower.resetFilePrompts", async () => {
       await context.globalState.update("devtower.confirmFileMove", undefined);
       await context.globalState.update("devtower.confirmFileDelete", undefined);
+      await context.globalState.update("devtower.confirmDirDelete", undefined);
       vscode.window.showInformationMessage(
         "DevTower: File prompt confirmations have been reset."
       );

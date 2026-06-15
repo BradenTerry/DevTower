@@ -290,13 +290,25 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
 
   /** Collect repo-relative paths from however VS Code passed the selection: a
    *  single resource state, several spread args, or one array arg (multi-select
-   *  context menus differ by VS Code version, so handle them all). */
+   *  context menus differ by VS Code version, so handle them all). A folder row
+   *  (scm/resourceFolder/context, when the panel is in tree mode) comes through
+   *  as the resource states beneath it — or, on some versions, as a resource
+   *  group — so expand a group to its files too. De-duped, order preserved. */
   const pathsFrom = (args: unknown[]): string[] => {
-    const states = args.flat().filter((a): a is vscode.SourceControlResourceState =>
-      !!a && typeof a === "object" && "resourceUri" in (a as object)
-    );
     if (!curCwd) return [];
-    return states.map((s) => path.relative(curCwd!, s.resourceUri.fsPath));
+    const out = new Set<string>();
+    const add = (uri: vscode.Uri): void => {
+      out.add(path.relative(curCwd!, uri.fsPath));
+    };
+    for (const a of args.flat()) {
+      if (!a || typeof a !== "object") continue;
+      if ("resourceUri" in a) {
+        add((a as vscode.SourceControlResourceState).resourceUri);
+      } else if ("resourceStates" in a) {
+        for (const s of (a as vscode.SourceControlResourceGroup).resourceStates) add(s.resourceUri);
+      }
+    }
+    return [...out];
   };
 
   context.subscriptions.push(
@@ -371,6 +383,24 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
         "Discard Changes"
       );
       if (pick !== "Discard Changes") return;
+      for (const rel of rels) await discardPath(curCwd, rel).catch(() => {});
+      void sync();
+    }),
+    vscode.commands.registerCommand("devtower.scmDiscardAll", async () => {
+      if (!curCwd) return;
+      const rels = changesGroup.resourceStates.map((s) =>
+        path.relative(curCwd!, s.resourceUri.fsPath)
+      );
+      if (!rels.length) {
+        vscode.window.showInformationMessage("DevTower: no changes to discard.");
+        return;
+      }
+      const pick = await vscode.window.showWarningMessage(
+        `Discard ALL changes in ${rels.length} file${rels.length === 1 ? "" : "s"}? This cannot be undone.`,
+        { modal: true },
+        "Discard All Changes"
+      );
+      if (pick !== "Discard All Changes") return;
       for (const rel of rels) await discardPath(curCwd, rel).catch(() => {});
       void sync();
     }),
