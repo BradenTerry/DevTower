@@ -683,6 +683,46 @@ describe("ClaudeDiscovery binding", () => {
     expect(fs.existsSync(path.join(succDir, `${u2}.json`))).toBe(false); // marker consumed
   });
 
+  it("flags the shred trip on a /clear BEFORE the new session's first prompt (no successor transcript yet)", async () => {
+    // /clear right after a task, before typing anything: the brand-new session
+    // writes no transcript, so the succession bind can't fire. The marker (keyed by
+    // the new uuid, carrying the terminal's launch id) is enough to know the dev
+    // cleared — bump clearedSession now so the scene runs the trip instead of the
+    // dev sitting reading its book forever until the next prompt.
+    const sid = (u: string) => "cc-" + u.slice(0, 8);
+    const store = newStore();
+    const u1 = randomUUID();
+    // argv --session-id is u1 and stays u1 across the clear
+    let liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 1]]), sessionIds: new Set([u1]) };
+    const disc = new ClaudeDiscovery(store, {
+      projectsRoot: root, waitingDir, successionDir: succDir, liveCounts: async () => liveSnapshot,
+    });
+    writeSession(wt, 0, u1);
+    await disc.refresh();
+    expect(store.get(sid(u1))!.launchId).toBe(u1);
+    expect(store.get(sid(u1))!.clearedSession).toBeUndefined();
+
+    // /clear → u2 minted, but NO transcript for it yet (session not prompted). Only
+    // the marker lands, carrying launch id u1.
+    const u2 = randomUUID();
+    writeSuccession(u2, wt, u1);
+    await disc.refresh();
+
+    expect(store.list()).toHaveLength(1); // same dev, no stranger, not culled
+    expect(store.get(sid(u1))!.clearedSession).toBe(u2); // → scene runs the trip now
+    // the marker is NOT consumed — it must persist so the real bind still fires once
+    // the successor's transcript finally lands
+    expect(fs.existsSync(path.join(succDir, `${u2}.json`))).toBe(true);
+
+    // the successor's transcript finally appears (operator prompted it). The real
+    // succession bind resolves to the SAME id, so clearedSession is unchanged.
+    writeSession(wt, 0, u2);
+    liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 1]]), sessionIds: new Set([u1]) };
+    await disc.refresh();
+    expect(store.get(sid(u1))!.clearedSession).toBe(u2); // unchanged → trip not replayed
+    expect(store.get(sid(u1))!.transcriptPath).toBe(path.join(proj, `${u2}.jsonl`));
+  });
+
   it("rebinds across /clear by launch id even when the cleared session was newer than a live sibling", async () => {
     // the pile-up shape: the cleared session (u1) is NEWER by mtime than a still
     // idle sibling (uSib), so neither budget nor mtime can tell which one cleared.

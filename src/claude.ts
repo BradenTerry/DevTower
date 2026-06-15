@@ -781,6 +781,27 @@ export class ClaudeDiscovery {
     // pending marker (its terminal cleared and the new session isn't on disk yet).
     const pendingSuccessionCwds = new Set([...succession.values()].map((m) => m.cwd));
     const pendingLaunch = new Set([...succession.values()].map((m) => m.launchId).filter(Boolean));
+    // A terminal /cleared BEFORE its first prompt writes no successor transcript,
+    // so the succession bind (case 3) can't fire yet and the live dev keeps showing
+    // its OLD session — the scene would never run the /clear trip (the dev sits
+    // reading its book forever). The marker already names the new session, keyed by
+    // launch id, so bump the live dev's clearedSession to it now. The scene reacts
+    // immediately; when the successor's transcript finally lands, case 3 resolves to
+    // the SAME id, so clearedSession is unchanged and the trip isn't replayed.
+    // map each pending successor (lowercased, as predecessorOf is keyed) back to its
+    // original-case id so the bumped clearedSession matches what case 3 will store
+    // once the transcript lands (the scene dedupes on the exact value).
+    const succById = new Map<string, string>();
+    for (const [succ] of succession) succById.set(succ.toLowerCase(), succ);
+    for (const [succLc, pred] of predecessorOf) {
+      if (succeeded.get(pred)) continue; // its successor bound this poll → clearedSession already set above
+      const a = this.store.get(pred);
+      if (!a) continue;
+      const succ = succById.get(succLc) ?? succLc;
+      if (a.clearedSession === succ) continue; // already reacted on an earlier poll
+      this.store.apply({ id: a.id, clearedSession: succ });
+      dlog("discovery.cleared.pending", { dev: a.id, successor: succ });
+    }
     // sessions that aged out or were deleted leave the tower
     for (const id of [...this.mine]) {
       if (!present.has(id)) {
