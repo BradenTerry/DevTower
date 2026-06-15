@@ -139,6 +139,22 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "devtower.scmHideWorktrees",
+        "title": "Exclude Agent Worktrees from Source Control",
+        "icon": {
+          "light": "media/tree-light.svg",
+          "dark": "media/tree-dark.svg"
+        }
+      },
+      {
+        "command": "devtower.scmShowWorktrees",
+        "title": "Include Agent Worktrees in Source Control",
+        "icon": {
+          "light": "media/tree-slash-light.svg",
+          "dark": "media/tree-slash-dark.svg"
+        }
+      },
+      {
         "command": "devtower.scmCheckout",
         "title": "Switch Branch",
         "icon": "$(git-branch)"
@@ -179,6 +195,16 @@
           "command": "devtower.scmRefresh",
           "when": "scmProvider == devtower",
           "group": "navigation@2"
+        },
+        {
+          "command": "devtower.scmHideWorktrees",
+          "when": "scmProvider == devtower && !devtower.worktreeReposHidden",
+          "group": "navigation@3"
+        },
+        {
+          "command": "devtower.scmShowWorktrees",
+          "when": "scmProvider == devtower && devtower.worktreeReposHidden",
+          "group": "navigation@3"
         },
         {
           "command": "devtower.scmStageAll",
