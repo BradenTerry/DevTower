@@ -193,8 +193,12 @@ const ISLAND_GAP = 1; // empty columns between adjacent islands
 const PLINTH_H = 22; // front-face height of the island pedestal (below ground)
 const PLINTH_APRON = 8; // depth of the pedestal's top surface tilting toward us
 const PLINTH_OV = 9; // how far the pedestal splays out past the tower on each side
-// central "PRs to review" billboard sitting to the left of the campus
-const BB_W = 138, BB_HEADER = 16, BB_ROW = 20, BB_MAX = 6, BB_GAP = 56;
+// central "Branches & PRs" billboard sitting to the left of the campus
+const BB_W = 184, BB_HEADER = 16, BB_GAP = 56;
+const BB_CHIP_H = 12, BB_CHIP_GAP = 3, BB_CHIP_ROWS = 2; // filter chips: 3 per row, 2 rows
+const BB_GROUP_H = 15; // repo group sub-header height
+const BB_ROW = 22; // branch row height (two text lines)
+const BB_MAX = 11; // max branch rows rendered before "+N more"
 
 interface Particle {
   x: number; y: number; vx: number; vy: number;
@@ -275,6 +279,74 @@ interface BoardData {
     reviewersPending: number;
     comments: number;
   };
+}
+
+/** One open PR attached to a branch row on the Branches & PRs billboard. Mirrors
+ *  the host-side BranchPr (src/prs.ts) — kept as a local shape so this browser
+ *  bundle never imports node code. */
+interface BranchPr {
+  number: number;
+  url: string;
+  title: string;
+  isDraft: boolean;
+  checks: "pass" | "fail" | "pending" | "none";
+  checksPass: number;
+  checksFailed: number;
+  checksRunning: number;
+  checksTotal: number;
+  review: "approved" | "changes" | "required" | "none";
+  approvals: number;
+  changesRequested: number;
+  reviewersPending: number;
+  comments: number;
+  author?: string;
+  isMine: boolean;
+  reviewRequestedFromMe: boolean;
+  updatedAt?: string;
+}
+/** One branch row under a repo group. */
+interface BranchRow {
+  branch: string;
+  repo: string; // owner/repo (matches its group)
+  isDefault: boolean;
+  hasWorktree: boolean; // already checked out locally → no send action
+  pr?: BranchPr;
+}
+/** A repository group on the billboard: its default-branch build badge + rows. */
+interface RepoGroup {
+  repo: string; // owner/repo
+  shortName: string; // island label, used by the host to resolve a directory
+  defaultBranch: string;
+  main: { checks: "pass" | "fail" | "pending" | "none"; pass: number; fail: number; running: number; total: number };
+  branches: BranchRow[];
+}
+
+/** Single-select filter narrowing the branch rows. */
+type BranchFilter = "all" | "open" | "review" | "mine" | "approved" | "changes";
+const BRANCH_FILTERS: { key: BranchFilter; label: string }[] = [
+  { key: "all", label: "ALL" },
+  { key: "open", label: "OPEN" },
+  { key: "review", label: "REVIEW" },
+  { key: "mine", label: "MINE" },
+  { key: "approved", label: "APPR" },
+  { key: "changes", label: "CHG" },
+];
+
+interface Rect { x: number; y: number; w: number; h: number }
+/** Resolved layout of the Branches & PRs billboard, shared by draw + hit-test. */
+interface BillboardGeom {
+  x: number; top: number; w: number; bodyH: number; headerH: number; surfaceY: number;
+  refresh: Rect;
+  /** Filter chips (always present when connected + loaded). */
+  chips: { key: BranchFilter; label: string; rect: Rect; active: boolean }[];
+  /** Repo group sub-headers (with their main-build badge). */
+  groups: { group: RepoGroup; y: number }[];
+  /** Branch rows under the groups, each with optional send / open sub-rects. */
+  rows: { group: RepoGroup; row: BranchRow; y: number; send?: Rect; open?: Rect }[];
+  visibleTotal: number; // rows matching the active filter (before truncation)
+  extra: number; // rows hidden by the BB_MAX cap
+  showChips: boolean; // false in the loading / disconnected placeholder states
+  emptyLine?: string; // a centered line under the chips when nothing matches
 }
 
 /** An island: one repo/directory hosting a contiguous cluster of buildings. */
@@ -469,9 +541,11 @@ class PixelCrew {
     panX: number; panY: number; zoomMul: number;
   } = null;
   private prBranches = new Set<string>(); // branches (lowercased) with an open PR
-  // review-requested PRs shown on the central billboard (left of the campus);
-  // clicking a row opens the dispatch modal to assign a reviewer to it
-  private reviewPrs: { number: number; repo: string; title: string; branch?: string; url?: string }[] = [];
+  // grouped branch board shown on the central billboard (left of the campus):
+  // one repo group per tracked island, one row per branch, open-PR data attached
+  private repos: RepoGroup[] = [];
+  private viewer?: string; // authenticated GitHub login, for the "me" filters
+  private activeFilter: BranchFilter = "all"; // single-select filter chip
   // null = not yet known (startup); false = no GitHub token, show the disconnected
   // placeholder instead of an empty/"nothing awaiting" state
   private githubConnected: boolean | null = null;
@@ -555,6 +629,9 @@ class PixelCrew {
   private onAssignReviewCb: (pr: { number: number; repo: string; title: string; branch?: string; url?: string }) => void = () => {};
   private onRefreshPrsCb: () => void = () => {};
   private onOpenPrCb: (url: string) => void = () => {};
+  // a branch row's "send to worktree" glyph → create a worktree on that branch.
+  // carries the repo's shortName (host resolves it to a directory) + branch.
+  private onSendBranchToWorktreeCb: (repoShortName: string, branch: string) => void = () => {};
   // debug event sink (forwarded to the extension's debug log when enabled)
   private onDebugCb: (event: string, data?: unknown) => void = () => {};
   private debugOn = false;
@@ -633,7 +710,7 @@ class PixelCrew {
         const hit = this.pick(e);
         const clickable = !!(hit.agent || hit.room || hit.ghost || hit.addDev || hit.useDir || hit.removeBtn ||
           hit.removeWtBtn || hit.pushRoom || hit.pullRoom || hit.fetchRoom || hit.openPrUrl ||
-          hit.billboardRefresh || hit.reviewPr || hit.billboardZoom);
+          hit.billboardRefresh || hit.reviewPr || hit.billboardZoom || hit.filterChip || hit.sendBranch);
         this.container.style.cursor = clickable ? "pointer" : "default";
         const hk = this.hoverKeyOf(hit);
         if (hk !== this.hoverKey) { this.hoverKey = hk; this.invalidate(); } // repaint the highlight
@@ -717,6 +794,7 @@ class PixelCrew {
   }
   onRefreshPrs(cb: () => void) { this.onRefreshPrsCb = cb; }
   onOpenPr(cb: (url: string) => void) { this.onOpenPrCb = cb; }
+  onSendBranchToWorktree(cb: (repoShortName: string, branch: string) => void) { this.onSendBranchToWorktreeCb = cb; }
   onDebug(cb: (event: string, data?: unknown) => void) { this.onDebugCb = cb; }
   setDebug(on: boolean) { this.debugOn = on; }
   /** Emit a scene debug event (no-op unless devtower.debugLog is on). */
@@ -766,30 +844,120 @@ class PixelCrew {
     this.invalidate();
   }
 
-  /** Review-requested PRs listed on the central billboard. */
-  setReviewPrs(prs: { number: number; repo: string; title: string; branch?: string; url?: string }[]) {
-    this.reviewPrs = Array.isArray(prs) ? prs : [];
+  /** Feed the grouped branch board (one group per tracked repo, one row per
+   *  branch) and the authenticated viewer login for the "me" filters. */
+  setBranchBoard(repos: RepoGroup[], viewer?: string) {
+    this.repos = Array.isArray(repos) ? repos : [];
+    this.viewer = viewer || undefined;
     this.layout(); // bounds depend on the billboard so the overview frames it
   }
 
-  /** Geometry for the review billboard, shared by draw + pick. Null when empty. */
-  private billboardGeom(): { x: number; top: number; w: number; bodyH: number; headerH: number; rowH: number; rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number; open: { x: number; y: number; w: number; h: number } }[]; surfaceY: number; extra: number; refresh: { x: number; y: number; w: number; h: number } } {
-    // always present, always listing its PRs (or an empty-state line); clicking
-    // it flies the camera in rather than expanding in place
-    const n = Math.min(this.reviewPrs.length, BB_MAX);
-    const x = this.campusMinX - BB_GAP - BB_W;
-    const surfaceY = floorBase(0) + SLAB;
-    const bodyH = BB_HEADER + Math.max(n, 1) * BB_ROW + 5;
-    const top = surfaceY - 40 - bodyH;
-    const rows: { pr: { number: number; repo: string; title: string; branch?: string; url?: string }; y: number; open: { x: number; y: number; w: number; h: number } }[] = [];
-    for (let i = 0; i < n; i++) {
-      const y = top + BB_HEADER + i * BB_ROW;
-      rows.push({ pr: this.reviewPrs[i], y, open: { x: x + BB_W - 13, y: y + BB_ROW - 12, w: 10, h: 10 } });
+  /** Switch the active filter chip and relayout (the panel height changes with
+   *  the row count). No refetch — filtering is done on the loaded dataset. */
+  setBranchFilter(f: BranchFilter) {
+    if (this.activeFilter === f) return;
+    this.activeFilter = f;
+    this.layout();
+  }
+
+  /** Whether a branch row passes the active filter chip. */
+  private branchVisible(row: BranchRow): boolean {
+    switch (this.activeFilter) {
+      case "all": return true;
+      case "open": return !!row.pr;
+      case "review": return !!row.pr?.reviewRequestedFromMe;
+      case "mine": return !!row.pr?.isMine;
+      case "approved": return row.pr?.review === "approved";
+      case "changes": return row.pr?.review === "changes";
     }
+  }
+
+  /** Resolved billboard layout, shared by draw + hit-test. Always returns a frame
+   *  (even disconnected / loading / empty) so the panel is a stable landmark. */
+  private billboardGeom(): BillboardGeom {
+    const x = this.campusMinX - BB_GAP - BB_W;
+    const w = BB_W;
+    const surfaceY = floorBase(0) + SLAB;
+    const chipsH = BB_CHIP_ROWS * BB_CHIP_H + (BB_CHIP_ROWS - 1) * BB_CHIP_GAP + 6;
+
+    const loading = this.prLoading && this.repos.length === 0;
+    const disconnected = this.githubConnected === false;
+    const showChips = !disconnected && !loading;
+
+    // filter each group's branches; drop a group with no matches (unless "all")
+    const filtered: { g: RepoGroup; rows: BranchRow[] }[] = [];
+    let visibleTotal = 0;
+    for (const g of this.repos) {
+      const rows = g.branches.filter((r) => this.branchVisible(r));
+      visibleTotal += rows.length;
+      if (rows.length === 0 && this.activeFilter !== "all") continue;
+      filtered.push({ g, rows });
+    }
+    // truncate to BB_MAX branch rows total (group headers don't count)
+    const plan: { g: RepoGroup; rows: BranchRow[] }[] = [];
+    let budget = BB_MAX;
+    for (const f of filtered) {
+      if (budget <= 0) break;
+      const take = Math.min(f.rows.length, budget);
+      plan.push({ g: f.g, rows: f.rows.slice(0, take) });
+      budget -= take;
+    }
+    const shownRows = plan.reduce((a, p) => a + p.rows.length, 0);
+    const extra = visibleTotal - shownRows;
+    const contentH = plan.length * BB_GROUP_H + shownRows * BB_ROW;
+
+    const emptyLine = showChips && shownRows === 0
+      ? (this.repos.length === 0 ? "no repositories tracked"
+        : this.activeFilter === "all" ? "no branches" : "nothing matches this filter")
+      : undefined;
+
+    const bodyH = showChips
+      ? BB_HEADER + chipsH + Math.max(contentH, BB_ROW) + 5
+      : BB_HEADER + 48;
+    const top = surfaceY - 40 - bodyH;
+
+    // filter chips: 3 per row, 2 rows
+    const chips: BillboardGeom["chips"] = [];
+    if (showChips) {
+      const innerX = x + 6, innerW = w - 12;
+      const chipW = (innerW - 2 * BB_CHIP_GAP) / 3;
+      const chipsTop = top + BB_HEADER + 3;
+      BRANCH_FILTERS.forEach((f, i) => {
+        const col = i % 3, rowIdx = (i / 3) | 0;
+        chips.push({
+          key: f.key, label: f.label, active: this.activeFilter === f.key,
+          rect: {
+            x: innerX + col * (chipW + BB_CHIP_GAP),
+            y: chipsTop + rowIdx * (BB_CHIP_H + BB_CHIP_GAP),
+            w: chipW, h: BB_CHIP_H,
+          },
+        });
+      });
+    }
+
+    // group sub-headers + branch rows
+    const groups: BillboardGeom["groups"] = [];
+    const rows: BillboardGeom["rows"] = [];
+    let yc = top + BB_HEADER + chipsH;
+    for (const p of plan) {
+      groups.push({ group: p.g, y: yc });
+      yc += BB_GROUP_H;
+      for (const row of p.rows) {
+        const rightX = x + w - 14;
+        let glyphX = rightX;
+        let open: Rect | undefined;
+        let send: Rect | undefined;
+        if (row.pr?.url) { open = { x: glyphX, y: yc + 6, w: 10, h: 10 }; glyphX -= 13; }
+        if (!row.hasWorktree) { send = { x: glyphX, y: yc + 6, w: 10, h: 10 }; }
+        rows.push({ group: p.g, row, y: yc, send, open });
+        yc += BB_ROW;
+      }
+    }
+
     return {
-      x, top, w: BB_W, bodyH, headerH: BB_HEADER, rows, rowH: BB_ROW, surfaceY,
-      extra: this.reviewPrs.length - n,
-      refresh: { x: x + BB_W - 14, y: top + 3, w: 11, h: 11 },
+      x, top, w, bodyH, headerH: BB_HEADER, surfaceY,
+      refresh: { x: x + w - 14, y: top + 3, w: 11, h: 11 },
+      chips, groups, rows, visibleTotal, extra, showChips, emptyLine,
     };
   }
 
@@ -1803,6 +1971,10 @@ class PixelCrew {
       if (tn.tapAt !== undefined && this.frame - tn.tapAt < 8) return false;
       const s = tn.agent.state;
       if (s === "active" || s === "waiting") return false;
+      // a no-longer-working dev still holding fetched books hasn't run its
+      // put-down yet; keep the loop alive one more tick so it sets them on the
+      // desk, otherwise the loop can park before tick() fires and strand the read
+      if (tn.booksInHand > 0) return false;
     }
     return true;
   }
@@ -2135,20 +2307,31 @@ class PixelCrew {
     pullRoom?: string; // building key → pull upstream commits
     fetchRoom?: string; // building key → fetch remote refs (refresh behind/ahead)
     reviewPr?: { number: number; repo: string; title: string; branch?: string; url?: string };
-    billboardRefresh?: boolean; // ↻ on the review sign
-    billboardZoom?: boolean; // click the sign body → fly the camera to it
+    billboardRefresh?: boolean; // ↻ on the branch board
+    billboardZoom?: boolean; // click the board body → fly the camera to it
     openPrUrl?: string; // ↗ on a row → open the PR on GitHub
+    filterChip?: BranchFilter; // a filter chip → narrow the rows
+    sendBranch?: { repoShortName: string; branch: string }; // + → worktree on a branch
   } {
     const rect = this.canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
 
-    // review billboard: refresh button → rows → anywhere else zooms to the sign
+    // branch board: refresh → filter chip → row controls (send / open) → row body
+    // (assign reviewer when it has a PR) → anywhere else zooms to the board
     const bb = this.billboardGeom();
     {
       if (this.inRect(mx, my, bb.refresh.x, bb.refresh.y, bb.refresh.w, bb.refresh.h)) return { billboardRefresh: true };
-      for (const { pr, y, open } of bb.rows) {
-        if (pr.url && this.inRect(mx, my, open.x, open.y, open.w, open.h)) return { openPrUrl: pr.url };
-        if (this.inRect(mx, my, bb.x, y, bb.w, bb.rowH)) return { reviewPr: pr };
+      for (const c of bb.chips) {
+        if (this.inRect(mx, my, c.rect.x, c.rect.y, c.rect.w, c.rect.h)) return { filterChip: c.key };
+      }
+      for (const { group, row, y, send, open } of bb.rows) {
+        if (send && this.inRect(mx, my, send.x, send.y, send.w, send.h)) {
+          return { sendBranch: { repoShortName: group.shortName, branch: row.branch } };
+        }
+        if (open && row.pr?.url && this.inRect(mx, my, open.x, open.y, open.w, open.h)) return { openPrUrl: row.pr.url };
+        if (row.pr && this.inRect(mx, my, bb.x, y, bb.w, BB_ROW)) {
+          return { reviewPr: { number: row.pr.number, repo: row.repo, title: row.pr.title, branch: row.branch, url: row.pr.url } };
+        }
       }
       if (this.inRect(mx, my, bb.x, bb.top, bb.w, bb.bodyH)) return { billboardZoom: true };
     }
@@ -2206,6 +2389,8 @@ class PixelCrew {
    *  can highlight whatever the cursor is hovering. null = not a button. */
   private hoverKeyOf(h: ReturnType<PixelCrew["pick"]>): string | null {
     if (h.billboardRefresh) return "bbRefresh";
+    if (h.filterChip) return "bbfilter:" + h.filterChip;
+    if (h.sendBranch) return "bbsend:" + h.sendBranch.repoShortName + ":" + h.sendBranch.branch;
     if (h.openPrUrl) return "openpr:" + h.openPrUrl;
     if (h.addDev) return "addDev:" + h.addDev.key;
     if (h.useDir) return "useDir:" + h.useDir;
@@ -2225,6 +2410,8 @@ class PixelCrew {
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
     if (hit.billboardRefresh) { this.setBusy("bbRefresh"); this.onRefreshPrsCb(); }
+    else if (hit.filterChip) { this.setBranchFilter(hit.filterChip); }
+    else if (hit.sendBranch) { this.setBusy("bbsend:" + hit.sendBranch.repoShortName + ":" + hit.sendBranch.branch); this.onSendBranchToWorktreeCb(hit.sendBranch.repoShortName, hit.sendBranch.branch); }
     else if (hit.openPrUrl) { this.onOpenPrCb(hit.openPrUrl); }
     else if (hit.billboardZoom) { this.focusBillboard(); }
     else if (hit.reviewPr) { this.onAssignReviewCb(hit.reviewPr); }
@@ -2346,7 +2533,7 @@ class PixelCrew {
     for (const isl of this.islands.values()) this.drawIslandPlatform(ctx, isl);
 
     // central "PRs to review" billboard, standing to the left of the campus
-    this.drawReviewBillboard(ctx);
+    this.drawBranchBoard(ctx);
 
     // rooms back layer
     for (const r of this.rooms.values()) this.drawRoomBack(ctx, r);
@@ -2824,11 +3011,17 @@ class PixelCrew {
     return s.slice(0, lo).trimEnd() + "…";
   }
 
-  /** The standalone signboard listing review-requested PRs. Each row is a tap
-   *  target (see pick → reviewPr) that opens the dispatch modal for that PR. */
-  private drawReviewBillboard(ctx: CanvasRenderingContext2D) {
+  /** Color for a rolled-up check / build state. */
+  private checkColor(s: "pass" | "fail" | "pending" | "none"): string {
+    return s === "pass" ? "#3ee089" : s === "fail" ? "#ff6055" : s === "pending" ? "#ffb13d" : TEXT.muted;
+  }
+
+  /** The Branches & PRs billboard: filter chips, repo groups (each with a
+   *  default-branch build badge), and one row per branch with its open-PR state,
+   *  send-to-worktree (+) and open-on-GitHub (↗) controls. */
+  private drawBranchBoard(ctx: CanvasRenderingContext2D) {
     const bb = this.billboardGeom();
-    const { x, top, w, bodyH, headerH, rows, surfaceY, extra, refresh } = bb;
+    const { x, top, w, bodyH, headerH, surfaceY, extra, refresh, chips, groups, rows } = bb;
     const legTop = top + bodyH;
     // two posts down to the ground + a soft contact shadow
     ctx.fillStyle = "#3a2c1d";
@@ -2844,16 +3037,17 @@ class PixelCrew {
     ctx.strokeStyle = "#2b3a47";
     ctx.lineWidth = 1;
     ctx.strokeRect(x + 0.5, top + 0.5, w - 1, bodyH - 1);
-    // header band: chevron + title + count + refresh
+    // header band: title + count + refresh
     ctx.fillStyle = "#1d2a36";
     ctx.fillRect(x, top, w, headerH);
     ctx.fillStyle = "#ffb13d";
     ctx.font = "700 8px 'Martian Mono', monospace";
     ctx.textAlign = "left";
-    ctx.fillText("⌕ PRs TO REVIEW", x + 6, top + 11);
-    ctx.fillStyle = "rgba(255,177,61,0.6)"; // PR count, left of the refresh glyph
+    ctx.fillText("⎇ BRANCHES & PRs", x + 6, top + 11);
+    ctx.fillStyle = "rgba(255,177,61,0.6)"; // visible-branch count, left of refresh
+    ctx.font = "6px 'IBM Plex Mono', monospace";
     ctx.textAlign = "right";
-    ctx.fillText(String(this.reviewPrs.length), x + w - 19, top + 11);
+    ctx.fillText(String(bb.visibleTotal), x + w - 19, top + 11);
     // refresh button (spins while a PR refresh it kicked off is in flight)
     const bbRefHov = this.hov("bbRefresh");
     ctx.fillStyle = bbRefHov ? "rgba(255,177,61,0.22)" : "rgba(255,255,255,0.06)"; // hover tint
@@ -2866,44 +3060,155 @@ class PixelCrew {
       ctx.textAlign = "center";
       ctx.fillText("↻", refresh.x + refresh.w / 2, refresh.y + refresh.h - 2.5);
     }
-    // PR rows
+
+    // filter chips
+    for (const c of chips) {
+      const hov = this.hov("bbfilter:" + c.key);
+      ctx.fillStyle = c.active ? "rgba(255,177,61,0.26)" : hov ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.05)";
+      ctx.fillRect(c.rect.x, c.rect.y, c.rect.w, c.rect.h);
+      if (c.active) {
+        ctx.strokeStyle = "#ffb13d"; ctx.lineWidth = 1;
+        ctx.strokeRect(c.rect.x + 0.5, c.rect.y + 0.5, c.rect.w - 1, c.rect.h - 1);
+      }
+      ctx.fillStyle = c.active ? "#ffce85" : hov ? "#e3ecf1" : TEXT.muted;
+      ctx.font = "700 6px 'Martian Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(c.label, c.rect.x + c.rect.w / 2, c.rect.y + c.rect.h - 3.5);
+    }
     ctx.textAlign = "left";
-    for (const { pr, y, open } of rows) {
-      ctx.fillStyle = "rgba(255,255,255,0.06)"; // separator
-      ctx.fillRect(x + 4, y, w - 8, 0.6);
-      ctx.fillStyle = "#7fb8df"; // PR number
-      ctx.font = "600 7px 'IBM Plex Mono', monospace";
-      ctx.fillText(`#${pr.number}`, x + 6, y + 9);
-      ctx.fillStyle = TEXT.muted; // repo (right of number)
+
+    // repo group sub-headers + their main-build badge
+    for (const { group, y } of groups) {
+      ctx.fillStyle = "rgba(255,255,255,0.045)";
+      ctx.fillRect(x + 2, y, w - 4, BB_GROUP_H);
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fillRect(x + 2, y, w - 4, 0.6);
+      ctx.fillStyle = TEXT.heading;
+      ctx.font = "700 7px 'Martian Mono', monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(this.fitText(ctx, group.repo, w * 0.62), x + 6, y + 10);
+      // main build badge, right-aligned: colored dot + counts (none → neutral, no counts)
+      const m = group.main;
+      const col = this.checkColor(m.checks);
+      const label = m.total > 0 ? `${m.pass}/${m.total}` : "—";
       ctx.font = "6px 'IBM Plex Mono', monospace";
       ctx.textAlign = "right";
-      ctx.fillText(this.fitText(ctx, pr.repo.split("/").pop() ?? pr.repo, w * 0.45), x + w - 6, y + 9);
-      ctx.textAlign = "left";
-      ctx.fillStyle = "rgba(230,238,240,0.9)"; // title
-      ctx.font = "7px 'IBM Plex Mono', monospace";
-      ctx.fillText(this.fitText(ctx, pr.title || "", w - 30), x + 6, y + 17);
-      // open-in-GitHub button (↗)
-      const aHov = !!pr.url && this.hov("openpr:" + pr.url);
-      ctx.fillStyle = aHov ? "rgba(127,184,223,0.42)" : "rgba(127,184,223,0.18)"; // accent chip, brighter on hover
-      ctx.fillRect(open.x, open.y, open.w, open.h);
-      ctx.fillStyle = aHov ? "#d6ecfb" : "#9fd0f0"; // brighter accent arrow
-      ctx.font = "bold 8px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = m.checks === "none" ? TEXT.muted : col;
+      ctx.fillText(label, x + w - 7, y + 10);
+      const lw = ctx.measureText(label).width;
+      if (m.checks === "pending") {
+        const pa = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+        ctx.globalAlpha = pa;
+      }
+      ctx.fillStyle = col;
+      ctx.beginPath();
+      ctx.arc(x + w - 9 - lw - 3, y + 7.4, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // branch rows
+    ctx.textAlign = "left";
+    for (const { group, row, y, send, open } of rows) {
+      const pr = row.pr;
+      ctx.fillStyle = "rgba(255,255,255,0.05)"; // separator
+      ctx.fillRect(x + 4, y, w - 8, 0.6);
+      // glyph zone starts at the leftmost action control
+      const glyphLeft = send ? send.x : open ? open.x : x + w - 6;
+      // line 1: branch name (left) + a right-aligned default/worktree tag
+      let tag = "";
+      let tagColor: string = TEXT.muted;
+      if (row.isDefault) { tag = "default"; }
+      else if (row.hasWorktree) { tag = "● worktree"; tagColor = "#7fd0a4"; }
+      ctx.font = "6px 'IBM Plex Mono', monospace";
+      const tagW = tag ? ctx.measureText(tag).width + 4 : 0;
+      const nameMaxX = glyphLeft - 4 - tagW;
+      ctx.fillStyle = pr ? "#e3ecf1" : "#c4d0d8";
+      ctx.font = "600 7px 'IBM Plex Mono', monospace";
+      ctx.fillText(this.fitText(ctx, row.branch, nameMaxX - (x + 6)), x + 6, y + 9);
+      if (tag) {
+        ctx.fillStyle = tagColor;
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "right";
+        ctx.fillText(tag, glyphLeft - 4, y + 9);
+        ctx.textAlign = "left";
+      }
+      // line 2: #num + checks + review (or "no open PR")
+      if (pr) {
+        let sx = x + 6;
+        ctx.font = "600 6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "#7fb8df";
+        const num = `#${pr.number}${pr.isDraft ? " draft" : ""}`;
+        ctx.fillText(num, sx, y + 18);
+        sx += ctx.measureText(num).width + 4;
+        // checks
+        ctx.font = "bold 6px 'Martian Mono', monospace";
+        if (pr.checksTotal > 0) {
+          if (pr.checksPass > 0) { ctx.fillStyle = "#3ee089"; const t = `${pr.checksPass}✓`; ctx.fillText(t, sx, y + 18); sx += ctx.measureText(t).width + 3; }
+          if (pr.checksFailed > 0) { ctx.fillStyle = "#ff6055"; const t = `${pr.checksFailed}✗`; ctx.fillText(t, sx, y + 18); sx += ctx.measureText(t).width + 3; }
+          if (pr.checksRunning > 0) {
+            const pa = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.frame * 0.35));
+            ctx.globalAlpha = pa; ctx.fillStyle = "#ffb13d";
+            ctx.beginPath(); ctx.arc(sx + 1.4, y + 16.5, 1.4, 0, Math.PI * 2); ctx.fill();
+            ctx.globalAlpha = 1; ctx.fillStyle = "#ffb13d";
+            ctx.fillText(`${pr.checksRunning}`, sx + 3.6, y + 18); sx += 3.6 + ctx.measureText(`${pr.checksRunning}`).width + 3;
+          }
+        }
+        // review state (compact): approved / changes / requested
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        const rseg = (label: string, on: string) => {
+          if (sx > glyphLeft - 4) return;
+          ctx.fillStyle = on; ctx.fillText(label, sx, y + 18); sx += ctx.measureText(label).width + 3;
+        };
+        if (pr.review === "approved") rseg(`✓${pr.approvals}`, "#3ee089");
+        else if (pr.review === "changes") rseg(`✗${pr.changesRequested}`, "#ff6055");
+        else if (pr.reviewersPending > 0) rseg(`◷${pr.reviewersPending}`, "#56c7ff");
+      } else {
+        ctx.font = "6px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "rgba(150,162,170,0.5)";
+        ctx.fillText("no open PR", x + 6, y + 18);
+      }
+      // send-to-worktree (+) — only when not already checked out locally
+      if (send) {
+        const hov = this.hov("bbsend:" + group.shortName + ":" + row.branch);
+        ctx.fillStyle = hov ? "rgba(62,224,137,0.4)" : "rgba(62,224,137,0.16)";
+        ctx.fillRect(send.x, send.y, send.w, send.h);
+        ctx.fillStyle = hov ? "#aef0c9" : "#6fd0a4";
+        ctx.font = "bold 9px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("+", send.x + send.w / 2, send.y + send.h - 2.4);
+        ctx.textAlign = "left";
+      }
+      // open-on-GitHub (↗) — only when the branch has a PR
+      if (open && pr?.url) {
+        const hov = this.hov("openpr:" + pr.url);
+        ctx.fillStyle = hov ? "rgba(127,184,223,0.42)" : "rgba(127,184,223,0.18)";
+        ctx.fillRect(open.x, open.y, open.w, open.h);
+        ctx.fillStyle = hov ? "#d6ecfb" : "#9fd0f0";
+        ctx.font = "bold 8px 'IBM Plex Mono', monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("↗", open.x + open.w / 2, open.y + open.h - 2.2);
+        ctx.textAlign = "left";
+      }
+    }
+
+    // empty-line / loading / disconnected placeholders
+    if (bb.emptyLine) {
       ctx.textAlign = "center";
-      ctx.fillText("↗", open.x + open.w / 2, open.y + open.h - 2.2);
+      ctx.fillStyle = TEXT.muted;
+      ctx.font = "6.5px 'IBM Plex Mono', monospace";
+      ctx.fillText(bb.emptyLine, x + w / 2, top + headerH + (BB_CHIP_ROWS * BB_CHIP_H + BB_CHIP_GAP + 6) + 14);
       ctx.textAlign = "left";
     }
-    if (!rows.length) {
-      const cy = top + headerH + BB_ROW / 2 + 2;
+    if (!bb.showChips) {
+      const cy = top + headerH + 24;
       ctx.textAlign = "center";
       if (this.prLoading) {
-        // first GitHub poll still running: a spinner, NOT a premature "not
-        // connected" (the token may be present and simply not loaded yet)
         this.drawSpinner(ctx, x + w / 2, cy - 3, 5, "#ffb13d");
         ctx.fillStyle = TEXT.muted;
         ctx.font = "6px 'IBM Plex Mono', monospace";
-        ctx.fillText("loading PRs…", x + w / 2, cy + 12);
-      } else if (this.githubConnected === false) {
-        // no token: show the disconnected glyph + a prompt, not a misleading empty
+        ctx.fillText("loading branches…", x + w / 2, cy + 12);
+      } else {
         this.drawDisconnected(ctx, x + w / 2, cy - 4, 7, "#ffb13d");
         ctx.fillStyle = TEXT.primary;
         ctx.font = "6px 'IBM Plex Mono', monospace";
@@ -2911,10 +3216,6 @@ class PixelCrew {
         ctx.fillStyle = TEXT.muted;
         ctx.font = "5px 'IBM Plex Mono', monospace";
         ctx.fillText("add a token in ⚙ Settings", x + w / 2, cy + 19);
-      } else {
-        ctx.fillStyle = TEXT.muted;
-        ctx.font = "6.5px 'IBM Plex Mono', monospace";
-        ctx.fillText("nothing awaiting you", x + w / 2, cy);
       }
       ctx.textAlign = "left";
     }
@@ -3891,8 +4192,12 @@ class PixelCrew {
     const base = y0 + hop;
     const facingLeft = sitting; // seated devs face their monitor (to the left)
     // reading a fetched skill book at the desk: the dev looks DOWN at an open book
-    // held in front of it, so the pages (and their text) face up toward its gaze
-    const reading = sitting && tn.booksInHand > 0 && !tn.agent.reviewOf;
+    // held in front of it, so the pages (and their text) face up toward its gaze.
+    // A dev only reads while it's actually working a task — once idle/complete it
+    // sets the book down and kicks back. The tick put-down clears booksInHand, but
+    // gate on the working state here too so a parked frame can't strand the read.
+    const working = st === "active" || st === "waiting";
+    const reading = sitting && working && tn.booksInHand > 0 && !tn.agent.reviewOf;
     // idle/complete devs stay seated but recline back into the chair: the upper
     // body tips toward the backrest (to its right) and sinks a little, hands
     // laced behind the head. Reads as "kicked back", not hunched at the desk.
@@ -3968,7 +4273,7 @@ class PixelCrew {
       ctx.fillRect(mx + 2.4, my + 2.4, 1.5, 1.6);
       ctx.fillStyle = p.shirt; // other hand resting on the desk
       ctx.fillRect(x + 2.6, ty + 2, 1.4, 2.6);
-    } else if (sitting && tn.booksInHand > 0) {
+    } else if (reading) {
       // reading the fetched skill book(s) at the desk: the forearms come up
       // here (below the head, so they stay behind it), but the open book itself
       // is drawn after the head further down so it reads as held up in front of
@@ -4176,8 +4481,8 @@ class PixelCrew {
   setPrBranches(b: string[]) {
     this._instance?.setPrBranches(b);
   },
-  setReviewPrs(prs: { number: number; repo: string; title: string; branch?: string; url?: string }[]) {
-    this._instance?.setReviewPrs(prs);
+  setBranchBoard(repos: RepoGroup[], viewer?: string) {
+    this._instance?.setBranchBoard(repos, viewer);
   },
   setGithubConnected(connected: boolean | null | undefined) {
     this._instance?.setGithubConnected(connected);
@@ -4238,6 +4543,9 @@ class PixelCrew {
   },
   onOpenPr(cb: (url: string) => void) {
     this._instance?.onOpenPr(cb);
+  },
+  onSendBranchToWorktree(cb: (repoShortName: string, branch: string) => void) {
+    this._instance?.onSendBranchToWorktree(cb);
   },
   focusReviewBoard() {
     this._instance?.toggleBillboard();
