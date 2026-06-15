@@ -81,10 +81,10 @@ export const SCENARIOS: Scenario[] = [
     // glyph); the top room carries a live PR so the board's PR cell is shown.
     name: "campus",
     config: { eco: false },
-    // a second island widens the scene so the overview zooms out enough to keep
-    // every room (incl. DevTower's stacked top floor) in frame with sky above.
-    // The overview no longer reserves left-side billboard width, so a lone tower
-    // would fill the viewport width and crop its top floor.
+    // pull back to the fit-all overview so both stacked rooms sit in frame with
+    // sky above. The overview frames the tower's full bounding box (height-fit),
+    // unlike the default boot camera which fills viewport width and crops the
+    // top floor now that the left-side billboard width is gone.
     overview: true,
     usage: { fiveHour: { pct: 62 }, sevenDay: { pct: 41 } },
     state: {
@@ -92,29 +92,22 @@ export const SCENARIOS: Scenario[] = [
         { id: "a1", name: "Atlas", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: ["code-review"], contextTokens: 84_000, elapsed: "12m" },
         { id: "a2", name: "Boris", state: "active", repo: "DevTower", model: "sonnet-4.6", worktree: "/wt/feat", branch: "feat/streaming", skills: [], contextTokens: 150_000, elapsed: "4m" },
         { id: "a3", name: "Cleo", state: "waiting", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: ["security-review"], contextTokens: 33_000, elapsed: "27m", question: "Run the destructive migration?" },
-        { id: "a4", name: "Dot", state: "active", repo: "infra", model: "opus-4.8", worktree: "/infra", branch: "main", skills: [], contextTokens: 61_000, elapsed: "9m" },
       ],
       rooms: [
         { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [
           { path: "/repo", branch: "main" },
           { path: "/wt/feat", branch: "feat/streaming" },
         ] },
-        { name: "infra", path: "/infra", floor: 0, col: 1, worktrees: [
-          { path: "/infra", branch: "main" },
-        ] },
       ],
       boards: {
         "/repo": board({ branch: "main", modified: 2, unstagedAdd: 18, unstagedDel: 4 }),
         "/wt/feat": board({ branch: "feat/streaming", modified: 3, unstagedAdd: 40, unstagedDel: 6, ahead: 2, unpushed: 2,
           pr: { number: 318, title: "SSE streaming for /v1/messages", url: "https://github.com/acme/x/pull/318", draft: true, checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5, review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2, comments: 0 } }),
-        "/infra": board({ branch: "main", staged: 1, stagedAdd: 12, stagedDel: 3, ahead: 1, unpushed: 1, prReady: true,
-          pr: { number: 87, title: "Split staging state", url: "https://github.com/acme/infra/pull/87", draft: false, checks: "pass", checksPass: 3, checksFailed: 0, checksRunning: 0, checksTotal: 3, review: "approved", approvals: 1, changesRequested: 0, reviewersPending: 0, comments: 0 } }),
       },
     },
     prs: {
       crew: [
         { id: "DevTower#318", number: 318, title: "SSE streaming for /v1/messages", repo: "DevTower", branch: "feat/streaming", url: "https://github.com/acme/x/pull/318", isDraft: true, checks: "pending", checksPass: 3, checksFailed: 0, checksRunning: 2, checksTotal: 5, review: "required", approvals: 0, changesRequested: 0, reviewersPending: 2, comments: 0, author: "you", agentId: "a2" },
-        { id: "infra#87", number: 87, title: "Split staging state", repo: "infra", branch: "main", url: "https://github.com/acme/infra/pull/87", isDraft: false, checks: "pass", checksPass: 3, checksFailed: 0, checksRunning: 0, checksTotal: 3, review: "approved", approvals: 1, changesRequested: 0, reviewersPending: 0, comments: 0, author: "you", agentId: "a4" },
       ],
       review: [],
     },
