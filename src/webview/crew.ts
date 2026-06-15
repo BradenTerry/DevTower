@@ -2493,7 +2493,9 @@ class PixelCrew {
       ctx.textAlign = "center";
       ctx.fillText(building ? "+ WORKTREE" : "+ RESERVE", s.x, s.y - 2);
       ctx.font = `${clamp(2.4 * this.cam.z, 7, 10)}px 'IBM Plex Mono', monospace`;
-      ctx.fillStyle = "rgba(140,150,156,0.6)";
+      // subtitle tracks its header: the "+ WORKTREE" green, a touch darker for
+      // contrast; "+ RESERVE" keeps the neutral gray under its gray header
+      ctx.fillStyle = building ? "rgba(150,200,170,0.9)" : "rgba(140,150,156,0.6)";
       ctx.fillText(building ? "new branch room" : "pick a directory", s.x, s.y + 11);
     }
     // toon labels + bubbles. Names are world-anchored: their font scales with the
