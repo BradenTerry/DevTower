@@ -46,6 +46,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // pr-list index (which lags creation) and a checkless PR idles the poller at
   // 60s, so a brand-new PR could sit off the board for up to a minute.
   context.subscriptions.push(discovery.onPrCreated(() => void prs.chaseNewPr()));
+  // when an agent runs `gh pr merge`/`close`, discovery fires this → refresh now so
+  // the no-longer-open PR drops off the board immediately instead of lingering
+  // until the poller's lazy ~60s tick.
+  context.subscriptions.push(discovery.onPrClosed(() => void prs.refresh(true)));
 
   // Repair installed hook paths and, if a build shipped a brand-new hook, nudge
   // the user once to review it on Settings > Hooks. Never installs without a

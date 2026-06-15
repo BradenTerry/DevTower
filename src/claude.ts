@@ -48,7 +48,13 @@ type LiveCounts =
 export class ClaudeDiscovery {
   private timer?: ReturnType<typeof setInterval>;
   private mine = new Set<string>(); // agent ids this service created
-  private branchCache = new Map<string, string>();
+  // cwd → its git branch, with the time we read it. A short TTL is essential: a
+  // dev that switches branches mid-session (e.g. `git checkout -b feature/...`)
+  // must have its displayed branch — and the branch the PR board queries for it —
+  // follow within a poll, not stay pinned to whatever it was at first sight (which
+  // left a just-opened PR off the board until the slow poller caught up).
+  private branchCache = new Map<string, { branch: string; at: number }>();
+  private static readonly BRANCH_TTL_MS = 5_000;
   // agent id → directory it was just told to /cd into (+ when), held until the
   // transcript reports the new cwd so the toon doesn't snap back meanwhile. The
   // timestamp bounds the hold: a /cd that fails or is declined never reports the
@@ -97,8 +103,15 @@ export class ClaudeDiscovery {
   // fires exactly once.
   private _onPrCreated = new vscode.EventEmitter<void>();
   readonly onPrCreated = this._onPrCreated.event;
+  // Fires when a watched session just ran `gh pr merge`/`close`, so the PR poller
+  // can refresh right away and drop the no-longer-open PR from the board instead
+  // of waiting out its lazy tick. Gated like `onPrCreated` so a pre-existing close
+  // never fires on startup.
+  private _onPrClosed = new vscode.EventEmitter<void>();
+  readonly onPrClosed = this._onPrClosed.event;
   private knownSessions = new Set<string>();
   private prCreatedSeen = new Map<string, number>();
+  private prClosedSeen = new Map<string, number>();
 
   constructor(
     private store: DevTowerStore,
@@ -145,6 +158,7 @@ export class ClaudeDiscovery {
   dispose(): void {
     if (this.timer) clearInterval(this.timer);
     this._onPrCreated.dispose();
+    this._onPrClosed.dispose();
   }
 
   /**
@@ -695,10 +709,13 @@ export class ClaudeDiscovery {
         }
       }
       const cdConfirmed = cdRoom !== undefined || (pend !== undefined && cwd === pend.dir);
-      let branch = this.branchCache.get(cwd);
-      if (branch === undefined) {
+      const cachedBranch = this.branchCache.get(cwd);
+      let branch: string;
+      if (cachedBranch && Date.now() - cachedBranch.at < ClaudeDiscovery.BRANCH_TTL_MS) {
+        branch = cachedBranch.branch;
+      } else {
         branch = (await isRepo(cwd)) ? await currentBranch(cwd) : "";
-        this.branchCache.set(cwd, branch);
+        this.branchCache.set(cwd, { branch, at: Date.now() });
       }
       // a /clear succession rebinding onto an EXTERNAL dev must keep it external
       // (it's still an outside session); only an owned placeholder adoption flips
@@ -818,18 +835,26 @@ export class ClaudeDiscovery {
     // trigger a fetch on startup); a create that advances the stamp on an already
     // known session fires the event.
     let prJustCreated = false;
+    let prJustClosed = false;
     for (const f of found) {
       const known = this.knownSessions.has(f.sessionId);
       this.knownSessions.add(f.sessionId);
-      if (!f.prCreatedAt) continue;
-      if (f.prCreatedAt > (this.prCreatedSeen.get(f.sessionId) ?? 0)) {
+      if (f.prCreatedAt && f.prCreatedAt > (this.prCreatedSeen.get(f.sessionId) ?? 0)) {
         this.prCreatedSeen.set(f.sessionId, f.prCreatedAt);
         if (known) prJustCreated = true;
+      }
+      if (f.prClosedAt && f.prClosedAt > (this.prClosedSeen.get(f.sessionId) ?? 0)) {
+        this.prClosedSeen.set(f.sessionId, f.prClosedAt);
+        if (known) prJustClosed = true;
       }
     }
     if (prJustCreated) {
       dlog("discovery.prCreated", {});
       this._onPrCreated.fire();
+    }
+    if (prJustClosed) {
+      dlog("discovery.prClosed", {});
+      this._onPrClosed.fire();
     }
     // Per-agent binding snapshot: exactly which claude session each agent is tied
     // to this poll, how it got bound, whether it's owned or external, and the
@@ -910,15 +935,20 @@ export class ClaudeDiscovery {
         const marker = markers.get(sessionId);
         const waitingByHook = !!marker && marker.ts > activityMtime;
         if (marker && !waitingByHook) clearMarker(sessionId, this.deps.waitingDir);
-        // otherwise: waiting ONLY when the assistant actually asked something; a
-        // turn that ends in a statement is just done → idle (off the clock)
+        // otherwise: a session mid-turn (a tool in flight, or an owed reply) is
+        // WORKING even if the transcript has been silent past the freshness window
+        // — a long build/test or a long model turn must not read as idle. Only a
+        // turn that ENDS in a statement is done → idle; one ending in a question is
+        // waiting on the human.
         const state: AgentState = waitingByHook
           ? "waiting"
           : age < 120_000
             ? "active"
-            : meta.lastRole === "assistant" && meta.question
-              ? "waiting"
-              : "idle";
+            : meta.working
+              ? "active"
+              : meta.lastRole === "assistant" && meta.question
+                ? "waiting"
+                : "idle";
         out.push({
           id: "cc-" + fn.slice(0, 8),
           sessionId,
@@ -936,6 +966,7 @@ export class ClaudeDiscovery {
           subagents: meta.subagents,
           tasks,
           prCreatedAt: meta.prCreatedAt,
+          prClosedAt: meta.prClosedAt,
         });
       }
     }
@@ -960,6 +991,7 @@ interface Found {
   subagents?: number;
   tasks?: { done: number; total: number };
   prCreatedAt?: number; // ms time of this session's most recent `gh pr create`
+  prClosedAt?: number; // ms time of this session's most recent `gh pr merge`/`close`
 }
 
 /** Count an agent's task list from `~/.claude/tasks/<sessionId>/*.json` — the
@@ -1010,7 +1042,7 @@ export async function newestSubMtime(projectDir: string, sessionId: string): Pro
 export async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; prCreatedAt?: number }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; working?: boolean; prCreatedAt?: number; prClosedAt?: number }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -1089,6 +1121,11 @@ export async function readMeta(
     // new PR wait out the poller's lazy ~60s tick.
     const prCreateTools = new Set<string>();
     let prCreatedAt = 0;
+    // same idea for `gh pr merge` / `gh pr close`: when the result lands the PR is
+    // no longer open, so the discovery loop kicks an immediate refresh to drop it
+    // from the board instead of letting it linger until the poller's lazy ~60s tick.
+    const prCloseTools = new Set<string>();
+    let prClosedAt = 0;
     const reNote = /<task-id>\s*([A-Za-z0-9_-]+)\s*<\/task-id>[\s\S]*?<status>\s*(?:completed|failed|cancelled|canceled|killed|error|stopped)\s*<\/status>/g;
     for (const raw of full.split("\n")) {
       const t = raw.trim();
@@ -1105,11 +1142,19 @@ export async function readMeta(
           } else if (b.type === "tool_use" && b.name === "Bash" &&
                      typeof b.input?.command === "string" && /\bgh\s+pr\s+(?:create|new)\b/.test(b.input.command)) {
             prCreateTools.add(b.id);
+          } else if (b.type === "tool_use" && b.name === "Bash" &&
+                     typeof b.input?.command === "string" && /\bgh\s+pr\s+(?:merge|close)\b/.test(b.input.command)) {
+            prCloseTools.add(b.id);
           } else if (b.type === "tool_result" && b.tool_use_id) {
             if (prCreateTools.has(b.tool_use_id)) {
               prCreateTools.delete(b.tool_use_id);
               const ts = Date.parse(rec.timestamp ?? "");
               if (Number.isFinite(ts)) prCreatedAt = Math.max(prCreatedAt, ts);
+            }
+            if (prCloseTools.has(b.tool_use_id)) {
+              prCloseTools.delete(b.tool_use_id);
+              const ts = Date.parse(rec.timestamp ?? "");
+              if (Number.isFinite(ts)) prClosedAt = Math.max(prClosedAt, ts);
             }
             const txt = typeof b.content === "string" ? b.content : flatten(b.content);
             const ack = /agentId:\s*([A-Za-z0-9_-]+)/.exec(txt);
@@ -1141,6 +1186,14 @@ export async function readMeta(
     let lastRole: string | undefined;
     let task: string | undefined;
     let lastAssistantText: string | undefined;
+    // is the session mid-turn (working) rather than parked? The NEWEST real record
+    // tells us: a `user` turn means a tool_result or prompt just landed and the
+    // agent owes a reply; an `assistant` turn carrying a tool_use block means a
+    // tool is in flight (no result has been written after it). Both mean WORKING
+    // even when no byte has hit the transcript for a while — a long-running tool
+    // (build/test) or a long model turn would otherwise read as idle (feet up).
+    let working = false;
+    let sawNewest = false;
     const lines = tail.split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
       const t = lines[i].trim();
@@ -1149,6 +1202,12 @@ export async function readMeta(
         const rec = JSON.parse(t);
         const role = rec.type ?? rec.message?.role;
         if (role === "user" || role === "assistant") {
+          if (!sawNewest) {
+            sawNewest = true;
+            const c = rec.message?.content ?? rec.content;
+            const hasToolUse = Array.isArray(c) && c.some((b: any) => b?.type === "tool_use");
+            working = role === "user" || hasToolUse;
+          }
           if (!lastRole) lastRole = role;
           // first (= newest, scanning backwards) real assistant turn wins;
           // skip sidechain sub-agent turns and the streaming partial at the tail
@@ -1191,7 +1250,7 @@ export async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents, prCreatedAt: prCreatedAt || undefined };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, question, contextTokens, skills, subagents, working, prCreatedAt: prCreatedAt || undefined, prClosedAt: prClosedAt || undefined };
   } finally {
     await fh.close();
   }

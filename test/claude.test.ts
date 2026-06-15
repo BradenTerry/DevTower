@@ -200,6 +200,46 @@ describe("readMeta", () => {
     expect(meta.prCreatedAt).toBe(Date.parse(ts));
   });
 
+  it("stamps prClosedAt when a `gh pr merge` command completes", async () => {
+    const ts = "2026-06-15T08:15:00.000Z";
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "merge it" } },
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_m", name: "Bash", input: { command: "gh pr merge 23 --merge" } }] },
+      },
+      { type: "user", timestamp: ts, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_m", content: "Merged" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.prClosedAt).toBe(Date.parse(ts));
+  });
+
+  it("stamps prClosedAt when a `gh pr close` command completes", async () => {
+    const ts = "2026-06-15T08:20:00.000Z";
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "close it" } },
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_c", name: "Bash", input: { command: "gh pr close 7" } }] },
+      },
+      { type: "user", timestamp: ts, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_c", content: "Closed" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.prClosedAt).toBe(Date.parse(ts));
+  });
+
+  it("leaves prClosedAt undefined before the merge result lands", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "merge soon" } },
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_m", name: "Bash", input: { command: "gh pr merge 23 --merge" } }] }, // emitted, not yet returned
+      },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.prClosedAt).toBeUndefined();
+  });
+
   it("leaves prCreatedAt undefined before the create result lands, and for other Bash commands", async () => {
     const { file, size } = write([
       { type: "user", cwd: dir, message: { role: "user", content: "status then maybe a pr" } },
@@ -240,6 +280,38 @@ describe("readMeta", () => {
     ]);
     const meta = await readMeta(file, size);
     expect(meta.subagents).toBe(0);
+  });
+
+  it("flags working when a tool is in flight (assistant tool_use is the newest record)", async () => {
+    // a long-running Bash (build/test/screenshots) leaves an assistant tool_use at
+    // the tail with no result yet — the session is working, not idle.
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "run the screenshots" } },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "npm run screenshots" } }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.working).toBe(true);
+  });
+
+  it("flags working when the agent owes a reply (newest record is a user tool_result)", async () => {
+    // a long model turn: the prior tool_result is the tail and the agent hasn't
+    // written its next turn yet — still working.
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "do it" } },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "git status" } }] } },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "clean" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.working).toBe(true);
+  });
+
+  it("does NOT flag working when the newest turn is a finished assistant statement", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "ship it" } },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Done, pushed to main." }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.working).toBe(false);
   });
 
   it("unescapes a Windows-style cwd path (regression: backslash mangling)", async () => {
