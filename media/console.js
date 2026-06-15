@@ -121,6 +121,20 @@
     $("#devtower-count").textContent = agents.length;
   }
 
+  // The selected directory (the room a USE DIR click mounted), shown under the
+  // telemetry pill. Long paths are truncated from the LEFT with a leading … so
+  // the meaningful tail (the worktree folder) stays visible; full path on hover.
+  function renderSelDir(dir) {
+    const wrap = $("#seldir");
+    const el = $("#seldir-path");
+    if (!wrap || !el) return;
+    if (!dir) { wrap.hidden = true; el.textContent = ""; wrap.removeAttribute("title"); return; }
+    const MAX = 44;
+    wrap.hidden = false;
+    wrap.title = dir;
+    el.textContent = dir.length > MAX ? "…" + dir.slice(dir.length - (MAX - 1)) : dir;
+  }
+
   /* ---------- plan usage meters (5h / weekly) ---------- */
   function fmtReset(ts) {
     if (!ts) return "";
@@ -759,7 +773,7 @@
       <div class="p-actions">
         ${a.external
           ? `<div class="pa ext-note" title="This session runs outside DevTower — manage it in its own terminal">⌗ Runs in its own session</div>`
-          : `<button class="pa primary" data-tool="terminal">⌗ Claude terminal</button>`}
+          : `<button class="pa primary" data-tool="terminal">⌗ Chat</button>`}
         ${a.external ? "" : `<button class="pa danger" data-tool="sendHome">⌂ Send Home</button>`}
       </div>`;
 
@@ -791,6 +805,8 @@
   /* ---------- global wiring ---------- */
   $("#settingsbtn").onclick = openSettings;
   $("#lbbtn").onclick = () => (leaderboardOpen() ? closeLeaderboard() : openLeaderboard());
+  const popout = $("#popoutbtn");
+  if (popout) popout.onclick = () => vscode.postMessage({ type: "popout" });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -807,6 +823,7 @@
       agents = m.agents || [];
       if (m.selectedId && panelOpen) selectedId = m.selectedId;
       renderTelemetry();
+      renderSelDir(m.selectedDir);
       if (window.DevTowerCrew) {
         window.DevTowerCrew.setBoards(m.boards || {});
         window.DevTowerCrew.setRooms(m.rooms || []);

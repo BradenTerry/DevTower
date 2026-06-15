@@ -1,0 +1,357 @@
+/* ============ TOKENS (shared with the tower's console.css) ============ */
+:root,[data-theme="dark"]{
+  --bg:#070b0d;
+  --glass:rgba(10,15,18,0.72);
+  --glass-2:rgba(20,28,33,0.85);
+  --solid:#0f1518; --raise:#1b242a; --raise-2:#27323a;
+  --edge:rgba(255,255,255,0.14); --edge-soft:rgba(255,255,255,0.07);
+  --text:#f0f5f7; --text-dim:#a8b3b7; --text-faint:#6f7a7f;
+  --amber:#ffb13d; --on-amber:#0a0c0d;
+  --active:#3ee089; --waiting:#ffb13d; --complete:#56c7ff; --error:#ff6055; --idle:#5b666b;
+  --add:#3ee089; --del:#ff6055;
+  --shadow:0 24px 70px -24px rgba(0,0,0,.9), 0 4px 18px -6px rgba(0,0,0,.5);
+}
+[data-theme="light"]{
+  --bg:#cfe0ee;
+  --glass:rgba(250,248,243,0.78);
+  --glass-2:rgba(255,255,255,0.9);
+  --solid:#f4f1ea; --raise:#ffffff; --raise-2:#ffffff;
+  --edge:rgba(40,40,30,0.18); --edge-soft:rgba(40,40,30,0.08);
+  --text:#12171a; --text-dim:#4c534f; --text-faint:#7a8079;
+  --amber:#9c5f08; --on-amber:#fffaf0;
+  --active:#0f7340; --waiting:#9c5f08; --complete:#0e5d8f; --error:#b32d23; --idle:#8d938b;
+  --add:#0f7340; --del:#b32d23;
+}
+:root{ --mono:'IBM Plex Mono',ui-monospace,monospace; --label:'Martian Mono',ui-monospace,monospace; }
+
+*{ box-sizing:border-box; margin:0; padding:0; }
+::selection{ background:color-mix(in srgb,var(--amber) 30%,transparent); }
+html,body{ height:100%; }
+body{
+  font-family:var(--mono); font-size:13px; color:var(--text);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, color-mix(in srgb,var(--amber) 7%,transparent), transparent 60%),
+    var(--bg);
+  -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column; height:100vh; overflow:hidden;
+}
+
+/* ============ TOP BAR ============ */
+.mini-top{
+  flex:0 0 auto; display:flex; align-items:center; gap:14px;
+  /* wrap so the tabs are never clipped on a narrow panel; the telemetry drops to
+     its own line (right-aligned) when tabs + stats can't share one row. */
+  flex-wrap:wrap; row-gap:10px;
+  padding:12px 16px; border-bottom:1px solid var(--edge-soft);
+  background:var(--glass); backdrop-filter:blur(12px) saturate(1.2);
+}
+.spacer{ flex:1; }
+.telemetry{ margin-left:auto; }
+/* keep the tab pills usable even on a very narrow panel */
+.tabs{ flex-wrap:wrap; }
+
+/* top-level tab switcher: Projects (drill) | All agents (flat, grouped) */
+.tabs{ display:inline-flex; align-items:center; gap:3px; background:var(--glass-2); border:1px solid var(--edge); border-radius:10px; padding:3px; flex:0 0 auto; }
+.tab{ font-family:var(--label); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-dim); background:transparent; border:0; padding:6px 12px; border-radius:7px; cursor:pointer; transition:.14s; white-space:nowrap; }
+.tab:hover{ color:var(--text); background:var(--edge-soft); }
+.tab.active{ color:var(--on-amber); background:var(--amber); }
+
+/* the subbar sits on its own row below the tabs: breadcrumbs on the left, the
+   persistent selected-directory indicator on the right. Always shown (the seldir
+   keeps it populated even when the crumbs are empty on non-Projects tabs). */
+.subbar{
+  flex:0 0 auto; display:flex; align-items:center; gap:12px; flex-wrap:wrap; row-gap:6px; min-width:0;
+  padding:8px 16px; border-bottom:1px solid var(--edge-soft);
+  background:var(--glass); backdrop-filter:blur(12px) saturate(1.2);
+}
+.crumbs{ display:flex; align-items:center; gap:2px; flex-wrap:wrap; min-width:0; font-size:12px; }
+
+/* persistent selected-directory indicator (amber accent, clickable to jump) */
+.seldir{ display:flex; align-items:center; gap:8px; min-width:0; max-width:100%; font-size:12px; cursor:pointer; }
+.seldir.none{ cursor:default; }
+.seldir-label{ flex:0 0 auto; font-family:var(--label); font-size:8px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-faint); }
+.seldir-val{ flex:0 0 auto; color:var(--text); font-weight:600; }
+.seldir-val b{ color:var(--amber); }
+.seldir-val.muted{ color:var(--text-faint); font-weight:500; }
+.seldir-path{ min-width:0; color:var(--text-faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.seldir:not(.none):hover .seldir-val{ color:var(--amber); }
+.seldir:not(.none):hover .seldir-path{ color:var(--text-dim); }
+.crumb{
+  display:inline-flex; align-items:center; gap:6px; padding:4px 9px; border-radius:8px;
+  color:var(--text-dim); background:transparent; border:1px solid transparent;
+  font-family:var(--label); font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+  cursor:pointer; transition:.14s; white-space:nowrap;
+}
+.crumb:hover{ color:var(--text); background:var(--edge-soft); border-color:var(--edge); }
+.crumb.here{ color:var(--text); cursor:default; }
+.crumb.here:hover{ background:transparent; border-color:transparent; }
+.crumb-sep{ color:var(--text-faint); font-size:11px; padding:0 1px; user-select:none; }
+
+.telemetry{ display:flex; align-items:center; gap:0; border:1px solid var(--edge); border-radius:10px; overflow:hidden; background:var(--glass-2); }
+.tstat{ display:flex; align-items:center; gap:7px; font-size:13px; color:var(--text-dim); padding:7px 12px; border-right:1px solid var(--edge-soft); }
+.tstat:last-of-type{ border-right:none; }
+.tstat b{ color:var(--text); font-weight:600; }
+.tstat .lbl{ font-family:var(--label); font-size:8px; letter-spacing:.14em; text-transform:uppercase; color:var(--text-dim); }
+.pip{ width:8px; height:8px; border-radius:50%; display:inline-block; }
+.pip.active{ background:var(--active); box-shadow:0 0 7px var(--active); }
+.pip.waiting{ background:var(--waiting); box-shadow:0 0 7px var(--waiting); }
+.pip.complete{ background:var(--complete); box-shadow:0 0 7px var(--complete); }
+.pip.error{ background:var(--error); box-shadow:0 0 7px var(--error); }
+.pip.idle{ background:var(--idle); }
+
+/* ============ BODY / TABLES ============ */
+.mini-body{ flex:1 1 auto; overflow:auto; padding:14px 16px 28px; }
+
+.tbl{ width:100%; border-collapse:separate; border-spacing:0 6px; }
+.tbl thead th{
+  text-align:left; font-family:var(--label); font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--text-faint); font-weight:500; padding:0 12px 4px; white-space:nowrap;
+}
+.tbl thead th.num{ text-align:right; }
+.tbl tbody tr{ background:var(--glass-2); }
+.tbl tbody tr.row{ cursor:pointer; transition:background .14s, box-shadow .14s, transform .08s; }
+.tbl tbody tr.row:hover{ background:var(--raise); box-shadow:inset 0 0 0 1px var(--edge); }
+.tbl tbody tr.row:active{ transform:translateY(1px); }
+.tbl tbody td{ padding:11px 12px; border-top:1px solid var(--edge-soft); border-bottom:1px solid var(--edge-soft); vertical-align:middle; }
+.tbl tbody td:first-child{ border-left:1px solid var(--edge-soft); border-top-left-radius:11px; border-bottom-left-radius:11px; }
+.tbl tbody td:last-child{ border-right:1px solid var(--edge-soft); border-top-right-radius:11px; border-bottom-right-radius:11px; }
+.tbl td.num{ text-align:right; font-variant-numeric:tabular-nums; }
+.tbl tbody tr.sel{ box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--amber) 55%,transparent); }
+
+/* name cell with accent chip */
+.namecell{ display:flex; align-items:center; gap:10px; min-width:0; }
+.chip{ width:10px; height:18px; border-radius:3px; flex:0 0 auto; background:var(--ac,var(--idle)); box-shadow:0 0 0 1px rgba(0,0,0,.25) inset; }
+.nm{ font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sub{ color:var(--text-faint); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.col-name{ min-width:160px; max-width:340px; }
+
+/* state dot + label */
+.statecell{ display:flex; align-items:center; gap:8px; }
+.statecell .pip{ flex:0 0 auto; }
+.statecell .slbl{ color:var(--text-dim); }
+
+/* per-status agent counts: run / wait / err / idle. Wraps to multiple lines as
+   the window (and so the Agents column) narrows, instead of forcing it wide. */
+.counts{ display:flex; flex-wrap:wrap; align-items:center; gap:7px 14px; font-variant-numeric:tabular-nums; }
+/* stacked variant for table rows: run / wait / err each on their own line */
+.counts.vstack{ flex-direction:column; flex-wrap:nowrap; align-items:flex-start; gap:5px; }
+.counts .seg{ display:inline-flex; align-items:center; gap:5px; flex:0 0 auto; }
+.counts .seg .pip{ width:8px; height:8px; }
+.counts .seg b{ color:var(--text); font-weight:600; font-size:13px; }
+.counts .seg em{ font-style:normal; font-family:var(--label); font-size:8px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-faint); }
+.counts .seg.zero b{ color:var(--text-faint); }
+.counts .seg.zero .pip{ opacity:.32; box-shadow:none; }
+
+/* git stats */
+.git{ display:inline-flex; align-items:center; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; font-size:12px; }
+.git .add{ color:var(--add); }
+.git .del{ color:var(--del); }
+.git .tag{ display:inline-flex; align-items:center; gap:4px; color:var(--text-dim); }
+.git .muted{ color:var(--text-faint); }
+
+/* stacked git cell: Committed / Staged / Unstaged, two horizontal dividers */
+.gitstack{ display:flex; flex-direction:column; font-variant-numeric:tabular-nums; font-size:12px; min-width:0; }
+.gitstack .grow{ display:flex; align-items:center; gap:10px; padding:5px 0; border-top:1px solid var(--edge-soft); }
+.gitstack .grow:first-child{ border-top:none; padding-top:0; }
+.gitstack .grow:last-child{ padding-bottom:0; }
+.gitstack .glabel{ flex:0 0 auto; width:62px; font-family:var(--label); font-size:8px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-faint); }
+.gitstack .gvals{ display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.gitstack .add{ color:var(--add); }
+.gitstack .del{ color:var(--del); }
+.gitstack .tag{ display:inline-flex; align-items:center; gap:4px; color:var(--text-dim); }
+.gitstack .muted{ color:var(--text-faint); }
+
+/* PR badge */
+.prbadge{
+  display:inline-flex; align-items:center; gap:7px; padding:5px 9px; border-radius:8px;
+  border:1px solid var(--edge); background:var(--glass); cursor:pointer; transition:.14s;
+  font-variant-numeric:tabular-nums; font-size:12px; color:var(--text-dim);
+}
+.prbadge:hover{ background:var(--raise); border-color:color-mix(in srgb,var(--amber) 40%,var(--edge)); transform:translateY(-1px); }
+/* static badge in the all-PRs table: the whole row is the click target, so the
+   badge itself stays inert (no pointer, no lift). */
+.prbadge.static{ cursor:default; }
+.prbadge.static:hover{ background:var(--glass); border-color:var(--edge); transform:none; }
+/* PR number + draft tag when shown inline in a name cell (all-PRs table) */
+.nm .pnum{ color:var(--amber); font-weight:600; }
+.nm .draft{ font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint); margin-left:4px; }
+.prbadge .num{ color:var(--text); font-weight:600; }
+.prbadge .dot{ width:8px; height:8px; border-radius:50%; }
+.prbadge .draft{ font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint); }
+.chk-pass{ background:var(--active); box-shadow:0 0 6px var(--active); }
+.chk-fail{ background:var(--error); box-shadow:0 0 6px var(--error); }
+.chk-pending{ background:var(--waiting); box-shadow:0 0 6px var(--waiting); }
+.chk-none{ background:var(--idle); }
+.rev-approved{ color:var(--active); }
+.rev-changes{ color:var(--error); }
+.rev-required{ color:var(--waiting); }
+
+/* row actions (+ Dev, Use dir) */
+.actions{ display:inline-flex; align-items:center; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
+/* the agent action column is centered (not right-aligned) so the stacked
+   View / Chat / ✕ buttons stay fully on screen even on a narrow panel */
+.c-act{ text-align:center; white-space:nowrap; width:1%; }
+.c-act .actions.col{ display:inline-flex; }
+
+/* stacked variant: View / Chat / ✕ on their own lines, horizontally centered */
+.actions.col{ flex-direction:column; align-items:center; gap:5px; flex-wrap:nowrap; }
+.actions.col .usebtn{ width:100%; justify-content:center; }
+
+/* compact icon button (the remove ✕ on projects, worktrees, agents) */
+.iconbtn{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:26px; height:26px; padding:0; border-radius:8px; flex:0 0 auto;
+  border:1px solid var(--edge); background:var(--glass); color:var(--text-faint);
+  font-size:12px; line-height:1; cursor:pointer; transition:.14s;
+}
+.iconbtn:hover{ background:var(--raise); color:var(--text); transform:translateY(-1px); }
+.iconbtn:active{ transform:translateY(0) scale(.94); }
+.iconbtn.danger:hover{
+  color:var(--error); background:color-mix(in srgb,var(--error) 12%,transparent);
+  border-color:color-mix(in srgb,var(--error) 55%,var(--edge));
+}
+.iconbtn:disabled{
+  color:var(--text-faint); opacity:.4; cursor:not-allowed; background:var(--glass); border-color:var(--edge-soft);
+}
+.iconbtn:disabled:hover{ transform:none; color:var(--text-faint); background:var(--glass); border-color:var(--edge-soft); }
+
+/* all-agents view: one group per project/worktree that has agents */
+.agroup{ margin-bottom:22px; }
+.agroup-head{ display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:8px; padding:0 4px; flex-wrap:wrap; }
+.agroup-title{ display:flex; align-items:center; gap:9px; min-width:0; font-family:var(--label); font-size:11px; letter-spacing:.05em; text-transform:uppercase; }
+.agroup-title .ap{ color:var(--text); font-weight:600; }
+.agroup-title .gsep{ color:var(--text-faint); }
+.agroup-title .aw{ color:var(--amber); }
+.agroup-meta{ display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+
+/* single-worktree PR summary card: number/title + CI/review, links to PR detail */
+.pr-bar{
+  display:flex; align-items:center; gap:12px; margin-bottom:14px; padding:11px 14px;
+  background:var(--glass-2); border:1px solid var(--edge); border-radius:12px;
+  cursor:pointer; transition:background .14s, border-color .14s, transform .08s;
+}
+.pr-bar:hover{ background:var(--raise); border-color:color-mix(in srgb,var(--amber) 40%,var(--edge)); }
+.pr-bar:active{ transform:translateY(1px); }
+.pr-bar .chip{ height:30px; }
+.pr-bar-main{ min-width:0; flex:1 1 auto; }
+.pr-bar-main .nm{ font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pr-bar-main .pnum{ color:var(--amber); }
+.pr-bar-main .draft{ font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint); margin-left:4px; }
+.pr-bar-main .sub{ color:var(--text-faint); font-size:11px; margin-top:2px; }
+.pr-bar-link{ flex:0 0 auto; font-family:var(--label); font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--amber); white-space:nowrap; }
+/* muted variant: no PR / still loading — not clickable */
+.pr-bar.muted{ cursor:default; }
+.pr-bar.muted:hover{ background:var(--glass-2); border-color:var(--edge); }
+.pr-bar.muted:active{ transform:none; }
+.pr-bar-note{ color:var(--text-faint); font-size:12px; }
+
+/* agents-view toolbar: worktree label + counts on the left, actions on the right */
+.wt-toolbar{
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  margin-bottom:14px; padding:11px 14px;
+  background:var(--glass-2); border:1px solid var(--edge); border-radius:12px;
+}
+.wt-meta{ display:flex; align-items:center; gap:20px; min-width:0; }
+.wt-label{ font-weight:600; color:var(--text); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* switch-dir + add-dev buttons */
+.usebtn{
+  display:inline-flex; align-items:center; gap:6px; padding:6px 11px; border-radius:8px;
+  border:1px solid var(--edge); background:var(--glass); color:var(--text-dim);
+  font-family:var(--label); font-size:9px; letter-spacing:.1em; text-transform:uppercase;
+  cursor:pointer; transition:.14s; white-space:nowrap;
+}
+.usebtn:hover{ background:var(--raise); color:var(--text); border-color:color-mix(in srgb,var(--amber) 45%,var(--edge)); transform:translateY(-1px); }
+.usebtn:active{ transform:translateY(0) scale(.96); }
+.usebtn:disabled{ opacity:.4; cursor:not-allowed; }
+.usebtn:disabled:hover{ transform:none; background:var(--glass); color:var(--text-dim); border-color:var(--edge); }
+.usebtn.on{
+  color:var(--amber); cursor:default;
+  background:color-mix(in srgb,var(--amber) 18%,transparent);
+  border-color:color-mix(in srgb,var(--amber) 55%,transparent);
+}
+.usebtn.on:hover{ transform:none; }
+/* add-dev: green accent so spawning reads distinct from switching dir */
+.usebtn.add{ color:var(--active); border-color:color-mix(in srgb,var(--active) 32%,var(--edge)); }
+.usebtn.add:hover{ color:var(--active); border-color:color-mix(in srgb,var(--active) 60%,var(--edge)); background:color-mix(in srgb,var(--active) 12%,transparent); }
+/* chat: amber accent — opens this agent's Claude session (its terminal) */
+.usebtn.chat{ color:var(--amber); border-color:color-mix(in srgb,var(--amber) 32%,var(--edge)); }
+.usebtn.chat:hover{ color:var(--amber); border-color:color-mix(in srgb,var(--amber) 60%,var(--edge)); background:color-mix(in srgb,var(--amber) 12%,transparent); }
+
+/* external agents run outside DevTower — no chat button, just a muted note
+   (mirrors the tower's "Runs in its own session") */
+.ext-cell{ color:var(--text-faint); font-family:var(--label); font-size:9px; letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; }
+
+.ctx{ font-variant-numeric:tabular-nums; font-weight:600; }
+/* current task — now a line under the agent name (its own column was removed) */
+.task{ color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; font-size:11px; margin-top:2px; }
+[data-tip]{ cursor:help; }
+
+/* custom hover tooltip for the current-task cell: fades in after a 200ms delay
+   (the JS owns the delay), positioned by JS. Nicer + faster than the native title. */
+.tooltip{
+  position:fixed; z-index:50; left:0; top:0; max-width:420px; pointer-events:none;
+  padding:9px 12px; border-radius:9px;
+  background:var(--glass-2); border:1px solid var(--edge); box-shadow:var(--shadow);
+  backdrop-filter:blur(12px) saturate(1.2);
+  color:var(--text); font-family:var(--mono); font-size:12px; line-height:1.45;
+  white-space:normal; overflow-wrap:anywhere;
+  opacity:0; visibility:hidden; transform:translateY(3px); transition:opacity .14s, transform .14s;
+}
+.tooltip.show{ opacity:1; visibility:visible; transform:translateY(0); }
+
+/* ============ PR DETAIL ============ */
+.pr-detail{ max-width:680px; }
+.pr-card{
+  background:var(--glass-2); border:1px solid var(--edge); border-radius:14px;
+  padding:20px 22px; box-shadow:var(--shadow);
+}
+.pr-card h2{ font-size:16px; font-weight:600; margin-bottom:4px; display:flex; align-items:baseline; gap:8px; }
+.pr-card h2 .pnum{ color:var(--amber); }
+.pr-card .pr-sub{ color:var(--text-faint); font-size:12px; margin-bottom:18px; }
+.pr-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:20px; }
+.pr-stat{ background:var(--solid); border:1px solid var(--edge-soft); border-radius:10px; padding:12px 14px; }
+.pr-stat .k{ font-family:var(--label); font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-faint); margin-bottom:6px; }
+.pr-stat .v{ font-size:15px; font-weight:600; color:var(--text); font-variant-numeric:tabular-nums; display:flex; align-items:center; gap:8px; }
+.pr-stat .v small{ font-size:11px; font-weight:500; color:var(--text-dim); }
+.pr-stat .subline{ font-size:11px; color:var(--text-dim); margin-top:6px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.pr-stat .subline b{ color:var(--text); font-weight:600; }
+.ghbtn{
+  display:inline-flex; align-items:center; gap:8px; padding:9px 15px; border-radius:9px;
+  border:1px solid color-mix(in srgb,var(--amber) 50%,var(--edge)); background:color-mix(in srgb,var(--amber) 14%,transparent);
+  color:var(--amber); font-family:var(--label); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+  cursor:pointer; transition:.14s;
+}
+.ghbtn:hover{ background:color-mix(in srgb,var(--amber) 24%,transparent); transform:translateY(-1px); }
+
+/* ============ RESPONSIVE ============ */
+/* Model never wraps (e.g. "opus-4-8" stays on one line); the secondary columns
+   drop out as the window narrows so the agent name + state keep their room. The
+   current task lives under the agent name now, so it always has the full width. */
+.c-model{ white-space:nowrap; }
+
+@media (max-width: 820px){
+  .tbl .c-model, .tbl .c-tasks{ display:none; }
+}
+@media (max-width: 640px){
+  .tbl .c-ctx{ display:none; }
+  .mini-top{ padding:10px 12px; gap:10px; }
+  .mini-body{ padding:12px 12px 24px; }
+  .col-name{ min-width:120px; }
+  /* trim the telemetry to dots + numbers; the word labels are the first to go */
+  .telemetry .lbl{ display:none; }
+  .tstat{ gap:5px; padding:6px 9px; }
+  /* stack each group's actions under its title rather than overflowing the row */
+  .agroup-head{ align-items:flex-start; }
+  .agroup-title{ overflow:hidden; }
+  .agroup-title .aw{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+}
+@media (max-width: 460px){
+  .telemetry{ display:none; }   /* the per-group counts already cover this */
+}
+
+/* ============ EMPTY STATE ============ */
+.empty{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; height:60%; color:var(--text-faint); text-align:center; }
+.empty.inline{ height:auto; padding:48px 0 32px; }
+.empty .big{ font-size:14px; color:var(--text-dim); }
+.empty .small{ font-size:12px; max-width:320px; }

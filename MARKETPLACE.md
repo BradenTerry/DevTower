@@ -24,6 +24,7 @@ DevTower collapses it into **a single view**. Every repo and worktree is a room 
 - **Native diffs and terminals.** Click a changed file for the real VS Code diff (HEAD <-> working tree). Each agent gets a native integrated terminal in its worktree - the terminal *is* the conversation.
 - **Changes view + a full file viewer.** The selected agent's files split into Staged / Changes with inline stage, unstage, stage-all, and unstage-all, backed by real `git`. A second *Selected Directory* tree lets you browse and edit **any** file in the worktree, **drag to move** files, and **right-click to delete** them - each with a one-time confirm and a "don't ask again" option.
 - **Pull requests in-scene.** Each room's board shows its worktree's open PR with the number, title, CI checks, and review status, right next to the branch and change counts. (DevTower won't open a PR for you - just ask the agent in its terminal to create it however you like.)
+- **Mini view (compact popout).** A second, canvas-free window beside the tower: a dense table that drills **Projects -> Worktrees -> Agents**, plus **All agents** and **All PRs** tabs. Same live feed as the scene - states, per-branch git stats, and PR/CI status - in a compact list where you can add projects/worktrees, spawn or remove agents, switch the selected directory, and jump to a PR. Dock it anywhere, or use it on its own.
 
 ## Getting started
 
@@ -77,6 +78,10 @@ The agent panel - context-window bar, model, skills, a button into the agent's C
 The GitHub access page - connected account, scopes, the features your token unlocks, and pre-filled links to mint a fine-grained read-only token:
 
 ![The DevTower GitHub access settings page.](media/shot-settings-github.png)
+
+The mini view - a compact, canvas-free popout that drills projects -> worktrees -> agents (with All-agents and All-PRs tabs), per-branch git stats, and PR status, off the same live feed as the scene:
+
+![The DevTower mini view: a compact table of projects, worktrees, agents, and PRs.](media/shot-mini.png)
 
 ## Settings
 

@@ -5,11 +5,12 @@ import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit } from "./git";
+import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit, canonicalDir } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
 import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
+import { MiniPanel, MiniDelegate } from "./miniPanel";
 import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
@@ -60,6 +61,8 @@ interface BoardData {
     changesRequested: number;
     reviewersPending: number;
     comments: number;
+    /** PR was merged: the board shows a brief MERGED badge before it clears. */
+    merged?: boolean;
   };
 }
 
@@ -72,8 +75,21 @@ export interface ReservedRoom {
 }
 
 /** Full-window cockpit hosted as an editor-area WebviewPanel. */
-export class ConsolePanel {
+export class ConsolePanel implements MiniDelegate {
   public static current: ConsolePanel | undefined;
+  /** The compact popout view (projects → worktrees → agents). Owned here so it
+   *  reuses this panel's git/PR feed instead of polling on its own. */
+  private mini?: MiniPanel;
+  /** Last payloads posted to the webview, replayed to the mini view on open. */
+  private lastState?: Record<string, unknown>;
+  private lastPrs?: Record<string, unknown>;
+  /** The tower's editor webview panel — created on demand and re-created if it was
+   *  closed while the mini popout kept the instance (and its data feed) alive.
+   *  Undefined while the tower is not open. */
+  private panel?: vscode.WebviewPanel;
+  /** Listeners scoped to the CURRENT tower panel (message / dispose / view-state),
+   *  torn down and re-added each time the panel is (re)mounted. */
+  private towerDisposables: vscode.Disposable[] = [];
   private static readonly viewType = "devtower.console";
   private usageTimer?: ReturnType<typeof setInterval>;
   private usageWatcher?: fs.FSWatcher;
@@ -114,52 +130,41 @@ export class ConsolePanel {
     prs: PrService,
     discovery?: ClaudeDiscovery
   ): ConsolePanel {
-    const column = vscode.ViewColumn.Active;
-    if (ConsolePanel.current) {
-      ConsolePanel.current.panel.reveal(column);
-      return ConsolePanel.current;
+    const inst = ConsolePanel.ensure(context, store, terminals, prs, discovery);
+    inst.showTower();
+    return inst;
+  }
+
+  /** Get (creating if needed) the singleton WITHOUT opening the tower panel. The
+   *  instance owns the live data feed, so this is what lets the mini popout run on
+   *  its own — `devtower.openMini` calls `ensure(...).openMini()`. */
+  static ensure(
+    context: vscode.ExtensionContext,
+    store: DevTowerStore,
+    terminals: TerminalManager,
+    prs: PrService,
+    discovery?: ClaudeDiscovery
+  ): ConsolePanel {
+    if (!ConsolePanel.current) {
+      ConsolePanel.current = new ConsolePanel(context, store, terminals, prs, discovery);
     }
-    const panel = vscode.window.createWebviewPanel(
-      ConsolePanel.viewType,
-      "DevTower",
-      column,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")],
-      }
-    );
-    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "devtower.svg");
-    ConsolePanel.current = new ConsolePanel(panel, context, store, terminals, prs, discovery);
     return ConsolePanel.current;
   }
 
   private constructor(
-    private readonly panel: vscode.WebviewPanel,
     private readonly context: vscode.ExtensionContext,
     private readonly store: DevTowerStore,
     private readonly terminals: TerminalManager,
     private readonly prs: PrService,
     private readonly discovery?: ClaudeDiscovery
   ) {
-    this.panel.webview.html = this.html();
-    this.panel.webview.onDidReceiveMessage((m) => this.onMessage(m), null, this.disposables);
+    // DATA PIPELINE — lives as long as the instance, i.e. while EITHER the tower or
+    // the mini popout is open. The tower webview is mounted/unmounted separately
+    // (showTower / onTowerClosed) so closing the tower never kills this feed.
     this.store.onChange(() => this.postState(), null, this.disposables);
     this.store.onDidChangeSelection(() => this.postState(), null, this.disposables);
     this.prs.onChange(() => this.postPrs(), null, this.disposables);
     this.prs.onChange(() => void this.refreshState(), null, this.disposables); // PR → board column
-    this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-    // Pause the always-on pollers while this tab isn't visible — the discovery
-    // scan (ps/lsof + transcript walk) and the GitHub PR poll only matter when
-    // the tower is on screen. Becoming visible again refreshes both immediately,
-    // so nothing looks stale.
-    const applyVisibility = () => {
-      this.discovery?.setVisible(this.panel.visible);
-      this.prs.setVisible(this.panel.visible);
-      if (this.panel.visible) this.postUsage(); // catch up on any missed-while-hidden usage
-    };
-    this.panel.onDidChangeViewState(applyVisibility, null, this.disposables);
-    applyVisibility();
     // mirror a live devtower.debugLog toggle into the scene so shred/toon events
     // start (or stop) without reopening the console
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -169,16 +174,96 @@ export class ConsolePanel {
     // a saved file is a working-tree (unstaged) change → refresh promptly
     vscode.workspace.onDidSaveTextDocument(() => this.onGitChange(), null, this.disposables);
     // poll each worktree's git stats as a fallback (the .git watchers below catch
-    // stage/commit/push instantly; the poll covers edits made outside VS Code)
+    // stage/commit/push instantly; the poll covers edits made outside VS Code).
+    // Runs while EITHER view is on screen since both render git stats.
     this.statsTimer = setInterval(() => {
-      if (this.panel.visible) void this.refreshState();
+      if (this.anyVisible()) void this.refreshState();
     }, 6_000);
     // background fetch so "behind" (out-of-date) is meaningful; once shortly after
     // open, then periodically while visible
     setTimeout(() => void this.fetchAll(), 5_000);
     this.fetchTimer = setInterval(() => {
-      if (this.panel.visible) void this.fetchAll();
+      if (this.anyVisible()) void this.fetchAll();
     }, 180_000);
+    // populate rooms/boards + restore the mounted dir now, so the data feed is
+    // ready whether the first view to open is the tower or a standalone mini (the
+    // mini has no webview "ready" handshake to kick this off).
+    void this.bootstrap();
+  }
+
+  private bootstrapped = false;
+  /** One-time initial data load: fill in worktree rooms + boards, then re-mount the
+   *  last-used Selected Directory. Idempotent; the tower's `ready` handler no longer
+   *  owns this so the mini can open first. */
+  private async bootstrap(): Promise<void> {
+    if (this.bootstrapped) return;
+    this.bootstrapped = true;
+    await this.refreshState();
+    await this.restoreSelectedDir(); // needs roomGitPaths, so after refreshState
+  }
+
+  /** True while either view is on screen — gates the always-on pollers and the
+   *  git/fetch timers (the mini renders the same data, so it counts). */
+  private anyVisible(): boolean {
+    return !!this.panel?.visible || !!this.mini?.visible;
+  }
+
+  /** Re-evaluate the background pollers and re-broadcast state on any visibility
+   *  change: the tower (if now visible) catches up after being hidden, and the
+   *  mini's "tower visible?" flag stays fresh. Each post gates the tower webview on
+   *  its own visibility and always feeds the mini. */
+  private applyVisibility(): void {
+    const visible = this.anyVisible();
+    this.discovery?.setVisible(visible);
+    this.prs.setVisible(visible);
+    if (visible) this.postUsage(); // catch up on any missed-while-hidden usage
+    this.postState();
+    this.postPrs();
+  }
+
+  /** Create the tower webview panel if it isn't open, otherwise reveal it. The
+   *  panel is a detachable surface over the instance's live data feed, so it can
+   *  be closed and re-opened without disturbing the mini popout. */
+  showTower(): void {
+    if (this.panel) {
+      this.panel.reveal(vscode.ViewColumn.Active);
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      ConsolePanel.viewType,
+      "DevTower",
+      vscode.ViewColumn.Active,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "media")],
+      }
+    );
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(this.context.extensionUri, "media", "devtower-light.svg"),
+      dark: vscode.Uri.joinPath(this.context.extensionUri, "media", "devtower-dark.svg"),
+    };
+    this.panel = panel;
+    this.webviewReady = false; // a fresh webview must re-announce `ready`
+    panel.webview.html = this.html(panel.webview);
+    this.towerDisposables.push(
+      panel.webview.onDidReceiveMessage((m) => this.onMessage(m)),
+      panel.onDidDispose(() => this.onTowerClosed()),
+      panel.onDidChangeViewState(() => this.applyVisibility())
+    );
+    this.applyVisibility();
+  }
+
+  /** The tower tab was closed. Drop the panel + its listeners, but keep the
+   *  instance (and its data feed) alive if the mini popout is still open, so the
+   *  mini keeps updating and the tower can be re-opened later. Tear everything
+   *  down only once both views are gone. */
+  private onTowerClosed(): void {
+    this.panel = undefined;
+    this.towerDisposables.forEach((d) => d.dispose());
+    this.towerDisposables = [];
+    if (this.mini) this.applyVisibility();
+    else this.disposeInstance();
   }
 
   /** Quiet `git fetch` per tracked repo so the boards' behind/ahead counts reflect
@@ -275,19 +360,18 @@ export class ConsolePanel {
     switch (m.type) {
       case "ready":
         this.webviewReady = true;
-        this.postState();
-        this.postUsage();
-        // push the persisted efficiency-mode setting (defaults off) plus the
-        // review-dispatch options (selectable skills + saved defaults)
+        // replay current data to the freshly-mounted webview (the initial load is
+        // owned by bootstrap() now, so a re-opened tower catches up immediately)
         this.postConfig();
-        await this.refreshState(); // fill in each island's worktree rooms
-        // re-mount the room whose "USE DIR" was last pressed in this workspace,
-        // restored from global state (needs roomGitPaths, so after refreshState)
-        await this.restoreSelectedDir();
+        this.postState();
+        this.postPrs();
+        this.postUsage();
+        await this.bootstrap(); // no-op after the first view opened it
+        void this.refreshState(); // refresh boards on (re)open
         if (this.pendingOpenSettings) {
           const tab = typeof this.pendingOpenSettings === "string" ? this.pendingOpenSettings : undefined;
           this.pendingOpenSettings = false;
-          this.panel.webview.postMessage({ type: "openSettings", tab });
+          this.panel?.webview.postMessage({ type: "openSettings", tab });
         }
         break;
       case "setPerf":
@@ -370,21 +454,15 @@ export class ConsolePanel {
         // It no longer changes the Selected Directory — that is the explicit job of
         // the room's "USE DIR" button, so the selection stays put until asked.
         break;
+      case "popout":
+        // the HUD popout button → open (or reveal) the compact mini view
+        this.openMini();
+        break;
       case "useDir":
         // the room's "USE DIR" button → mount this worktree in the Selected
         // Directory view (works even for an empty, agent-less worktree) and reveal
         // it. This is the ONLY action that changes the selected directory.
-        if (typeof m.room === "string") {
-          const dir = resolveDir(this.roomGitPaths.get(m.room) ?? m.room);
-          if (dir) {
-            this.usedDirRoom = m.room;
-            void this.saveSelectedDir(m.room); // remember it across restarts
-            this.store.setSelectedDir(dir); // sticky mount for the directory view
-            this.store.setFocusedWorktree(dir);
-            this.postState(); // re-render so the room's button reads "SELECTED DIR"
-            void vscode.commands.executeCommand("devtower.directory.focus");
-          }
-        }
+        if (typeof m.room === "string") this.mountSelectedDir(m.room);
         break;
       case "requestSession":
         if (id) this.postSession(id);
@@ -407,14 +485,14 @@ export class ConsolePanel {
         break;
       case "addWorktree":
         // + WORKTREE on an island → create a new worktree room (no agent yet)
-        if (typeof m.island === "string") await this.addWorktree(m.island);
+        if (typeof m.island === "string") await this.addWorktreeRoom(m.island);
         break;
       case "removeRoom":
         // note: must not truthiness-check — a legacy room can have name ""
         if (typeof m.room === "string") await this.removeRoom(m.room);
         break;
       case "removeWorktree":
-        if (typeof m.worktree === "string") await this.removeWorktree(m.worktree, typeof m.island === "string" ? m.island : "");
+        if (typeof m.worktree === "string") await this.removeWorktreeRoom(m.worktree, typeof m.island === "string" ? m.island : "");
         break;
       case "cdAgent":
         if (id) await this.cdAgent(id, m.room, m.ghost);
@@ -521,7 +599,7 @@ export class ConsolePanel {
     const perfSet =
       perfInfo?.globalValue ?? perfInfo?.workspaceValue ?? perfInfo?.workspaceFolderValue;
     const perf = perfSet ?? (cfg.get<boolean>("efficiencyMode", false) ? "eco" : "balanced");
-    this.panel.webview.postMessage({
+    this.panel?.webview.postMessage({
       type: "config",
       perf,
       debug: cfg.get<boolean>("debugLog", false),
@@ -531,7 +609,7 @@ export class ConsolePanel {
   }
 
   private postPrs(): void {
-    this.panel.webview.postMessage({
+    const payload = {
       type: "prs",
       crew: this.prs.getCrew(),
       review: this.prs.getReview(),
@@ -539,29 +617,113 @@ export class ConsolePanel {
       // first GitHub poll still in flight → the webview shows a spinner instead of
       // a premature "not connected" (isConnected() reads false until that completes)
       loading: !this.prs.hasFetched(),
-    });
+    };
+    this.lastPrs = payload;
+    // only feed the tower webview while it's on screen — a hidden scene shouldn't
+    // re-render; it replays lastPrs when it becomes visible again (applyVisibility).
+    // The mini popout always gets it, so it stays live even when used standalone.
+    if (this.panel?.visible) this.panel.webview.postMessage(payload);
+    this.mini?.postPrs(payload);
   }
 
   /** Push the current GitHub auth state (token connected? login, scopes, which
    *  features it unlocks) to the settings page. Never sends the token itself. */
   private async postSettings(): Promise<void> {
     const caps = await capabilities();
-    this.panel.webview.postMessage({ type: "settings", caps, scopeHelp: SCOPE_HELP });
+    this.panel?.webview.postMessage({ type: "settings", caps, scopeHelp: SCOPE_HELP });
   }
 
   /** Push the managed Claude Code hooks and their enabled state to the Hooks tab. */
   private async postHooks(): Promise<void> {
-    this.panel.webview.postMessage({ type: "hooks", hooks: await listHooks() });
+    this.panel?.webview.postMessage({ type: "hooks", hooks: await listHooks() });
   }
 
   /** Reveal the tower and open the settings overlay (from the nudge / command),
-   *  optionally landing on a specific tab (e.g. "hooks"). */
+   *  optionally landing on a specific tab (e.g. "hooks"). Re-mounts the tower if it
+   *  was closed while only the mini popout was open. */
   openSettings(tab?: string): void {
-    this.panel.reveal();
+    this.showTower();
     // On a freshly created panel the webview's message listener isn't wired yet,
     // so this post would be dropped — defer it until the webview reports `ready`.
-    if (this.webviewReady) this.panel.webview.postMessage({ type: "openSettings", tab });
+    if (this.webviewReady) this.panel?.webview.postMessage({ type: "openSettings", tab });
     else this.pendingOpenSettings = tab ?? true;
+  }
+
+  /* ============ MINI VIEW (compact popout) ============ */
+
+  /** Open (or reveal) the compact mini view beside the tower. It is fed by this
+   *  panel's data, so make sure a state payload exists, then create + push.
+   *  Public so the `devtower.openMini` command can open straight to it. */
+  openMini(): void {
+    if (!this.lastState) this.postState(); // guarantee a payload to replay
+    this.mini = MiniPanel.createOrShow(this.context, this);
+    this.applyVisibility(); // a freshly opened mini view counts as on-screen
+  }
+
+  /** Mount a worktree checkout in the Selected Directory view and reveal it. The
+   *  only action that changes the selected directory; shared by the tower's "USE
+   *  DIR" button and the mini view's switch-directory control. */
+  private mountSelectedDir(room: string): void {
+    const dir = resolveDir(this.roomGitPaths.get(room) ?? room);
+    if (!dir) return;
+    this.usedDirRoom = room;
+    void this.saveSelectedDir(room); // remember it across restarts
+    this.store.setSelectedDir(dir); // sticky mount for the directory view
+    this.store.setFocusedWorktree(dir);
+    this.postState(); // re-render so the room's button reads "SELECTED DIR"
+    void vscode.commands.executeCommand("devtower.directory.focus");
+  }
+
+  /* ---- MiniDelegate ---- */
+  currentState(): unknown | undefined {
+    return this.lastState;
+  }
+  currentPrs(): unknown | undefined {
+    return this.lastPrs;
+  }
+  selectAgent(id: string): void {
+    this.store.setSelected(id);
+    const sel = this.store.get(id);
+    // open the agent's chat: reveal its integrated terminal (the live Claude
+    // session). External sessions live in their own terminal outside DevTower,
+    // so there's nothing of ours to reveal.
+    if (sel && !sel.external) this.terminals.reveal(id);
+  }
+  useDir(room: string): void {
+    this.mountSelectedDir(room);
+  }
+  openPr(url: string): void {
+    void vscode.env.openExternal(vscode.Uri.parse(url));
+  }
+  spawnDev(island: string, worktree: string): void {
+    void this.addDev(island, worktree); // same flow as the tower's + DEV
+  }
+  addWorktree(island: string): void {
+    void this.addWorktreeRoom(island); // same flow as the tower's + WORKTREE
+  }
+  addProjectFromMini(): void {
+    void this.addProject(); // pick a folder, reserve it as a new island
+  }
+  chatAgent(id: string): void {
+    // open just the agent's chat (its integrated terminal) WITHOUT selecting it,
+    // so the mini view can be used standalone without yanking the tower's camera.
+    const sel = this.store.get(id);
+    if (sel && !sel.external) this.terminals.reveal(id);
+  }
+  removeAgent(id: string): void {
+    void this.handleAction(id, "sendHome"); // same confirm + retire as the tower
+  }
+  removeWorktree(worktree: string, island: string): void {
+    void this.removeWorktreeRoom(worktree, island); // same confirm/warnings as the tower
+  }
+  removeProject(name: string): void {
+    void this.removeRoom(name); // same confirm/warnings as the tower's root ✕
+  }
+  onVisibilityChange(): void {
+    if (!MiniPanel.current) this.mini = undefined; // it closed itself
+    this.applyVisibility();
+    // the mini was the last view holding the instance open → full teardown
+    if (!this.panel && !this.mini) this.disposeInstance();
   }
 
   /* ============ ROOMS (tower floors) ============ */
@@ -679,11 +841,32 @@ export class ConsolePanel {
       canSelectFiles: false,
       canSelectFolders: true,
       canSelectMany: false,
-      openLabel: "Reserve room for this directory",
-      title: `DevTower: reserve ${floor >= 0 ? `F${floor}` : `B${-floor}`} · tower ${col}`,
+      openLabel: "Add this directory as a project",
+      title: `DevTower: add a project · ${floor >= 0 ? `F${floor}` : `B${-floor}`} · tower ${col}`,
     });
     if (!picked?.[0]) return;
-    const dir = picked[0].fsPath;
+    await this.reserveDir(picked[0].fsPath, floor, col);
+  }
+
+  /** Add a project from the mini view: pick a folder and reserve it at the next
+   *  free column (no grid cell to click). Mirrors the tower's reserve flow. */
+  private async addProject(): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: "Add this directory as a project",
+      title: "DevTower: add a project",
+    });
+    if (!picked?.[0]) return;
+    // place it to the right of every existing island (islands sort by col)
+    const col = this.getRooms().reduce((m, r) => Math.max(m, r.col), -1) + 1;
+    await this.reserveDir(picked[0].fsPath, 0, col);
+  }
+
+  /** Reserve a directory as a room at the given grid cell, de-duping the path and
+   *  name. Shared by the tower's grid-click reserve and the mini view's add. */
+  private async reserveDir(dir: string, floor: number, col: number): Promise<void> {
     const rooms = this.getRooms();
     if (rooms.some((r) => normalizeRoomPath(r.path) === normalizeRoomPath(dir))) {
       vscode.window.showInformationMessage(`DevTower: ${path.basename(dir) || dir} already has a room.`);
@@ -699,19 +882,55 @@ export class ConsolePanel {
     await this.refreshState(); // surfaces the required main building right away
   }
 
-  /** ✕ on the root building → nuke the whole directory: stop every agent in the
-   *  island, optionally delete all its worktrees, and drop the reservation. The
-   *  root checkout itself is never deleted from disk. */
+  /** A worktree holds work that isn't safely on the remote — uncommitted changes
+   *  or unpushed commits — so deleting it (worktreeRemove --force + branch -D)
+   *  would lose data. Read from the same board the UI shows. */
+  private worktreeHasUnsavedWork(p: string): boolean {
+    const b = this.boardsByPath.get(p);
+    if (!b) return false;
+    return !!(b.modified || b.staged || b.unstagedAdd || b.unstagedDel ||
+      b.stagedAdd || b.stagedDel || b.unpushed);
+  }
+
+  /** ✕ on the root building (and the mini view's project ✕) → stop every agent in
+   *  the island, optionally delete all its NON-root worktrees from disk, and drop
+   *  the reservation. The project directory itself is never deleted. The delete
+   *  option is withheld while any worktree has uncommitted/unpushed work. */
   private async removeRoom(name: string): Promise<void> {
     const reserved = this.getRooms().find((r) => r.name === name);
     const agents = this.store.list().filter((a) => a.repo === name);
     const rootDir = reserved?.path;
-    // worktrees we could delete from disk = any checkout that isn't the root
-    const canDelete = agents.some((a) => a.worktree && a.worktree !== rootDir && resolveCwd(a) !== rootDir);
-    const choices = canDelete ? ["Remove directory", "Remove + delete worktrees"] : ["Remove directory"];
+    const dir = reserved?.path ?? this.dirForRepo(name);
+
+    // every non-root worktree belonging to this project (agents + assigned rooms),
+    // keyed to a branch so we can also drop the branch when deleting it
+    const wtBranch = new Map<string, string | undefined>();
+    const addWt = (p?: string, branch?: string) => {
+      if (!p || p === rootDir || p === dir) return; // never the root checkout
+      if (!wtBranch.has(p) || (branch && !wtBranch.get(p))) wtBranch.set(p, branch);
+    };
+    for (const a of agents) addWt(a.worktree, a.branch);
+    for (const w of this.getWorktreeRooms()) if (w.island === name) addWt(w.path, w.branch);
+    const worktrees = [...wtBranch.keys()];
+
+    const dirty = worktrees.filter((p) => this.worktreeHasUnsavedWork(p));
+    const canDelete = worktrees.length > 0;
+    const blockDelete = dirty.length > 0;
+
+    const choices = ["Unregister project"];
+    if (canDelete && !blockDelete) choices.push("Unregister + delete worktrees");
+
+    const detail = !canDelete
+      ? ""
+      : blockDelete
+        ? ` Deleting its ${worktrees.length} worktree${worktrees.length === 1 ? "" : "s"} is unavailable — ` +
+          `${dirty.map((p) => path.basename(p)).join(", ")} ${dirty.length === 1 ? "has" : "have"} ` +
+          `uncommitted or unpushed changes. Commit and push them first.`
+        : ` You can also delete its ${worktrees.length} worktree${worktrees.length === 1 ? "" : "s"} from disk.`;
+
     const pick = await vscode.window.showWarningMessage(
-      `Remove the entire "${name}" directory${agents.length ? ` and its ${agents.length} room(s)` : ""}? ` +
-        `Agents will stop.${canDelete ? " You can also delete the worktrees from disk." : ""}`,
+      `Unregister "${name}" from DevTower${agents.length ? ` and stop its ${agents.length} agent${agents.length === 1 ? "" : "s"}` : ""}? ` +
+        `The project directory stays on disk.${detail}`,
       { modal: true },
       ...choices
     );
@@ -721,16 +940,12 @@ export class ConsolePanel {
       this.terminals.disposeAgent(a.id);
       this.store.remove(a.id);
     }
-    if (pick === "Remove + delete worktrees") {
-      const dir = reserved?.path ?? this.dirForRepo(name);
-      if (dir) {
-        for (const a of agents) {
-          if (!a.worktree || a.worktree === dir) continue; // never the root checkout
-          try {
-            await worktreeRemove(dir, a.worktree, a.branch);
-          } catch (e) {
-            vscode.window.showWarningMessage(`DevTower: couldn't remove worktree ${path.basename(a.worktree)} — ${String(e).slice(0, 120)}`);
-          }
+    if (pick === "Unregister + delete worktrees" && dir) {
+      for (const [p, branch] of wtBranch) {
+        try {
+          await worktreeRemove(dir, p, branch);
+        } catch (e) {
+          vscode.window.showWarningMessage(`DevTower: couldn't remove worktree ${path.basename(p)} — ${String(e).slice(0, 120)}`);
         }
       }
     }
@@ -749,7 +964,7 @@ export class ConsolePanel {
 
   /** ✕ on a worktree building → confirm → stop its agent(s); optionally delete
    *  the git worktree (and its branch) from disk too. */
-  private async removeWorktree(worktree: string, island: string): Promise<void> {
+  private async removeWorktreeRoom(worktree: string, island: string): Promise<void> {
     const agents = this.store
       .list()
       .filter((a) => a.worktree === worktree || resolveCwd(a) === worktree);
@@ -853,7 +1068,7 @@ export class ConsolePanel {
   /** + WORKTREE on an island → prompt to assign an existing worktree as a room
    *  or create a brand-new one. Worktrees only become rooms once assigned here.
    *  No agent is spawned; the operator drops one in afterwards with + DEV. */
-  private async addWorktree(island: string): Promise<void> {
+  private async addWorktreeRoom(island: string): Promise<void> {
     const key = `wt::${island}`;
     if (this.addingRooms.has(key)) return;
     this.addingRooms.add(key);
@@ -1004,7 +1219,7 @@ export class ConsolePanel {
                 checksRunning: pr.checksRunning, checksTotal: pr.checksTotal,
                 review: pr.review, approvals: pr.approvals,
                 changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
-                comments: pr.comments,
+                comments: pr.comments, merged: pr.merged,
               }
             : undefined,
         });
@@ -1109,7 +1324,8 @@ export class ConsolePanel {
       vscode.window.showWarningMessage(`DevTower: no directory known for room "${room ?? ""}".`);
       return;
     }
-    if (resolveCwd(agent) === dir) return; // already there
+    const cur = resolveCwd(agent);
+    if (cur && canonicalDir(cur) === canonicalDir(dir)) return; // already there (canonical compare)
 
     // tell the live Claude session to change directory; the terminal hosts the
     // real session (auto-resumed on first open). Use command() so the path is
@@ -1247,7 +1463,7 @@ export class ConsolePanel {
         untracked: false,
       }));
     }
-    this.panel.webview.postMessage({ type: "changes", id, files, real: !!(cwd && (await isRepo(cwd))) });
+    this.panel?.webview.postMessage({ type: "changes", id, files, real: !!(cwd && (await isRepo(cwd))) });
   }
 
   private appendSession(id: string, msg: SessionMessage): void {
@@ -1280,20 +1496,29 @@ export class ConsolePanel {
       const pr = prById.get(a.reviewOf.prId);
       return { ...a, reviewVerdict: pr ? verdict(pr.review) : "pending" };
     });
-    this.panel.webview.postMessage({
+    const payload = {
       type: "state",
       agents,
       selectedId: this.store.getSelectedId(),
       usedDir: this.usedDirRoom,
+      selectedDir: collapseHome(this.store.getSelectedDir()),
       rooms,
       boards: Object.fromEntries(this.boardsByPath),
-    });
+      // lets the mini disable its "View" action when the tower isn't on screen to
+      // jump to (View selects/zooms an agent in the scene)
+      towerVisible: !!this.panel?.visible,
+    };
+    this.lastState = payload;
+    // only feed the tower webview while it's on screen (see postPrs); the mini
+    // popout always receives the update so a standalone mini view stays current.
+    if (this.panel?.visible) this.panel.webview.postMessage(payload);
+    this.mini?.postState(payload);
   }
 
   private postSession(id: string): void {
     const agent = this.store.get(id);
     if (!agent) return;
-    this.panel.webview.postMessage({ type: "session", id, messages: getSession(agent) });
+    this.panel?.webview.postMessage({ type: "session", id, messages: getSession(agent) });
   }
 
   /* ============ PLAN USAGE (5h / weekly rate-limit windows) ============ */
@@ -1309,11 +1534,11 @@ export class ConsolePanel {
   private startUsage(): void {
     this.postUsage();
     this.usageTimer = setInterval(() => {
-      if (this.panel.visible) this.postUsage();
+      if (this.panel?.visible) this.postUsage();
     }, 60_000);
     try {
       this.usageWatcher = fs.watch(this.usageFile(), () => {
-        if (this.panel.visible) this.postUsage();
+        if (this.panel?.visible) this.postUsage();
       });
     } catch {
       /* file may not exist yet — the interval will pick it up once it appears */
@@ -1333,11 +1558,16 @@ export class ConsolePanel {
     } catch {
       usage = null; // missing/unreadable → webview hides the meters
     }
-    this.panel.webview.postMessage({ type: "usage", usage });
+    this.panel?.webview.postMessage({ type: "usage", usage });
   }
 
-  private dispose(): void {
+  /** Full teardown — only when BOTH the tower and the mini are gone. Drops the
+   *  singleton, stops every timer/watcher, and disposes the data-pipeline
+   *  subscriptions and any remaining panel. */
+  private disposeInstance(): void {
     ConsolePanel.current = undefined;
+    this.mini?.close();
+    this.mini = undefined;
     if (this.usageTimer) clearInterval(this.usageTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.fetchTimer) clearInterval(this.fetchTimer);
@@ -1345,12 +1575,15 @@ export class ConsolePanel {
     for (const w of this.gitWatchers.values()) w.close();
     this.gitWatchers.clear();
     this.usageWatcher?.close();
-    this.panel.dispose();
+    this.towerDisposables.forEach((d) => d.dispose());
+    this.towerDisposables = [];
+    this.panel?.dispose();
+    this.panel = undefined;
     while (this.disposables.length) this.disposables.pop()?.dispose();
   }
 
-  private html(): string {
-    const w = this.panel.webview;
+  private html(webview: vscode.Webview): string {
+    const w = webview;
     const nonce = makeNonce();
     const css = w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "console.css"));
     const js = w.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "console.js"));
@@ -1381,14 +1614,20 @@ export class ConsolePanel {
 
   <!-- top HUD -->
   <header class="hud-top">
-    <div class="telemetry">
-      <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
-      <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
-      <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
-      <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
+    <div class="hud-left">
+      <div class="telemetry">
+        <span class="tstat"><i class="pip active"></i><b id="t-active">0</b><span class="lbl">run</span></span>
+        <span class="tstat"><i class="pip waiting"></i><b id="t-waiting">0</b><span class="lbl">wait</span></span>
+        <span class="tstat"><i class="pip error"></i><b id="t-error">0</b><span class="lbl">err</span></span>
+        <span class="tstat"><b id="devtower-count">0</b><span class="lbl">crew</span></span>
+      </div>
+      <div class="seldir" id="seldir" hidden>
+        <span class="lbl">dir</span><span class="seldir-path" id="seldir-path"></span>
+      </div>
     </div>
     <div class="spacer"></div>
     <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
+    <button class="iconbtn" id="popoutbtn" title="Mini view (compact popout)">⧉</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
   </header>
 
@@ -1442,6 +1681,17 @@ export class ConsolePanel {
   }
 }
 
+/** Collapse the user's home prefix to `~` so the HUD's selected-directory label
+ *  reads compactly (the webview truncates the rest from the left). */
+function collapseHome(dir: string | undefined): string | undefined {
+  if (!dir) return undefined;
+  const home = os.homedir();
+  if (home && (dir === home || dir.startsWith(home + path.sep))) {
+    return "~" + dir.slice(home.length);
+  }
+  return dir;
+}
+
 function makeNonce(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   let s = "";
@@ -1452,9 +1702,7 @@ function makeNonce(): string {
 /** Canonical key for a reserved-room directory so the same folder reached via a
  *  trailing slash, a symlink, or a case difference maps to one building. Resolves
  *  the real path when it exists; folds case on case-insensitive platforms. */
-function normalizeRoomPath(p: string): string {
-  let abs = path.resolve(p);
-  try { abs = fs.realpathSync.native(abs); } catch { /* path gone; use resolved form */ }
-  abs = abs.replace(/[\\/]+$/, ""); // strip trailing separators
-  return process.platform === "win32" || process.platform === "darwin" ? abs.toLowerCase() : abs;
-}
+// room keys are de-duplicated by canonical path (shared with the /cd relocation
+// match in claude.ts) so a trailing slash, symlink, or case difference all fold
+// to one building.
+const normalizeRoomPath = canonicalDir;
