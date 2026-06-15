@@ -3,6 +3,7 @@ import { DevTowerStore } from "./store";
 import { TerminalManager } from "./terminals";
 import { DiffProvider, GIT_SCHEME, MOCK_SCHEME } from "./diffProvider";
 import { registerChanges } from "./changesView";
+import { registerScmView } from "./scmView";
 import { registerDirectory } from "./directoryView";
 import { ConsolePanel } from "./consolePanel";
 import { PrService } from "./prs";
@@ -73,6 +74,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Changes tree (staged/unstaged, stage/unstage, open diff to the right).
   registerDirectory(context, store);
   registerChanges(context, store);
+  // Native Source Control mirror of the active worktree: a real commit message
+  // box, branch-aware placeholder, and resource groups with native multi-select.
+  registerScmView(context, store);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("devtower.refresh", () => store.watchStateFile()),
