@@ -305,6 +305,7 @@ interface BoardData {
     changesRequested: number;
     reviewersPending: number;
     comments: number;
+    merged?: boolean; // PR was merged → board shows a MERGED badge, then clears
   };
 }
 
@@ -451,7 +452,7 @@ function pointOnPath(path: { x: number; y: number }[], t: number): { x: number; 
 function boardSig(b: BoardData | undefined): string {
   if (!b) return "none";
   const pr = b.pr
-    ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.title}`
+    ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.merged ? 1 : 0}/${b.pr.title}`
     : "no";
   return [
     b.modified, b.staged, b.ahead, b.unstagedAdd, b.unstagedDel, b.stagedAdd, b.stagedDel,
@@ -1799,6 +1800,10 @@ class PixelCrew {
     if (this.prLoading || this.busy.size) return false; // a spinner is turning
     for (const r of this.rooms.values()) {
       if (r.dying || r.delay > 0 || r.built < 1 || r.statPulse > 0.02 || r.swapPending) return false;
+      // a board update (e.g. a PR merged/closed from GitHub) that tick() hasn't
+      // promoted onto the screen yet: stay awake one more frame so the TV reflects
+      // it, instead of parking on the stale board until the next unrelated event
+      if (boardSig(r.board) !== r.statSig) return false;
       const cp = r.cellPulse;
       if (cp.unstaged > 0.02 || cp.staged > 0.02 || cp.commits > 0.02 || cp.pr > 0.02) return false;
       for (const _k in r.numAnim) return false; // a number is mid-flip
@@ -3533,6 +3538,19 @@ class PixelCrew {
       ctx.fillStyle = "rgba(120,150,170,0.16)";
       ctx.fillRect(px, py - 2.5, prW, 0.6);
       py += 3.5;
+      if (pr.merged) {
+        // merged: one celebratory badge replaces the checks/reviewers charts, so a
+        // manual merge visibly lands on the TV before the PR clears off the board
+        ctx.font = "bold 4.4px 'Martian Mono', monospace";
+        const label = "✓ MERGED";
+        const bw = ctx.measureText(label).width + 5;
+        ctx.fillStyle = "rgba(163,113,247,0.22)"; // GitHub merged-purple chip
+        ctx.fillRect(px, py - 4.2, bw, 6.4);
+        ctx.fillStyle = "#c9a6ff";
+        ctx.fillText(label, px + 2.5, py);
+        ctx.restore();
+        return;
+      }
       // ---- chart: checks (✓ pass / ✗ fail / pulsing dot while running) ----
       if (pr.checksTotal > 0) {
         ctx.font = "bold 4px 'Martian Mono', monospace";
