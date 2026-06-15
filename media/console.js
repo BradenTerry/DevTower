@@ -68,7 +68,14 @@
   function selectAgent(id, open) {
     selectedId = id;
     vscode.postMessage({ type: "select", id }); // reveals the agent's terminal
-    if (window.DevTowerCrew) window.DevTowerCrew.setSelected(id);
+    if (window.DevTowerCrew) {
+      window.DevTowerCrew.setSelected(id);
+      // a direct canvas tap zooms via its own hit-test; selections that come
+      // from elsewhere (the "View agent" toast, leaderboard, host) must request
+      // the same tight dev zoom or the camera is left at whatever overview/tower
+      // view it was on.
+      if (open && window.DevTowerCrew.focusAgent) window.DevTowerCrew.focusAgent(id);
+    }
     if (open) panelOpen = true;
     updateInsets();
     renderPanel();
