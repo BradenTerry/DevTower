@@ -270,6 +270,16 @@
     { id: "debug", label: "Debug" },
   ];
   function settingsOpen() { return !$("#settings").hidden; }
+  // Keep the Debug tab's External-calls table live without a host-side timer: poll
+  // for the tally every 2s, self-stopping the moment the tab/overlay closes.
+  let execPollTimer = null;
+  function startExecPoll() {
+    if (execPollTimer) return;
+    execPollTimer = setInterval(() => {
+      if (settingsOpen() && settingsTab === "debug") vscode.postMessage({ type: "getExecStats" });
+      else { clearInterval(execPollTimer); execPollTimer = null; }
+    }, 2000);
+  }
   function closeSettings() { const s = $("#settings"); s.hidden = true; s.innerHTML = ""; }
   function openSettings() {
     const s = $("#settings");
@@ -609,7 +619,38 @@
       </div>
       <div class="s-note">A captured log is on disk${dbgArchives ? ` plus ${dbgArchives} rotated archive${dbgArchives === 1 ? "" : "s"}` : ""}.
         The log rotates automatically as it grows; clearing removes the log and all its archives. It stays available to view even with logging off.</div>`
-      : `<p class="s-note">No log captured yet. Turn logging on to start recording.</p>`}`;
+      : `<p class="s-note">No log captured yet. Turn logging on to start recording.</p>`}
+
+      <h3 style="margin-top:20px">External calls</h3>
+      <p class="s-desc">Every child process DevTower spawns (git, gh, ps / PowerShell) and each agent launch, tallied live. Use it to see what is keeping the extension host busy. Updates while this tab is open.</p>
+      <div class="s-hookbar">
+        <button class="s-actbtn" id="s-exec-refresh">Refresh</button>
+        <button class="s-actbtn" id="s-exec-reset">Reset</button>
+      </div>
+      <div id="s-exec">${execTableHTML()}</div>`;
+  }
+
+  // Render the external-call tally as a compact table from the latest snapshot.
+  function execTableHTML() {
+    if (!execStats || !execStats.rows || !execStats.rows.length) {
+      return `<p class="s-note">No external calls recorded yet${execStats ? "" : " (open and use the tower)"}.</p>`;
+    }
+    const secs = Math.round((execStats.sinceMs || 0) / 1000);
+    const rows = execStats.rows.map((r) => `
+      <tr>
+        <td class="ec-cmd">${esc(r.cmd)}</td>
+        <td class="ec-n">${r.count}</td>
+        <td class="ec-n">${r.avgMs}</td>
+        <td class="ec-n">${r.maxMs}</td>
+        <td class="ec-n">${r.totalMs}</td>
+        <td class="ec-n${r.errors ? " ec-err" : ""}">${r.errors}</td>
+      </tr>`).join("");
+    return `
+      <div class="s-note">${execStats.total} calls in the last ${secs}s</div>
+      <table class="ec-table">
+        <thead><tr><th>command</th><th>count</th><th>avg ms</th><th>max ms</th><th>total ms</th><th>err</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
   }
 
   // ---- Hooks tab ----
@@ -742,6 +783,17 @@
     if (dbgFolder) dbgFolder.onclick = () => vscode.postMessage({ type: "openLogFolder" });
     const dbgClear = $("#s-debug-clear", s);
     if (dbgClear) dbgClear.onclick = () => vscode.postMessage({ type: "clearDebugLog" });
+
+    // External-calls table: fetch on open, refresh/reset on demand, and keep it
+    // live with a light self-gating poll while this Debug tab is on screen.
+    const execRefresh = $("#s-exec-refresh", s);
+    if (execRefresh) {
+      execRefresh.onclick = () => vscode.postMessage({ type: "getExecStats" });
+      const execReset = $("#s-exec-reset", s);
+      if (execReset) execReset.onclick = () => vscode.postMessage({ type: "resetExecStats" });
+      vscode.postMessage({ type: "getExecStats" });
+      startExecPoll();
+    }
 
     // Hooks-tab wiring: optimistically flip local state so the toggle responds
     // instantly, then let the host echo the authoritative state back.
@@ -885,6 +937,7 @@
   let dbgLogExists = false; // whether a captured log is on disk (config message)
   let dbgArchives = 0; // number of rotated archive files on disk (config message)
   let perfHud = false; // devtower.perfHud; on-canvas FPS/frame-cost overlay (config message)
+  let execStats = null; // external-call tally for the Debug tab (arrives via the "execStats" message)
   function applyQuality(mode) {
     quality = QUALITY_MODES.some((p) => p.id === mode) ? mode : "balanced";
     if (window.DevTowerCrew && DevTowerCrew.setQuality) DevTowerCrew.setQuality(quality);
@@ -898,6 +951,12 @@
 
   /* ---------- global wiring ---------- */
   $("#settingsbtn").onclick = openSettings;
+  const refreshBtn = $("#refreshbtn");
+  if (refreshBtn) refreshBtn.onclick = () => {
+    refreshBtn.classList.add("spin"); // brief feedback; cleared when fresh state arrives
+    vscode.postMessage({ type: "refresh" });
+    setTimeout(() => refreshBtn.classList.remove("spin"), 900);
+  };
   $("#lbbtn").onclick = () => (leaderboardOpen() ? closeLeaderboard() : openLeaderboard());
   const popout = $("#popoutbtn");
   if (popout) popout.onclick = () => vscode.postMessage({ type: "popout" });
@@ -970,6 +1029,10 @@
     } else if (m.type === "hooks") {
       hooks = Array.isArray(m.hooks) ? m.hooks : [];
       if (settingsTab === "hooks") renderSettings(); // authoritative state from the host
+    } else if (m.type === "execStats") {
+      execStats = m.stats;
+      const el = document.getElementById("s-exec");
+      if (el && settingsTab === "debug") el.innerHTML = execTableHTML(); // patch in place, no full re-render
     } else if (m.type === "openSettings") {
       if (m.tab) settingsTab = m.tab; // land on a requested tab (e.g. the hooks nudge)
       openSettings();

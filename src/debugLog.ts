@@ -193,6 +193,108 @@ export function clearDebugLog(): void {
   }
 }
 
+/* ============ External-call tracking ============ */
+// Every child process the extension spawns (git, gh, ps/lsof/PowerShell) and every
+// agent launch command flows through recordExec, so the Settings > Debug tab can
+// show WHAT external calls are firing and HOW OFTEN — the data needed to see why
+// the extension host is busy. Counting is always on (a cheap Map update); the
+// per-call detail line is gated by debugLog like every other event.
+
+export type ExecStat = {
+  count: number;
+  totalMs: number;
+  maxMs: number;
+  errors: number;
+  lastMs: number;
+  lastTs: string;
+};
+const execStats = new Map<string, ExecStat>();
+let execSince = Date.now();
+
+/** "git status", "gh api", … — git and gh take their subcommand as the first arg,
+ *  so group by it. Other tools (ps/lsof/powershell/launch) group by family only:
+ *  their args carry varying pids/scripts that would fragment the tally. */
+function execKey(kind: string, args: string[]): string {
+  if ((kind === "git" || kind === "gh") && args[0] && !args[0].startsWith("-")) return `${kind} ${args[0]}`;
+  return kind;
+}
+
+/** Record one external call: updates the always-on tally and emits a gated detail
+ *  line. `kind` is the program family (git/gh/ps/powershell/launch). */
+export function recordExec(kind: string, args: string[], cwd: string | undefined, durMs: number, ok: boolean): void {
+  const key = execKey(kind, args);
+  const s = execStats.get(key) ?? { count: 0, totalMs: 0, maxMs: 0, errors: 0, lastMs: 0, lastTs: "" };
+  s.count++;
+  s.totalMs += durMs;
+  s.maxMs = Math.max(s.maxMs, durMs);
+  s.lastMs = durMs;
+  if (!ok) s.errors++;
+  s.lastTs = new Date().toISOString();
+  execStats.set(key, s);
+  dlog(`exec.${kind}`, { cmd: key, args: args.slice(0, 12).join(" ").slice(0, 240), cwd, ms: Math.round(durMs), ok });
+}
+
+/** Time a child-process-backed promise and record it. `ok` defaults to "the
+ *  promise resolved"; pass `okOf` for callers that resolve a sentinel on failure. */
+export async function trackExec<T>(
+  kind: string,
+  args: string[],
+  cwd: string | undefined,
+  run: () => Promise<T>,
+  okOf?: (result: T) => boolean,
+): Promise<T> {
+  const t0 = Date.now();
+  try {
+    const r = await run();
+    recordExec(kind, args, cwd, Date.now() - t0, okOf ? okOf(r) : true);
+    return r;
+  } catch (e) {
+    recordExec(kind, args, cwd, Date.now() - t0, false);
+    throw e;
+  }
+}
+
+/** Snapshot of the external-call tally since the last reset, sorted by count. */
+export function execStatsSnapshot(): {
+  sinceMs: number;
+  total: number;
+  rows: Array<{ cmd: string; count: number; totalMs: number; avgMs: number; maxMs: number; errors: number; lastTs: string }>;
+} {
+  const rows = [...execStats.entries()]
+    .map(([cmd, s]) => ({
+      cmd,
+      count: s.count,
+      totalMs: Math.round(s.totalMs),
+      avgMs: Math.round(s.totalMs / Math.max(1, s.count)),
+      maxMs: Math.round(s.maxMs),
+      errors: s.errors,
+      lastTs: s.lastTs,
+    }))
+    .sort((a, b) => b.count - a.count);
+  return { sinceMs: Date.now() - execSince, total: rows.reduce((n, r) => n + r.count, 0), rows };
+}
+
+/** Clear the tally and restart the window (the Debug tab's Reset button). */
+export function resetExecStats(): void {
+  execStats.clear();
+  execSince = Date.now();
+}
+
+/** Dump the external-call tally to the DevTower Debug output channel and reveal
+ *  it. Works regardless of the debugLog setting (it's an explicit request). */
+export function showExecStats(): void {
+  if (!channel) return;
+  const s = execStatsSnapshot();
+  const pad = (v: unknown, n: number) => String(v).padStart(n);
+  channel.appendLine(`── DevTower external calls — ${s.total} in the last ${Math.round(s.sinceMs / 1000)}s ──`);
+  channel.appendLine(`  ${"command".padEnd(22)} ${pad("count", 7)} ${pad("avg ms", 7)} ${pad("max ms", 7)} ${pad("total ms", 9)} ${pad("err", 5)}`);
+  for (const r of s.rows) {
+    channel.appendLine(`  ${r.cmd.padEnd(22)} ${pad(r.count, 7)} ${pad(r.avgMs, 7)} ${pad(r.maxMs, 7)} ${pad(r.totalMs, 9)} ${pad(r.errors, 5)}`);
+  }
+  if (!s.rows.length) channel.appendLine("  (no external calls recorded yet)");
+  channel.show(true);
+}
+
 /** Append one structured event. No-op unless the log is enabled. */
 export function dlog(event: string, data?: Record<string, unknown>): void {
   if (!enabled) return;
