@@ -4320,49 +4320,12 @@ class PixelCrew {
       ctx.fillStyle = "#54401f";
       ctx.fillRect(dx + 3, db - 9, 1.5, 9);
       ctx.fillRect(dx + 19.5, db - 9, 1.5, 9);
-      // keyboard in front of the dev, between them and the screen. drawn BEFORE
-      // the hands (which rest on it) and before the monitor below, so the
-      // monitor's front edge can occlude the near hand reaching behind the screen
+      // keyboard in front of the dev, between them and the screen. drawn before
+      // the monitor below so the keys sit under the screen's front edge.
       ctx.fillStyle = "#2a3138";
       ctx.fillRect(dx + 8.5, db - 11.2, 5.5, 1);
-      // both hands on the keys (drawn here, after the keyboard, so they sit on top
-      // of it — hands drawn with the dev would be hidden by the desk). Only
-      // while the dev is actively working at the desk, not reviewing or reading.
-      if (
-        tn && occupied && !tn.agent.reviewOf && (tn.booksInHand ?? 0) === 0 &&
-        (st === "active" || st === "waiting")
-      ) {
-        const tp = tn.p;
-        const press = tn.tapAt !== undefined && this.frame - tn.tapAt < 6;
-        const kx = dx + 8.5; // keyboard left edge
-        const ky = db - 11.2; // keyboard top surface
-        const yh = ky - 1.8; // hands rest just above the keys
-        // two hands on the keys, sitting on the visible (right) half of the
-        // keyboard so the monitor's front edge (at dx+11) tucks the near hand's
-        // left side behind the screen. they stay level and each taps DOWN a
-        // fraction out of phase, so the pair reads as fingers typing rather than
-        // flapping apart. forearms stay within the keyboard's right edge so the
-        // arms don't poke out to the dev's right.
-        const beat = this.frame % 4;
-        const farDown = beat < 2 ? 0.8 : 0;
-        const nearDown = beat < 2 ? 0 : 0.8;
-        ctx.fillStyle = tp.shirtDark;
-        ctx.fillRect(kx + 3.6, yh + 0.1, 1.8, 1.3); // far forearm angling to the dev
-        ctx.fillStyle = tp.skin;
-        ctx.fillRect(kx + 3.2, yh + farDown, 1.4, 1.4); // far hand on the keys
-        if (!press) {
-          // near arm + hand; skipped mid-press, when it darts to the done button
-          // (drawn in drawToon, left of the monitor)
-          ctx.fillStyle = tp.shirt;
-          ctx.fillRect(kx + 2.4, yh + 0.1, 2, 1.3); // near forearm
-          ctx.fillStyle = tp.skin;
-          ctx.fillRect(kx + 1.7, yh + nearDown, 1.5, 1.5); // near hand
-        }
-      }
       // monitor: its screen faces the dev (away from us), so we see the dark BACK
-      // of the panel; the light it throws lands on the dev (drawn below). Painted
-      // AFTER the keyboard + hands so its front edge hides the near hand reaching
-      // behind the screen, instead of the hand drawing over the monitor.
+      // of the panel; the light it throws lands on the dev (drawn below).
       ctx.fillStyle = "#171c21"; // neck + foot
       ctx.fillRect(dx + 7.2, db - 11.2, 1.6, 1.2);
       ctx.fillRect(dx + 5.4, db - 10.2, 5.4, 1);
@@ -4403,6 +4366,48 @@ class PixelCrew {
         ctx.fillStyle = grd;
         // clipped tight to the dev, clear of the monitor back to its left
         ctx.fillRect(dx + 10, db - 24, 8, 20);
+      }
+      // both hands on the keys. drawn AFTER the keyboard, monitor, and screen
+      // glow so the hands sit on top of the keys and the glow doesn't tint them
+      // blue; clipped to the monitor's front edge (dx+11) so the near hand still
+      // tucks behind the screen instead of poking over it. Only while the dev is
+      // actively working at the desk, not reviewing or reading.
+      if (
+        tn && occupied && !tn.agent.reviewOf && (tn.booksInHand ?? 0) === 0 &&
+        (st === "active" || st === "waiting")
+      ) {
+        const tp = tn.p;
+        const press = tn.tapAt !== undefined && this.frame - tn.tapAt < 6;
+        const kx = dx + 8.5; // keyboard left edge
+        const ky = db - 11.2; // keyboard top surface
+        const yh = ky - 1.8; // hands rest just above the keys
+        // two hands on the keys, sitting on the visible (right) half of the
+        // keyboard. they stay level and each taps DOWN a fraction out of phase,
+        // so the pair reads as fingers typing rather than flapping apart.
+        // forearms stay within the keyboard's right edge so the arms don't poke
+        // out to the dev's right.
+        const beat = this.frame % 4;
+        const farDown = beat < 2 ? 0.8 : 0;
+        const nearDown = beat < 2 ? 0 : 0.8;
+        ctx.save();
+        // keep everything right of the monitor's front edge, hiding the near
+        // hand's left side behind the screen as the monitor used to occlude it
+        ctx.beginPath();
+        ctx.rect(dx + 11, db - 16, 9, 8);
+        ctx.clip();
+        ctx.fillStyle = tp.shirtDark;
+        ctx.fillRect(kx + 3.6, yh + 0.1, 1.8, 1.3); // far forearm angling to the dev
+        ctx.fillStyle = tp.skin;
+        ctx.fillRect(kx + 3.2, yh + farDown, 1.4, 1.4); // far hand on the keys
+        if (!press) {
+          // near arm + hand; skipped mid-press, when it darts to the done button
+          // (drawn in drawToon, left of the monitor)
+          ctx.fillStyle = tp.shirt;
+          ctx.fillRect(kx + 2.4, yh + 0.1, 2, 1.3); // near forearm
+          ctx.fillStyle = tp.skin;
+          ctx.fillRect(kx + 1.7, yh + nearDown, 1.5, 1.5); // near hand
+        }
+        ctx.restore();
       }
       // the skills the dev has read sit on the desk's right end. Physical: a stack
       // of book spines (one per skill, carried back from the shelf). Ebook: a tiny
