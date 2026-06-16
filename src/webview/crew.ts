@@ -129,6 +129,13 @@ const SHELF_REACH = 20; // world x (from room left) a dev stands at to fetch a b
 // standing on the shelf itself.
 const SHELF_LIFT = 7;
 const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
+// Ebook mode: instead of walking to the shelf, a dev borrows a skill on its phone
+// and reads it at the desk. A short chat bubble announces each borrow /
+// return; PHONE_PINK is the app's magenta accent used for the phone + bubble.
+const NOTE_SECS = 4.2; // how long a borrow/return chat bubble lingers
+const READ_SECS = 10; // how long a dev reads a freshly-fetched book before setting it down
+const PHONE_PINK = "#e8478f"; // ebook phone/bubble accent
+const BOOK_ACCENT = "#d9a441"; // physical-book bubble accent (warm amber)
 // Paper shredder against the left wall, just in front of the bookshelf's near
 // end: when a session is /cleared the dev carries its stack of context papers
 // here, feeds them in, then walks back.
@@ -372,20 +379,34 @@ interface Toon {
   transfer?: { toKey: string; fromKey?: string; fromX0: number; phase: "out" | "down" | "cross" | "up" | "in" };
   // skills the dev has fetched from the shelf (one book per skill). `skills` is
   // the accumulated set; `booksShown` is how many are resting on the desk and
-  // `booksInHand` how many it carried back and is currently reading while the task
-  // is active. When skills outnumber the books it has (desk + hand), the dev runs
-  // a trip to the shelf (the `errand`) to fetch the rest, reads them at the desk
-  // for the duration of the active task, then sets them down on the desk.
+  // `booksInHand` how many it carried back and is currently reading. When skills
+  // outnumber the books it has (desk + hand), the dev runs a trip to the shelf
+  // (the `errand`) to fetch the rest, reads them at the desk for a short beat
+  // (`readT`), then sets them down on the desk — it does not keep reading for the
+  // whole active session.
   skills: string[];
   booksShown: number;
   booksInHand: number;
+  // seconds left in the current read beat; set when a fresh book lands in hand and
+  // counted down in tick. At 0 the book is set down on the desk even while active.
+  readT?: number;
   errand?: { phase: "out" | "grab" | "back"; grab: number };
   // context-clear (/clear) trip: a session replaced by a new one in the SAME
   // worktree keeps this dev, which carries its context papers to the shredder
   // ("out"), feeds the stack in ("feed"), then carries its skill books on to the
   // shelf ("shelf") and slots them back ("place") before walking to its seat
   // ("back"). `books` is how many it left the desk carrying, drawn in its arms.
-  shred?: { phase: "out" | "feed" | "shelf" | "place" | "back"; t: number; books: number };
+  shred?: { phase: "out" | "feed" | "shelf" | "place" | "back"; t: number; books: number; names?: string[] };
+  // a short chat bubble above the dev (ebook mode): a title ("Borrowed a skill" /
+  // "Borrowed 3 skills" on pickup, "Returned a skill" / "Returned 3 skills" on
+  // a /clear) with the affected skill names listed below it. `t` counts down in
+  // seconds; the bubble fades out as it nears 0.
+  // `book` switches the bubble to the physical-book look (book icon + amber) vs
+  // the ebook look (phone icon + phone pink).
+  note?: { title: string; items: string[]; t: number; book?: boolean };
+  // ebook mode /clear: seconds remaining for which the seated dev holds its phone
+  // out (the "returned my Ebooks" beat). Counts down in tick; drives the phone pose.
+  phone?: number;
   // last /clear session id this toon has reacted to. A change (the dev's session
   // was replaced in place, owned or external) kicks off a fresh shred trip; we
   // dedupe on it so a re-render with the same value doesn't replay the walk.
@@ -548,6 +569,7 @@ class PixelCrew {
   private marqueeOn = false; // a PR title marquee is scrolling → keep the loop awake
   private dirty = true;
   private eco = false; // reduced-particle mode (perf "eco")
+  private ebook = false; // book preference: true = read skills on the phone at the desk, no shelf trip
   private tickMs = 100; // animation tick interval; set by perf mode (100=10fps)
   // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
   // viewport so rooms frame into the visible area and stay clickable.
@@ -858,8 +880,24 @@ class PixelCrew {
         // desk (shown statically); returning then instantly re-fetching it would be
         // a pointless round trip (e.g. /clear while a skill marker still lingers).
         const newSkills = [...(next.skills ?? [])];
-        const kept = tn.skills.filter((s) => newSkills.includes(s)).length;
-        tn.shred = { phase: "out", t: 0, books: Math.max(0, tn.booksShown + tn.booksInHand - kept) };
+        const returnedSkills = tn.skills.filter((s) => !newSkills.includes(s));
+        const returned = returnedSkills.length;
+        // ebook: no shelf/shredder trip. The dev stays in its chair, pulls out its
+        // phone, and a bubble says it returned its skills. Physical: carry the books
+        // back to the shelf during the shred trip (papers feed in on the way).
+        if (this.ebook) {
+          tn.shred = undefined;
+          if (returned > 0) {
+            tn.phone = NOTE_SECS;
+            tn.note = {
+              title: returned === 1 ? "Returned a skill" : `Returned ${returned} skills`,
+              items: returnedSkills.map((sk) => `/${sk}`),
+              t: NOTE_SECS,
+            };
+          }
+        } else {
+          tn.shred = { phase: "out", t: 0, books: returned, names: returnedSkills };
+        }
         tn.errand = undefined;
         tn.skills = newSkills;
         tn.booksShown = newSkills.length;
@@ -940,8 +978,24 @@ class PixelCrew {
         // statically); returning then instantly re-fetching it would be a pointless
         // round trip (e.g. /clear while a skill marker still lingers in the tail).
         const newSkills = [...(a.skills ?? [])];
-        const kept = tn.skills.filter((s) => newSkills.includes(s)).length;
-        tn.shred = { phase: "out", t: 0, books: Math.max(0, tn.booksShown + tn.booksInHand - kept) };
+        const returnedSkills = tn.skills.filter((s) => !newSkills.includes(s));
+        const returned = returnedSkills.length;
+        // ebook: no shelf/shredder trip. The dev stays in its chair, pulls out its
+        // phone, and a bubble says it returned its skills. Physical: carry the books
+        // back to the shelf during the shred trip (papers feed in on the way).
+        if (this.ebook) {
+          tn.shred = undefined;
+          if (returned > 0) {
+            tn.phone = NOTE_SECS;
+            tn.note = {
+              title: returned === 1 ? "Returned a skill" : `Returned ${returned} skills`,
+              items: returnedSkills.map((sk) => `/${sk}`),
+              t: NOTE_SECS,
+            };
+          }
+        } else {
+          tn.shred = { phase: "out", t: 0, books: returned, names: returnedSkills };
+        }
         tn.errand = undefined;
         tn.skills = newSkills;
         tn.booksShown = newSkills.length;
@@ -1602,6 +1656,13 @@ class PixelCrew {
   setEco(on: boolean) {
     this.setPerf(on ? "eco" : "balanced");
   }
+  /** Book preference: "ebook" makes devs read skills on their phone at the desk
+   *  (no shelf trip), with a tiny e-reader counter on the desk; "physical" (the
+   *  default) keeps the walk to the bookshelf. */
+  setBookMode(mode: string) {
+    this.ebook = mode === "ebook";
+    this.invalidate();
+  }
 
   resize() {
     const w = this.container.clientWidth;
@@ -1833,6 +1894,8 @@ class PixelCrew {
       // loop alive through it even though the dev's state is idle and it hasn't
       // started moving yet (tick sets its targetX on the next frame).
       if (tn.shred || tn.errand || tn.transfer) return false;
+      if (tn.note && tn.note.t > 0) return false; // an ebook chat bubble is showing
+      if ((tn.phone ?? 0) > 0) return false; // the ebook phone-out return pose is playing
       // the desk TV mid-deploy, or a just-pressed completion button, both animate
       if (tn.tvShow > 0.02 && tn.tvShow < 0.98) return false;
       if (tn.tapAt !== undefined && this.frame - tn.tapAt < 8) return false;
@@ -1972,10 +2035,22 @@ class PixelCrew {
       this.retargetToon(tn); // glue base/x0 + aim at the desk seat
       const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
       if (!room) continue;
-      // start a trip once settled at the desk and a skill's book is still missing
-      // (neither on the desk nor already in hand)
+      // a skill's book is still missing (neither on the desk nor already in hand)
+      // once the dev has settled at the desk. Physical: send it on a shelf trip.
+      // Ebook: borrow it straight onto the phone (no walk) and announce it in a bubble.
       if (!tn.errand && !tn.shred && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
-        tn.errand = { phase: "out", grab: 0 };
+        if (this.ebook) {
+          const fresh = tn.skills.slice(tn.booksShown + tn.booksInHand);
+          tn.booksInHand += fresh.length; // read on the phone now, set down after the read beat
+          tn.readT = READ_SECS;
+          tn.note = {
+            title: fresh.length === 1 ? "Borrowed a skill" : `Borrowed ${fresh.length} skills`,
+            items: fresh.map((sk) => `/${sk}`),
+            t: NOTE_SECS,
+          };
+        } else {
+          tn.errand = { phase: "out", grab: 0 };
+        }
       }
       // out/grab: head for (and hold at) the shelf; back: keep the desk aim above
       if (tn.errand && tn.errand.phase !== "back") tn.targetX = room.x0 + SHELF_REACH;
@@ -2060,9 +2135,18 @@ class PixelCrew {
         if (er.grab <= 0) er.phase = "back";
       } else if (arrived) {
         // back at the desk: the fetched books are now in hand to read, not yet
-        // set down (they go on the desk once the task stops being active, below)
+        // set down (they go on the desk once the task stops being active, below).
+        // Pop a bubble naming the skill(s) it just carried back from the shelf.
+        const fresh = tn.skills.slice(tn.booksShown);
         tn.booksInHand = tn.skills.length - tn.booksShown;
+        tn.readT = READ_SECS;
         tn.errand = undefined;
+        if (fresh.length > 0) tn.note = {
+          title: fresh.length === 1 ? "Borrowed a skill" : `Borrowed ${fresh.length} skills`,
+          items: fresh.map((sk) => `/${sk}`),
+          t: NOTE_SECS,
+          book: true,
+        };
       }
     }
     // advance the /clear trip: arrive at the shredder → feed the papers in → carry
@@ -2078,7 +2162,16 @@ class PixelCrew {
         sh.t -= dt;
         if (sh.t <= 0) sh.phase = sh.books > 0 ? "shelf" : "back";
       } else if (sh.phase === "shelf") {
-        if (arrived) { sh.phase = "place"; sh.t = SHELF_PLACE; }
+        if (arrived) {
+          // at the shelf, slotting the books back: name the returned skill(s)
+          sh.phase = "place"; sh.t = SHELF_PLACE;
+          if (sh.names && sh.names.length) tn.note = {
+            title: sh.names.length === 1 ? "Returned a skill" : `Returned ${sh.names.length} skills`,
+            items: sh.names.map((sk) => `/${sk}`),
+            t: NOTE_SECS,
+            book: true,
+          };
+        }
       } else if (sh.phase === "place") {
         sh.t -= dt;
         if (sh.t <= 0) sh.phase = "back";
@@ -2086,15 +2179,32 @@ class PixelCrew {
         tn.shred = undefined;
       }
     }
-    // a dev reads its fetched book(s) at the desk while the task is live; once the
-    // task is no longer running (idle/complete/error — waiting still counts) it
-    // sets them down on the desk to join the stack
+    // a dev reads its fetched book(s) at the desk for a short beat after fetching
+    // them, then sets them down on the desk to join the stack — it does not keep
+    // reading for the whole active session. The read beat also ends early if the
+    // task stops running (idle/complete/error — waiting still counts as reading).
     for (const tn of this.toons.values()) {
       if (tn.booksInHand <= 0 || tn.errand) continue;
+      if (tn.readT !== undefined) tn.readT -= dt;
       const st = tn.agent.state;
-      if (st !== "active" && st !== "waiting") {
+      const beatDone = tn.readT !== undefined && tn.readT <= 0;
+      const taskStopped = st !== "active" && st !== "waiting";
+      if (beatDone || taskStopped) {
         tn.booksShown = tn.skills.length;
         tn.booksInHand = 0;
+        tn.readT = undefined;
+        tn.note = undefined; // the desk e-reader counter now shows; drop the borrow bubble
+      }
+    }
+    // age out the ebook borrow/return chat bubbles and the phone-out return pose
+    for (const tn of this.toons.values()) {
+      if (tn.note) {
+        tn.note.t -= dt;
+        if (tn.note.t <= 0) tn.note = undefined;
+      }
+      if (tn.phone !== undefined) {
+        tn.phone -= dt;
+        if (tn.phone <= 0) tn.phone = undefined;
       }
     }
     // raise/retract each dev's desk TV: it rises on its stand once the dev is
@@ -2741,6 +2851,76 @@ class PixelCrew {
         ctx.textAlign = "center";
         ctx.fillStyle = a.external ? "rgba(150,162,170,0.9)" : "rgba(120,200,255,0.95)";
         ctx.fillText(tag, s.x, s.y + 7);
+        ctx.restore();
+      }
+      // ebook chat bubble: a title ("Borrowed a skill" / "Returned 3 skills")
+      // with the affected skill names listed below it. A phone-pink speech bubble
+      // above the head, fading out as its timer runs down.
+      if (tn.note && tn.note.t > 0) {
+        const { title, items } = tn.note;
+        const accent = tn.note.book ? BOOK_ACCENT : PHONE_PINK;
+        const titleColor = tn.note.book ? "#f3e6c8" : "#ffe3ef";
+        ctx.save();
+        ctx.textAlign = "left";
+        ctx.textBaseline = "middle";
+        ctx.globalAlpha = clamp(tn.note.t / 0.7, 0, 1); // fade out over the last ~0.7s
+        const titleFont = "bold 12.6px 'IBM Plex Mono', monospace";
+        const itemFont = "12.6px 'IBM Plex Mono', monospace"; // same size/color as the title
+        const icon = 9, gapI = 5.4, padX = 7.2, padY = 5.4, tail = 7.2;
+        const titleH = 16.2, itemH = 14.4;
+        ctx.font = titleFont;
+        const indent = icon + gapI; // skill list aligns under the title text
+        let textW = ctx.measureText(title).width;
+        ctx.font = itemFont;
+        for (const it of items) textW = Math.max(textW, indent + ctx.measureText(it).width);
+        const w = padX * 2 + indent + textW;
+        const h = padY * 2 + titleH + items.length * itemH;
+        const cx = s.x, y0 = s.y - 18 - h; // sits just above the head/status bubble
+        const x0 = cx - w / 2;
+        ctx.fillStyle = "rgba(10,15,18,0.92)";
+        ctx.fillRect(x0, y0, w, h);
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x0, y0, w, h);
+        ctx.fillStyle = "rgba(10,15,18,0.92)"; // tail pointing down at the dev
+        ctx.beginPath();
+        ctx.moveTo(cx - tail, y0 + h - 0.5);
+        ctx.lineTo(cx + tail, y0 + h - 0.5);
+        ctx.lineTo(cx, y0 + h + tail);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = accent;
+        ctx.beginPath();
+        ctx.moveTo(cx - tail, y0 + h - 0.5);
+        ctx.lineTo(cx, y0 + h + tail);
+        ctx.lineTo(cx + tail, y0 + h - 0.5);
+        ctx.stroke();
+        const titleMid = y0 + padY + titleH / 2;
+        const ix = x0 + padX, iy = titleMid - (icon + 2) / 2; // icon on the title line
+        if (tn.note.book) {
+          // a little closed book: amber cover, darker spine, cream page edge
+          ctx.fillStyle = accent;
+          ctx.fillRect(ix, iy, icon, icon + 2);
+          ctx.fillStyle = "#8a5a1e";
+          ctx.fillRect(ix, iy, 1.3, icon + 2); // spine
+          ctx.fillStyle = "#f3e6c8";
+          ctx.fillRect(ix + icon - 0.9, iy + 0.7, 0.9, icon + 0.4); // page edge
+        } else {
+          // a phone with two lines on its lit screen
+          ctx.fillStyle = accent;
+          ctx.fillRect(ix, iy, icon, icon + 2);
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(ix + 1, iy + 1.4, icon - 2, 0.8);
+          ctx.fillRect(ix + 1, iy + 3.4, icon - 2, 0.8);
+        }
+        ctx.font = titleFont; // title
+        ctx.fillStyle = titleColor;
+        ctx.fillText(title, x0 + padX + indent, titleMid + 0.5);
+        ctx.font = itemFont; // skill names, one per line — same size/color as the title
+        ctx.fillStyle = titleColor;
+        for (let i = 0; i < items.length; i++) {
+          ctx.fillText(items[i], x0 + padX + indent, y0 + padY + titleH + itemH * i + itemH / 2 + 0.5);
+        }
         ctx.restore();
       }
       const glyph = st === "waiting" ? "?" : st === "complete" ? "✓" : st === "error" ? "✗" : "";
@@ -3836,22 +4016,58 @@ class PixelCrew {
         // clipped tight to the dev, clear of the monitor back to its left
         ctx.fillRect(dx + 10, db - 24, 8, 20);
       }
-      // skill books the dev carried back from the shelf, stacked on the desk's
-      // right end (one per skill); the trip itself is animated in tick
+      // the skills the dev has read sit on the desk's right end. Physical: a stack
+      // of book spines (one per skill, carried back from the shelf). Ebook: a tiny
+      // e-reader propped on the desk showing the borrowed count.
       const books = tn?.booksShown ?? 0;
-      for (let k = 0; k < books; k++) {
-        const hue = BOOK_HUES[k % BOOK_HUES.length];
-        const jx = (k % 2) * 0.7; // stagger so the pile isn't a rigid column
-        const by = db - 11 - k * 1.4; // stack upward from the desktop surface
-        ctx.fillStyle = `hsl(${hue} 45% 44%)`;
-        ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 1.4);
-        ctx.fillStyle = `hsl(${hue} 45% 55%)`;
-        ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 0.4); // top-edge highlight
+      if (this.ebook) {
+        if (books > 0) this.drawDeskReader(ctx, dx, db, books);
+      } else {
+        for (let k = 0; k < books; k++) {
+          const hue = BOOK_HUES[k % BOOK_HUES.length];
+          const jx = (k % 2) * 0.7; // stagger so the pile isn't a rigid column
+          const by = db - 11 - k * 1.4; // stack upward from the desktop surface
+          ctx.fillStyle = `hsl(${hue} 45% 44%)`;
+          ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 1.4);
+          ctx.fillStyle = `hsl(${hue} 45% 55%)`;
+          ctx.fillRect(dx + 16.6 + jx, by - 1.4, 4, 0.4); // top-edge highlight
+        }
       }
       // the task TV the dev raises on the floor at the desk's left leg to track its checklist
       if (tn && tn.tvShow > 0.02) this.drawDeskTV(ctx, tn, dx, db);
     }
     ctx.globalAlpha = 1;
+  }
+
+  /** Ebook mode's stand-in for the desk book stack: a tiny e-reader propped on the
+   *  desk's right end, its phone-pink screen glowing, with the borrowed-book count
+   *  beside it. Deliberately small — it reads as a gadget on the desk, not a pile. */
+  private drawDeskReader(ctx: CanvasRenderingContext2D, dx: number, db: number, count: number) {
+    const w = 3, h = 4.6;
+    const bx = dx + 16.8, by = db - 11 - h; // stood upright on the desktop surface
+    // soft screen bloom behind the device
+    const grd = ctx.createRadialGradient(bx + w / 2, by + h / 2, 0, bx + w / 2, by + h / 2, 4.5);
+    grd.addColorStop(0, "rgba(232,71,143,0.32)");
+    grd.addColorStop(1, "rgba(232,71,143,0)");
+    ctx.fillStyle = grd;
+    ctx.fillRect(bx - 2.5, by - 2.5, w + 5, h + 5);
+    ctx.fillStyle = "#0f1216"; // device body
+    ctx.fillRect(bx, by, w, h);
+    ctx.fillStyle = PHONE_PINK; // glowing page
+    ctx.fillRect(bx + 0.5, by + 0.6, w - 1, h - 1.6);
+    ctx.fillStyle = "rgba(255,255,255,0.85)"; // a few lines of text on the page
+    ctx.fillRect(bx + 1, by + 1.3, w - 1.8, 0.5);
+    ctx.fillRect(bx + 1, by + 2.4, w - 1.8, 0.5);
+    ctx.fillRect(bx + 1, by + 3.3, w - 2.4, 0.5);
+    ctx.fillStyle = "#2a2f35"; // home pill at the bottom bezel
+    ctx.fillRect(bx + w / 2 - 0.5, by + h - 0.7, 1, 0.35);
+    ctx.save(); // the borrowed-book count, tucked to the device's right
+    ctx.font = "bold 3px 'IBM Plex Mono', monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = "#ffd9ea";
+    ctx.fillText(String(count), bx + w + 0.8, by + h - 0.6);
+    ctx.restore();
   }
 
   /** The status TV a dev deploys on the floor below its desk to track its
@@ -3949,7 +4165,10 @@ class PixelCrew {
     // sets the book down and kicks back. The tick put-down clears booksInHand, but
     // gate on the working state here too so a parked frame can't strand the read.
     const working = st === "active" || st === "waiting";
-    const reading = sitting && working && tn.booksInHand > 0 && !tn.agent.reviewOf;
+    // ebook /clear: the dev pulls out its phone at the desk for a beat to "return"
+    // its Ebooks (no shelf/shredder trip), drawn with the same phone-up pose.
+    const phoneOut = sitting && (tn.phone ?? 0) > 0 && !tn.agent.reviewOf;
+    const reading = !tn.agent.reviewOf && sitting && ((working && tn.booksInHand > 0) || phoneOut);
     // idle/complete devs stay seated but recline back into the chair: the upper
     // body tips toward the backrest (to its right) and sinks a little, hands
     // laced behind the head. Reads as "kicked back", not hunched at the desk.
@@ -4147,10 +4366,36 @@ class PixelCrew {
       ctx.strokeRect(hx + 0.9, ey - 0.8, 1.9, 1.9);
     }
 
-    // the open book is drawn after the head so it sits in front of the face
-    // (the dev is holding it up to read), not occluded behind the skull; still
-    // drawn within drawToon, so the desk/monitor edge occludes only its far corner
-    if (reading) {
+    // the open book (or, in ebook mode, the phone) is drawn after the head so it
+    // sits in front of the face (the dev holds it up to read), not occluded behind
+    // the skull; still within drawToon, so the desk/monitor edge clips its far corner
+    if (reading && this.ebook) {
+      // ebook mode: a phone held up in front of the face, its phone-pink screen
+      // glowing toward the reader — the dev is reading the skill on the app, not
+      // a paper book. No spine/covers; just the lit screen and a couple of lines.
+      const bob = Math.sin(f * 0.16 + tn.ph) * 0.3;
+      const px = x - 1.6;                       // held slightly toward the monitor
+      const pyT = ty - 1.6 + bob;
+      const pw = 3.4, phH = 5.4;
+      const grd = ctx.createRadialGradient(px + pw / 2, pyT + phH / 2, 0, px + pw / 2, pyT + phH / 2, 5);
+      grd.addColorStop(0, "rgba(232,71,143,0.34)");
+      grd.addColorStop(1, "rgba(232,71,143,0)");
+      ctx.fillStyle = grd; // screen bloom onto the face
+      ctx.fillRect(px - 3, pyT - 3, pw + 6, phH + 6);
+      ctx.fillStyle = "#101317"; // phone body
+      ctx.fillRect(px, pyT, pw, phH);
+      ctx.fillStyle = PHONE_PINK; // glowing screen
+      ctx.fillRect(px + 0.5, pyT + 0.7, pw - 1, phH - 1.8);
+      ctx.fillStyle = "rgba(255,255,255,0.9)"; // a few lines of text on the page
+      ctx.fillRect(px + 1, pyT + 1.5, pw - 1.8, 0.5);
+      ctx.fillRect(px + 1, pyT + 2.6, pw - 1.8, 0.5);
+      ctx.fillRect(px + 1, pyT + 3.7, pw - 2.6, 0.5);
+      ctx.fillStyle = "#2a2f35"; // home pill at the bottom bezel
+      ctx.fillRect(px + pw / 2 - 0.6, pyT + phH - 0.8, 1.2, 0.35);
+      ctx.fillStyle = handC; // hands cupping the phone's lower corners
+      ctx.fillRect(px - 0.8, pyT + phH - 1.6, 1.5, 1.5);
+      ctx.fillRect(px + pw - 0.7, pyT + phH - 1.6, 1.5, 1.5);
+    } else if (reading) {
       // an open book held up in front of the face, pages turned toward the dev
       // (who faces its monitor on the left): the viewer sees the OUTSIDE covers,
       // not the text, so the page faces the reader rather than the screen. Drawn
@@ -4329,6 +4574,9 @@ class PixelCrew {
   },
   setPerf(mode: string) {
     this._instance?.setPerf(mode);
+  },
+  setBookMode(mode: string) {
+    this._instance?.setBookMode(mode);
   },
   setInsets(left: number, right: number) {
     this._instance?.setInsets(left, right);

@@ -416,6 +416,19 @@
           ],
           "description": "Which registered projects (buildings) the tower shows. Pick from the General tab in the tower's Settings."
         },
+        "devtower.bookPreference": {
+          "type": "string",
+          "default": "physical",
+          "enum": [
+            "physical",
+            "ebook"
+          ],
+          "enumDescriptions": [
+            "Physical - devs walk to the bookshelf to fetch a skill book and carry it back to read at the desk.",
+            "Ebook - devs stay at the desk and read skills on their phone, with a tiny e-reader counter on the desk."
+          ],
+          "description": "How devs get a book for each skill they use. Physical: a trip to the left-window bookshelf. Ebook: read it on the phone at the desk. Pick from the General tab in the tower's Settings."
+        },
         "devtower.claudeCommand": {
           "type": "string",
           "default": "claude",
