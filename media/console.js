@@ -543,6 +543,18 @@
               <span class="s-seg-name">${p.name}</span><span class="s-seg-fps">${p.fps} fps</span>
             </button>`).join("")}
         </div>
+      </div>
+      <div class="s-row">
+        <div class="s-row-t">
+          <div class="s-row-name">Projects shown</div>
+          <div class="s-row-sub">Show every project you've added, or only the ones added from this workspace. Add a project here to associate it with this workspace.</div>
+        </div>
+        <div class="s-seg" id="s-scope" role="radiogroup" aria-label="Projects shown">
+          ${SCOPE_MODES.map((p) => `
+            <button class="s-seg-btn ${projectScope === p.id ? "on" : ""}" data-scope="${p.id}" role="radio" aria-checked="${projectScope === p.id}">
+              <span class="s-seg-name">${p.name}</span>
+            </button>`).join("")}
+        </div>
       </div>`;
   }
 
@@ -650,6 +662,18 @@
         if (mode === perf) return;
         applyPerf(mode);
         vscode.postMessage({ type: "setPerf", mode });
+        renderSettings();
+      };
+    });
+
+    // General-tab wiring: pick which projects show (global vs this workspace)
+    const scopeSeg = $("#s-scope", s);
+    if (scopeSeg) scopeSeg.querySelectorAll("[data-scope]").forEach((btn) => {
+      btn.onclick = () => {
+        const mode = btn.getAttribute("data-scope");
+        if (mode === projectScope) return;
+        projectScope = mode;
+        vscode.postMessage({ type: "setProjectScope", scope: mode });
         renderSettings();
       };
     });
@@ -793,6 +817,13 @@
     { id: "eco", name: "Eco", fps: 6 },
   ];
   let perf = "balanced";
+  // devtower.projectScope: which registered projects the tower draws. Arrives via
+  // the "config" message; each pick persists the choice back to settings.
+  const SCOPE_MODES = [
+    { id: "global", name: "All projects" },
+    { id: "workspace", name: "This workspace" },
+  ];
+  let projectScope = "global";
   let debug = false; // devtower.debugLog; arrives via the "config" message
   let dbgLogExists = false; // whether a captured log is on disk (config message)
   let dbgArchives = 0; // number of rotated archive files on disk (config message)
@@ -846,6 +877,7 @@
       renderUsage(m.usage);
     } else if (m.type === "config") {
       applyPerf(m.perf || "balanced"); // saved performance-mode preference
+      projectScope = m.projectScope || "global"; // saved project-scope preference
       debug = !!m.debug; // authoritative devtower.debugLog state from the host
       dbgLogExists = !!m.debugLogExists; // a captured log is on disk
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk

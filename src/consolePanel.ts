@@ -66,12 +66,17 @@ interface BoardData {
   };
 }
 
-/** A grid cell the user reserved for a directory (persisted per-workspace). */
+/** A grid cell the user reserved for a directory (persisted globally). */
 export interface ReservedRoom {
   name: string;
   path: string;
   floor: number;
   col: number;
+  /** Workspace folders this project was added under. Used only when
+   *  devtower.projectScope = "workspace": the building shows only in windows
+   *  whose folder key is in this list. Absent on legacy rooms (they show in
+   *  global mode only, until re-added from the workspace that should own them). */
+  workspaces?: string[];
 }
 
 /** Full-window cockpit hosted as an editor-area WebviewPanel. */
@@ -169,6 +174,11 @@ export class ConsolePanel implements MiniDelegate {
     // start (or stop) without reopening the console
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("devtower.debugLog")) this.postConfig();
+      // an external edit to the project scope re-filters which buildings render
+      if (e.affectsConfiguration("devtower.projectScope")) {
+        this.postConfig();
+        this.postState();
+      }
     }, null, this.disposables);
     this.startUsage();
     // a saved file is a working-tree (unstaged) change → refresh promptly
@@ -377,6 +387,12 @@ export class ConsolePanel implements MiniDelegate {
       case "setPerf":
         // operator picked a performance mode → persist their choice
         await this.persistValue("performanceMode", String(m.mode));
+        break;
+      case "setProjectScope":
+        // operator chose global vs this-workspace projects → persist and redraw
+        // the scene with the new filter (the config listener echoes it back too).
+        await this.persistValue("projectScope", String(m.scope));
+        this.postState();
         break;
       case "setDebug": {
         // operator toggled debug logging from the Settings > Debug tab. Persisting
@@ -602,6 +618,7 @@ export class ConsolePanel implements MiniDelegate {
     this.panel?.webview.postMessage({
       type: "config",
       perf,
+      projectScope: cfg.get<string>("projectScope", "global"),
       debug: cfg.get<boolean>("debugLog", false),
       debugLogExists: debugLogExists(),
       debugLogArchives: debugLogArchiveCount(),
@@ -762,13 +779,32 @@ export class ConsolePanel implements MiniDelegate {
       let n = 2;
       while (seen.has(unique)) unique = `${name}-${n++}`;
       seen.add(unique);
-      rooms.push({ name: unique, path: r.path, floor: r.floor ?? 0, col: r.col ?? 0 });
+      rooms.push({
+        name: unique,
+        path: r.path,
+        floor: r.floor ?? 0,
+        col: r.col ?? 0,
+        workspaces: Array.isArray(r.workspaces) ? r.workspaces.filter((w) => typeof w === "string") : undefined,
+      });
     }
     return rooms;
   }
 
   private async saveRooms(rooms: ReservedRoom[]): Promise<void> {
     await this.context.globalState.update("devtower.reservedRooms", rooms);
+  }
+
+  /** Rooms to actually render, honoring devtower.projectScope. "global" (default)
+   *  shows every registered building; "workspace" shows only the buildings tagged
+   *  with the folder this window is opened at. Filtering happens HERE (render only)
+   *  so getRooms() stays the full source for agent matching, path resolution, and
+   *  reserve/remove — a hidden building still works, it just isn't drawn. */
+  private visibleRooms(): ReservedRoom[] {
+    const all = this.getRooms();
+    const scope = vscode.workspace.getConfiguration("devtower").get<string>("projectScope", "global");
+    if (scope !== "workspace") return all;
+    const key = this.workspaceKey();
+    return all.filter((r) => (r.workspaces ?? []).includes(key));
   }
 
   /** Worktree rooms the user has explicitly assigned to an island. Worktrees do
@@ -868,8 +904,22 @@ export class ConsolePanel implements MiniDelegate {
    *  name. Shared by the tower's grid-click reserve and the mini view's add. */
   private async reserveDir(dir: string, floor: number, col: number): Promise<void> {
     const rooms = this.getRooms();
-    if (rooms.some((r) => normalizeRoomPath(r.path) === normalizeRoomPath(dir))) {
-      vscode.window.showInformationMessage(`DevTower: ${path.basename(dir) || dir} already has a room.`);
+    const key = this.workspaceKey();
+    const existing = rooms.find((r) => normalizeRoomPath(r.path) === normalizeRoomPath(dir));
+    if (existing) {
+      // Already registered. In per-workspace scope a building only shows under the
+      // workspaces it's tagged with, so re-adding it from a different window just
+      // associates it here (rather than a dead-end "already has a room") so the
+      // user can pull an existing project into this workspace's view.
+      const tags = existing.workspaces ?? (existing.workspaces = []);
+      if (!tags.includes(key)) {
+        tags.push(key);
+        await this.saveRooms(rooms);
+        await this.refreshState();
+        vscode.window.showInformationMessage(`DevTower: added ${existing.name} to this workspace.`);
+      } else {
+        vscode.window.showInformationMessage(`DevTower: ${path.basename(dir) || dir} already has a room.`);
+      }
       return;
     }
     // never allow an empty/duplicate name — it becomes the room's identity
@@ -877,7 +927,7 @@ export class ConsolePanel implements MiniDelegate {
     const base = name;
     let n = 2;
     while (rooms.some((r) => r.name === name)) name = `${base}-${n++}`;
-    rooms.push({ name, path: dir, floor, col });
+    rooms.push({ name, path: dir, floor, col, workspaces: [key] });
     await this.saveRooms(rooms);
     await this.refreshState(); // surfaces the required main building right away
   }
@@ -1477,7 +1527,7 @@ export class ConsolePanel implements MiniDelegate {
     // each island carries the required main checkout + the worktrees the user has
     // assigned to it (branches filled from the live cache)
     const wtRooms = this.getWorktreeRooms();
-    const rooms = this.getRooms().map((r) => {
+    const rooms = this.visibleRooms().map((r) => {
       const main = r.path ? [{ path: r.path, branch: this.branchByPath.get(r.path) ?? "" }] : [];
       const assigned = wtRooms
         .filter((w) => w.island === r.name)
