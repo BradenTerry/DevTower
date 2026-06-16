@@ -14,6 +14,7 @@
   const esc = (s) => String(s).replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]));
 
   let agents = [], selectedId = null, theme = "dark", panelOpen = false;
+  let lastHostSel = null; // last selectedId the host posted, so we adopt a CHANGE (not every repeat)
   let panelSig = ""; // fingerprint of the open panel, so polls don't rebuild (flash) it
   let firstState = true;
   let prs = { crew: [], review: [] };
@@ -885,16 +886,20 @@
   window.addEventListener("message", (e) => {
     const m = e.data;
     if (m.type === "state") {
-      const prevIds = new Set(agents.map((a) => a.id)); // capture before we overwrite `agents`
       diffCrew(m.agents || []);
       agents = m.agents || [];
-      // Adopt the host's selection when the panel is open, OR when it points at a
-      // brand-new agent (a just-added + DEV). Without the fresh-agent case a closed
-      // panel would ignore the host's selectedId, so setSelected() never reaches the
-      // new dev and the camera stays on the tower overview instead of framing the
-      // new dev's room.
-      const freshSelect = m.selectedId && !prevIds.has(m.selectedId) && agents.some((a) => a.id === m.selectedId);
-      if (m.selectedId && (panelOpen || freshSelect)) selectedId = m.selectedId;
+      // Adopt the host's selection when the panel is open, OR when the host's
+      // selection just CHANGED to a real agent (a just-added + DEV, or a host-side
+      // select). Detecting a change rather than a brand-new agent id matters because
+      // adding a dev posts TWO states: apply() carries the new agent with the OLD
+      // selectedId, then setSelected() carries the new selectedId. By the second
+      // message the new agent is no longer "brand new" to us, so a brand-new-id test
+      // would miss it; comparing against the last host selection still catches it.
+      // Routine polls repeating the same selectedId leave it unchanged → ignored,
+      // so a closed panel that has panned away isn't yanked back every poll.
+      const selChanged = m.selectedId && m.selectedId !== lastHostSel && agents.some((a) => a.id === m.selectedId);
+      if (m.selectedId && (panelOpen || selChanged)) selectedId = m.selectedId;
+      lastHostSel = m.selectedId ?? null;
       renderTelemetry();
       renderSelDir(m.selectedDir);
       if (window.DevTowerCrew) {
