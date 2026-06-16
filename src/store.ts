@@ -60,6 +60,9 @@ export interface Agent {
    *  `~/.claude/tasks/<session>/`), present only for a list of 2+ tasks. Drives
    *  the desk TV the dev deploys to track its tasks. */
   tasks?: { done: number; total: number };
+  /** ms time this dev last edited a file (from the PostToolUse hook), used to
+   *  attribute a git change's cable beam to the dev that actually made it. */
+  lastEditTs?: number;
   /** A live session discovered running OUTSIDE DevTower (e.g. an external
    *  terminal). DevTower must not open/resume a terminal for it — it's managed
    *  in its own session. */
@@ -119,6 +122,7 @@ export interface StateEvent {
    *  stale count must be cleared; `undefined` means this writer didn't report
    *  tasks, so the last-known value is kept. */
   tasks?: { done: number; total: number } | null;
+  lastEditTs?: number;
   external?: boolean;
   /** The terminal's stable launch id, recorded when first observed. */
   launchId?: string;

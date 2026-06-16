@@ -273,6 +273,14 @@ button{ font-family:inherit; }
 .s-actbtn:disabled{ opacity:.4; cursor:default; }
 .s-actbtn:disabled:hover{ color:var(--text-dim); border-color:var(--edge); background:rgba(255,255,255,0.03); }
 
+/* Hook event-name chip (Settings > Hooks) — the hook IS its Claude event */
+.s-hook-evt{
+  display:inline-block; padding:1px 8px; border-radius:6px;
+  font-family:var(--mono, monospace); font-size:11px; letter-spacing:.2px; vertical-align:middle;
+  color:var(--amber); background:color-mix(in srgb,var(--amber) 14%,transparent);
+  border:1px solid color-mix(in srgb,var(--amber) 35%,transparent);
+}
+
 /* External-calls tally (Settings > Debug) */
 .ec-table{ width:100%; border-collapse:collapse; margin-top:8px; font-size:11.5px; font-variant-numeric:tabular-nums; }
 .ec-table th{ text-align:right; color:var(--text-dim); font-weight:500; padding:3px 8px; border-bottom:1px solid var(--edge); }
