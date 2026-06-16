@@ -429,6 +429,19 @@
           ],
           "description": "How much animation work the tower does. The scene still only redraws while something is moving and parks when idle; this sets the frame rate (and particle detail) while it is animating. Pick from the General tab in the tower's Settings."
         },
+        "devtower.projectScope": {
+          "type": "string",
+          "default": "global",
+          "enum": [
+            "global",
+            "workspace"
+          ],
+          "enumDescriptions": [
+            "Show every project you have added, in every window (the campus is the same no matter which folder is open).",
+            "Show only projects added while this workspace folder was open. Add a project from this window to associate it here."
+          ],
+          "description": "Which registered projects (buildings) the tower shows. Pick from the General tab in the tower's Settings."
+        },
         "devtower.claudeCommand": {
           "type": "string",
           "default": "claude",
