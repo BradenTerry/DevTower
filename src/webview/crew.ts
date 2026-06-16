@@ -133,6 +133,7 @@ const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per 
 // and reads it at the desk. A short chat bubble announces each borrow /
 // return; PHONE_PINK is the app's magenta accent used for the phone + bubble.
 const NOTE_SECS = 4.2; // how long a borrow/return chat bubble lingers
+const READ_SECS = 10; // how long a dev reads a freshly-fetched book before setting it down
 const PHONE_PINK = "#e8478f"; // ebook phone/bubble accent
 const BOOK_ACCENT = "#d9a441"; // physical-book bubble accent (warm amber)
 // Paper shredder against the left wall, just in front of the bookshelf's near
@@ -377,13 +378,17 @@ interface Toon {
   transfer?: { toKey: string; fromKey?: string; fromX0: number; phase: "out" | "down" | "cross" | "up" | "in" };
   // skills the dev has fetched from the shelf (one book per skill). `skills` is
   // the accumulated set; `booksShown` is how many are resting on the desk and
-  // `booksInHand` how many it carried back and is currently reading while the task
-  // is active. When skills outnumber the books it has (desk + hand), the dev runs
-  // a trip to the shelf (the `errand`) to fetch the rest, reads them at the desk
-  // for the duration of the active task, then sets them down on the desk.
+  // `booksInHand` how many it carried back and is currently reading. When skills
+  // outnumber the books it has (desk + hand), the dev runs a trip to the shelf
+  // (the `errand`) to fetch the rest, reads them at the desk for a short beat
+  // (`readT`), then sets them down on the desk — it does not keep reading for the
+  // whole active session.
   skills: string[];
   booksShown: number;
   booksInHand: number;
+  // seconds left in the current read beat; set when a fresh book lands in hand and
+  // counted down in tick. At 0 the book is set down on the desk even while active.
+  readT?: number;
   errand?: { phase: "out" | "grab" | "back"; grab: number };
   // context-clear (/clear) trip: a session replaced by a new one in the SAME
   // worktree keeps this dev, which carries its context papers to the shredder
@@ -2027,7 +2032,8 @@ class PixelCrew {
       if (!tn.errand && !tn.shred && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
         if (this.ebook) {
           const fresh = tn.skills.slice(tn.booksShown + tn.booksInHand);
-          tn.booksInHand += fresh.length; // read on the phone now, set down when idle
+          tn.booksInHand += fresh.length; // read on the phone now, set down after the read beat
+          tn.readT = READ_SECS;
           tn.note = {
             title: fresh.length === 1 ? "Borrowed a skill" : `Borrowed ${fresh.length} skills`,
             items: fresh.map((sk) => `/${sk}`),
@@ -2124,6 +2130,7 @@ class PixelCrew {
         // Pop a bubble naming the skill(s) it just carried back from the shelf.
         const fresh = tn.skills.slice(tn.booksShown);
         tn.booksInHand = tn.skills.length - tn.booksShown;
+        tn.readT = READ_SECS;
         tn.errand = undefined;
         if (fresh.length > 0) tn.note = {
           title: fresh.length === 1 ? "Borrowed a skill" : `Borrowed ${fresh.length} skills`,
@@ -2163,15 +2170,20 @@ class PixelCrew {
         tn.shred = undefined;
       }
     }
-    // a dev reads its fetched book(s) at the desk while the task is live; once the
-    // task is no longer running (idle/complete/error — waiting still counts) it
-    // sets them down on the desk to join the stack
+    // a dev reads its fetched book(s) at the desk for a short beat after fetching
+    // them, then sets them down on the desk to join the stack — it does not keep
+    // reading for the whole active session. The read beat also ends early if the
+    // task stops running (idle/complete/error — waiting still counts as reading).
     for (const tn of this.toons.values()) {
       if (tn.booksInHand <= 0 || tn.errand) continue;
+      if (tn.readT !== undefined) tn.readT -= dt;
       const st = tn.agent.state;
-      if (st !== "active" && st !== "waiting") {
+      const beatDone = tn.readT !== undefined && tn.readT <= 0;
+      const taskStopped = st !== "active" && st !== "waiting";
+      if (beatDone || taskStopped) {
         tn.booksShown = tn.skills.length;
         tn.booksInHand = 0;
+        tn.readT = undefined;
         tn.note = undefined; // the desk e-reader counter now shows; drop the borrow bubble
       }
     }
