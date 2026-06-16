@@ -19,6 +19,33 @@ sessions work, stack floors, spawn devs into worktrees, review diffs and PRs.
 
 Run `npm run typecheck` and `npm test` before handing work back.
 
+## Debugging: use the verbose debug log
+
+When a behavior is hard to reproduce or reason about (camera focus, agent/session
+binding, toon spawn/leave, board sync, hit-tests), **add debug-log instrumentation
+rather than guessing**. The repo has a built-in verbose log that captures these
+events with the data you choose.
+
+- **Enable it:** the `devtower.debugLog` setting (toggled live from the Settings
+  overlay's Debug tab, or in VS Code settings). When on, events are written to
+  `debug.log` in the extension's global storage dir (path via `debugLogPath()` in
+  `src/debugLog.ts`; the Debug tab links straight to it). Errors always log to
+  `errors.log`; the verbose `debug.log` is gated on the setting.
+- **From the extension host (`src/*.ts`):** call `dlog("dotted.event", { ...data })`.
+- **From the canvas scene (`src/webview/crew.ts`):** call
+  `this.dbg("dotted.event", { ...data })`. It is a no-op unless `devtower.debugLog`
+  is on, and is forwarded to the host and written as `scene.<event>`.
+- **From the console webview (`media/console.js`):** guard on the local `debug`
+  flag and `vscode.postMessage({ type: "debug", event: "dotted.event", data })`;
+  the host writes it as `scene.<event>` too.
+- **Naming:** use dotted event names (e.g. `cam.newDevSelect`, `bind.adopt`) so a
+  repro can be sliced with `grep '"cam.' debug.log`. Keep payloads to the few
+  fields that disambiguate which branch ran.
+
+Leave useful instrumentation in place when it documents a tricky path; it costs
+nothing while the setting is off. When asked to "add debugging", prefer wiring
+these `dlog`/`dbg` events into the suspect code path over ad-hoc `console.log`.
+
 ## Packaging hygiene: keep the .vsix lean
 
 The published `.vsix` must contain ONLY what is required to run the extension

@@ -1528,7 +1528,8 @@ class PixelCrew {
   focusOn(name: string, resetZoom = true) {
     let r = this.rooms.get(name);
     if (!r) r = [...this.rooms.values()].find((b) => b.island === name);
-    if (!r) return;
+    if (!r) { this.dbg("cam.focusOn", { name, resolved: false }); return; }
+    this.dbg("cam.focusOn", { name, resolved: true, room: r.name, resetZoom });
     this.focusAgentId = null; // centering on a building releases any dev zoom
     this.focusIsland_ = null;
     this.focusRoom_ = r.name;
@@ -1567,6 +1568,7 @@ class PixelCrew {
   /** Zoom out from a room to an overview of just THAT directory (its tower),
    *  rather than the whole campus. */
   focusIslandView(islandName: string) {
+    this.dbg("cam.focusIslandView", { island: islandName });
     this.focusAgentId = null;
     this.focusRoom_ = null;
     this.focusIsland_ = islandName;
@@ -1582,8 +1584,9 @@ class PixelCrew {
    *  keep tracking the dev without fighting the operator's pan/zoom. */
   focusAgent(id: string, resetZoom = true) {
     const tn = this.toons.get(id);
-    if (!tn) return;
+    if (!tn) { this.dbg("cam.focusAgent", { id, resolved: false }); return; }
     const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
+    this.dbg("cam.focusAgent", { id, resolved: true, bkey: tn.bkey, resetZoom });
     this.focusAgentId = id;
     this.focusIsland_ = null;
     this.focusRoom_ = room?.name ?? null;
@@ -1620,6 +1623,7 @@ class PixelCrew {
   }
 
   clearFocus(resetZoom = true, preservePan = false) {
+    this.dbg("cam.clearFocus", { resetZoom, preservePan, hadRoom: this.focusRoom_, hadAgent: this.focusAgentId });
     this.focusRoom_ = null;
     this.focusAgentId = null;
     this.focusIsland_ = null;
@@ -1659,8 +1663,14 @@ class PixelCrew {
       // focusAgent() no-ops with no toon, and a toon that later resumes from the
       // parked cache is never re-flagged. Keep the flag so a later poll (once the
       // room lands) frames the room instead.
+      this.dbg("cam.newDevSelect", {
+        id, hasToon: !!tn, bkey: tn?.bkey, hasRoom: !!room,
+        branch: room ? "focusOn(room)" : tn ? "focusAgent(tn)" : "kept(no toon)",
+      });
       if (room) { this.newToonIds.delete(id); this.focusOn(room.name); }
       else if (tn) { this.newToonIds.delete(id); this.focusAgent(id); }
+    } else if (id) {
+      this.dbg("cam.select", { id, newToon: false });
     }
     this.invalidate();
   }
@@ -2540,6 +2550,11 @@ class PixelCrew {
 
   private onClick(e: PointerEvent) {
     const hit = this.pick(e);
+    this.dbg("cam.click", {
+      kind: hit.addDev ? "addDev" : hit.room ? "room" : hit.agent ? "agent" : hit.ghost ? "ghost"
+        : hit.useDir ? "useDir" : hit.removeBtn || hit.removeWtBtn ? "remove" : hit.openPrUrl ? "openPr" : "empty",
+      room: hit.room, addDevKey: hit.addDev?.key, focusAgentId: this.focusAgentId, focusRoom: this.focusRoom_,
+    });
     if (hit.openPrUrl) { this.onOpenPrCb(hit.openPrUrl); }
     else if (hit.removeWtBtn) this.onRemoveWorktreeCb(hit.removeWtBtn, hit.island ?? "");
     else if (hit.removeBtn) this.onRemoveRoomCb(hit.removeBtn);

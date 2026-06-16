@@ -905,7 +905,9 @@
       // Routine polls repeating the same selectedId leave it unchanged → ignored,
       // so a closed panel that has panned away isn't yanked back every poll.
       const selChanged = m.selectedId && m.selectedId !== lastHostSel && agents.some((a) => a.id === m.selectedId);
-      if (m.selectedId && (panelOpen || selChanged)) selectedId = m.selectedId;
+      const adopt = m.selectedId && (panelOpen || selChanged);
+      if (debug) vscode.postMessage({ type: "debug", event: "cam.stateSelect", data: { hostSel: m.selectedId, lastHostSel, prevSel: selectedId, panelOpen, selChanged: !!selChanged, adopt: !!adopt } });
+      if (adopt) selectedId = m.selectedId;
       lastHostSel = m.selectedId ?? null;
       renderTelemetry();
       renderSelDir(m.selectedDir);
