@@ -75,8 +75,26 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
   let mountedRoot: string | undefined; // rootUri the live provider was built with
   let provider: vscode.Disposable | undefined;
 
+  // A recursive watcher on the mounted worktree so a working-tree edit/create/
+  // delete (in the editor OR from a terminal/agent) re-runs status() promptly,
+  // instead of waiting for an incidental store change. The .git watcher in the
+  // console panel only catches stage/commit/push (index/refs), never a plain
+  // file edit, so without this the SCM panel lagged behind the working tree.
+  let fileWatcher: vscode.FileSystemWatcher | undefined;
+  let fileDebounce: ReturnType<typeof setTimeout> | undefined;
+  // Coalesce a burst of file events into one sync. `.git` writes are ignored:
+  // running status() itself dirties .git, which would otherwise feed back here.
+  const onFileChange = (uri: vscode.Uri): void => {
+    if (uri.fsPath.includes(`${path.sep}.git${path.sep}`) || uri.fsPath.endsWith(`${path.sep}.git`))
+      return;
+    if (fileDebounce) clearTimeout(fileDebounce);
+    fileDebounce = setTimeout(() => void sync(), 300);
+  };
+
   const mount = (root: string | undefined): void => {
     provider?.dispose();
+    fileWatcher?.dispose();
+    fileWatcher = undefined;
     const title = root ? `DevTower • ${path.basename(root)}` : "DevTower Changes";
     sc = vscode.scm.createSourceControl("devtower", title, root ? vscode.Uri.file(root) : undefined);
     stagedGroup = sc.createResourceGroup("staged", "Staged Changes");
@@ -86,7 +104,14 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
     sc.acceptInputCommand = { command: "devtower.scmCommit", title: "Commit" };
     sc.inputBox.placeholder = "Message";
     mountedRoot = root;
-    provider = vscode.Disposable.from(stagedGroup, changesGroup, sc);
+    if (root) {
+      const w = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(root, "**"));
+      w.onDidChange(onFileChange);
+      w.onDidCreate(onFileChange);
+      w.onDidDelete(onFileChange);
+      fileWatcher = w;
+    }
+    provider = vscode.Disposable.from(stagedGroup, changesGroup, sc, ...(fileWatcher ? [fileWatcher] : []));
   };
   mount(undefined);
 
@@ -312,8 +337,9 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
   };
 
   context.subscriptions.push(
-    // dispose whichever provider is currently mounted on deactivate
-    { dispose: () => provider?.dispose() },
+    // dispose whichever provider is currently mounted on deactivate, plus the
+    // worktree file watcher and any pending debounce it owns
+    { dispose: () => { if (fileDebounce) clearTimeout(fileDebounce); fileWatcher?.dispose(); provider?.dispose(); } },
     // keep the mirror in step with selection, focus, and any store change (a
     // poll, a stage/commit landing via the .git watcher, etc.)
     store.onChange(() => void sync()),
