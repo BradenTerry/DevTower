@@ -162,6 +162,7 @@ const ROW_DY = DEPTH_Y; // back row stands on the far-wall floor line
 // back-row desks are staggered toward room center by half the column pitch
 // (see PixelCrew.seatX); the pitch is per-room so it scales with desk count
 const ROOM_W = 260; // room interior width (door to door); the board is on the back wall
+const SCROLL_PAD_PX = 280; // constant on-screen px of empty space you can pan past the content (kept zoom-independent)
 // Desks are laid out per worktree by seatPlan(): each worktree block fills
 // columns left to right, two rows (front + back) per column, so every agent
 // gets a seat and the blocks span the floor between the left inset and the door.
@@ -699,8 +700,16 @@ class PixelCrew {
         this.drag.moved = true;
         this.drag.lastX = e.clientX;
         this.drag.lastY = e.clientY;
-        const limX = (this.bounds.maxX - this.bounds.minX) / 2 + ROOM_W;
-        const limY = (this.bounds.botY - this.bounds.topY) / 2 + FLOOR_STEP;
+        // Empty scroll margin past the content edge, held CONSTANT in screen
+        // pixels: a taller tower auto-fits by shrinking cam.z, so a world-space
+        // pad (ROOM_W/FLOOR_STEP) would render as fewer and fewer on-screen px,
+        // squeezing the room you pan into to reach the "+ worktree" ghost.
+        // Dividing the fixed px by the live zoom keeps that gap the same size on
+        // screen no matter how many floors are stacked.
+        const padX = SCROLL_PAD_PX / this.cam.z;
+        const padY = SCROLL_PAD_PX / this.cam.z;
+        const limX = (this.bounds.maxX - this.bounds.minX) / 2 + padX;
+        const limY = (this.bounds.botY - this.bounds.topY) / 2 + padY;
         this.panX = clamp(this.panX - dx / this.cam.z, -limX, limX);
         this.panY = clamp(this.panY - dy / this.cam.z, -limY, limY);
         this.container.style.cursor = "grabbing";
