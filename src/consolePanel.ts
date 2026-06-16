@@ -394,6 +394,10 @@ export class ConsolePanel implements MiniDelegate {
         await this.persistValue("projectScope", String(m.scope));
         this.postState();
         break;
+      case "setBookPreference":
+        // operator picked physical vs ebook for skill books → persist their choice
+        await this.persistValue("bookPreference", String(m.mode));
+        break;
       case "setDebug": {
         // operator toggled debug logging from the Settings > Debug tab. Persisting
         // it fires the devtower.debugLog config listener, which re-posts config so
@@ -619,6 +623,7 @@ export class ConsolePanel implements MiniDelegate {
       type: "config",
       perf,
       projectScope: cfg.get<string>("projectScope", "global"),
+      books: cfg.get<string>("bookPreference", "physical"),
       debug: cfg.get<boolean>("debugLog", false),
       debugLogExists: debugLogExists(),
       debugLogArchives: debugLogArchiveCount(),

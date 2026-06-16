@@ -555,6 +555,18 @@
               <span class="s-seg-name">${p.name}</span>
             </button>`).join("")}
         </div>
+      </div>
+      <div class="s-row">
+        <div class="s-row-t">
+          <div class="s-row-name">Book preference</div>
+          <div class="s-row-sub">Where devs get a book for each skill. Physical: walk to the bookshelf. Ebook: read on their phone at the desk.</div>
+        </div>
+        <div class="s-seg" id="s-books" role="radiogroup" aria-label="Book preference">
+          ${BOOK_MODES.map((b) => `
+            <button class="s-seg-btn ${bookMode === b.id ? "on" : ""}" data-book="${b.id}" role="radio" aria-checked="${bookMode === b.id}">
+              <span class="s-seg-name">${b.name}</span><span class="s-seg-fps">${b.sub}</span>
+            </button>`).join("")}
+        </div>
       </div>`;
   }
 
@@ -674,6 +686,17 @@
         if (mode === projectScope) return;
         projectScope = mode;
         vscode.postMessage({ type: "setProjectScope", scope: mode });
+        renderSettings();
+      };
+    });
+    // General-tab wiring: pick a book preference (physical shelf vs ebook on the phone)
+    const bookSeg = $("#s-books", s);
+    if (bookSeg) bookSeg.querySelectorAll("[data-book]").forEach((btn) => {
+      btn.onclick = () => {
+        const mode = btn.getAttribute("data-book");
+        if (mode === bookMode) return;
+        applyBookMode(mode);
+        vscode.postMessage({ type: "setBookPreference", mode });
         renderSettings();
       };
     });
@@ -824,6 +847,13 @@
     { id: "workspace", name: "This workspace" },
   ];
   let projectScope = "global";
+  // where devs get a skill's book: "physical" (walk to the shelf) or "ebook"
+  // (read on their phone at the desk). Arrives via the "config" message.
+  const BOOK_MODES = [
+    { id: "physical", name: "Physical", sub: "Bookshelf" },
+    { id: "ebook", name: "Ebook", sub: "Phone" },
+  ];
+  let bookMode = "physical";
   let debug = false; // devtower.debugLog; arrives via the "config" message
   let dbgLogExists = false; // whether a captured log is on disk (config message)
   let dbgArchives = 0; // number of rotated archive files on disk (config message)
@@ -831,7 +861,12 @@
     perf = PERF_MODES.some((p) => p.id === mode) ? mode : "balanced";
     if (window.DevTowerCrew && DevTowerCrew.setPerf) DevTowerCrew.setPerf(perf);
   }
+  function applyBookMode(mode) {
+    bookMode = BOOK_MODES.some((b) => b.id === mode) ? mode : "physical";
+    if (window.DevTowerCrew && DevTowerCrew.setBookMode) DevTowerCrew.setBookMode(bookMode);
+  }
   applyPerf("balanced");
+  applyBookMode("physical");
 
   /* ---------- global wiring ---------- */
   $("#settingsbtn").onclick = openSettings;
@@ -878,6 +913,7 @@
     } else if (m.type === "config") {
       applyPerf(m.perf || "balanced"); // saved performance-mode preference
       projectScope = m.projectScope || "global"; // saved project-scope preference
+      applyBookMode(m.books || "physical"); // saved physical/ebook book preference
       debug = !!m.debug; // authoritative devtower.debugLog state from the host
       dbgLogExists = !!m.debugLogExists; // a captured log is on disk
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk
