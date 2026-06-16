@@ -625,6 +625,25 @@ export class ClaudeDiscovery {
     for (const f of kept) keptMtime.set(f.id, f.mtime);
     this.keptMtime = keptMtime;
 
+    // Why-kept trace: when a session survives the keep passes, record the
+    // live-process signal that justified it. Lets a "stale session shouldn't be
+    // here" report be diagnosed: liveCountsMode "null" means process detection
+    // failed and a 15-min mtime window kept it; a perCwd liveCount of 0 for a
+    // kept session means it was rescued (anti-flap) rather than seen running.
+    dlog("discovery.keep", {
+      liveCountsMode: liveCounts === null ? "null" : liveCounts.mode,
+      showRecent,
+      kept: kept.map((f) => ({
+        session: f.sessionId.slice(0, 8),
+        cwd: f.cwd,
+        ageMs: Date.now() - f.mtime,
+        liveAtCwd: liveCounts && liveCounts.mode === "perCwd"
+          ? (liveCounts.counts.get(f.launchCwd) ?? liveCounts.counts.get(f.cwd) ?? 0)
+          : undefined,
+        owned: this.mine.has(f.id),
+      })),
+    });
+
     // Panel-created placeholders (a reviewer / added dev) carry no transcript
     // yet. When a live session turns up in such a placeholder's worktree, adopt
     // it into that agent instead of spawning a separate discovered one — one
