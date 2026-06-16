@@ -1573,11 +1573,17 @@ class PixelCrew {
     // on-screen instead of happening off-camera. The selection arrow and the
     // dev's stats are driven by selectedId, so they show either way.
     if (id && this.newToonIds.has(id)) {
-      this.newToonIds.delete(id);
       const tn = this.toons.get(id);
       const room = tn?.bkey ? this.rooms.get(tn.bkey) : undefined;
-      if (room) this.focusOn(room.name);
-      else this.focusAgent(id);
+      // Only consume the "new dev" flag once we can actually frame it. If the
+      // toon isn't placed yet — culled mid-spawn because its worktree room
+      // hasn't landed this poll, or briefly unplaced by a re-layout — deleting
+      // the flag here would strand the camera on the previously-selected dev:
+      // focusAgent() no-ops with no toon, and a toon that later resumes from the
+      // parked cache is never re-flagged. Keep the flag so a later poll (once the
+      // room lands) frames the room instead.
+      if (room) { this.newToonIds.delete(id); this.focusOn(room.name); }
+      else if (tn) { this.newToonIds.delete(id); this.focusAgent(id); }
     }
     this.invalidate();
   }
