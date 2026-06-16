@@ -9,7 +9,7 @@ import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
 import { syncHooks } from "./hooks";
 import { initGithubAuth } from "./github";
-import { initDebugLog, dlog, elog, errorLogPath } from "./debugLog";
+import { initDebugLog, dlog, elog, errorLogPath, showExecStats } from "./debugLog";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   initDebugLog(context);
@@ -78,7 +78,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerScmView(context, store);
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("devtower.refresh", () => store.watchStateFile()),
+    vscode.commands.registerCommand("devtower.refresh", () => {
+      store.watchStateFile();
+      return ConsolePanel.ensure(context, store, terminals, prs, discovery).refreshAll();
+    }),
     vscode.commands.registerCommand("devtower.openSettings", (tab?: string) =>
       ConsolePanel.createOrShow(context, store, terminals, prs, discovery).openSettings(tab)
     ),
@@ -93,6 +96,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("devtower.installHooks", () =>
       ConsolePanel.createOrShow(context, store, terminals, prs, discovery).openSettings("hooks")
     ),
+    vscode.commands.registerCommand("devtower.showExternalCalls", () => showExecStats()),
     vscode.commands.registerCommand("devtower.openErrorLog", async () => {
       const p = errorLogPath();
       if (!p) {

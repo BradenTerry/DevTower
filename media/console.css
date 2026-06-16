@@ -105,6 +105,8 @@ button{ font-family:inherit; }
 }
 .iconbtn:hover{ background:var(--glass-2); transform:translateY(-1px); }
 .iconbtn:active{ transform:translateY(0) scale(.94); }
+.iconbtn.spin{ animation:iconspin .8s linear; }
+@keyframes iconspin{ from{ transform:rotate(0); } to{ transform:rotate(360deg); } }
 /* active/toggled state (e.g. efficiency mode on) — clearly lit so the click registers */
 .iconbtn.on{
   color:var(--amber);
@@ -270,6 +272,15 @@ button{ font-family:inherit; }
 .s-actbtn:hover{ color:var(--text); border-color:var(--text-faint); background:rgba(255,255,255,0.08); }
 .s-actbtn:disabled{ opacity:.4; cursor:default; }
 .s-actbtn:disabled:hover{ color:var(--text-dim); border-color:var(--edge); background:rgba(255,255,255,0.03); }
+
+/* External-calls tally (Settings > Debug) */
+.ec-table{ width:100%; border-collapse:collapse; margin-top:8px; font-size:11.5px; font-variant-numeric:tabular-nums; }
+.ec-table th{ text-align:right; color:var(--text-dim); font-weight:500; padding:3px 8px; border-bottom:1px solid var(--edge); }
+.ec-table th:first-child{ text-align:left; }
+.ec-table td{ padding:3px 8px; border-bottom:1px solid rgba(255,255,255,0.04); }
+.ec-table td.ec-cmd{ font-family:var(--mono, monospace); color:var(--text); }
+.ec-table td.ec-n{ text-align:right; color:var(--text-dim); }
+.ec-table td.ec-err{ color:#ff6b6b; }
 
 .s-status{ font-size:12px; padding:10px 12px; border-radius:10px; border:1px solid var(--edge-soft); }
 .s-status.ok{ display:flex; align-items:center; gap:10px; background:color-mix(in srgb,var(--active) 12%,transparent); border-color:color-mix(in srgb,var(--active) 35%,transparent); }

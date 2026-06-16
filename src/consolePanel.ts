@@ -11,7 +11,7 @@ import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./gi
 import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
 import { MiniPanel, MiniDelegate } from "./miniPanel";
-import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir } from "./debugLog";
+import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir, execStatsSnapshot, resetExecStats } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
 
@@ -476,6 +476,18 @@ export class ConsolePanel implements MiniDelegate {
         }
         break;
       }
+      case "refresh":
+        // tower Refresh button → manual full refresh (sessions + git boards + PRs)
+        void this.refreshAll();
+        break;
+      case "getExecStats":
+        // Settings > Debug "External calls" table asked for the current tally
+        this.postExecStats();
+        break;
+      case "resetExecStats":
+        resetExecStats();
+        this.postExecStats();
+        break;
       case "select":
         if (id) {
           this.store.setSelected(id);
@@ -651,6 +663,11 @@ export class ConsolePanel implements MiniDelegate {
       debugLogArchives: debugLogArchiveCount(),
       perfHud: cfg.get<boolean>("perfHud", false),
     });
+  }
+
+  /** Push the external-call tally to the Settings > Debug "External calls" table. */
+  private postExecStats(): void {
+    this.panel?.webview.postMessage({ type: "execStats", stats: execStatsSnapshot() });
   }
 
   private postPrs(): void {
@@ -1231,6 +1248,17 @@ export class ConsolePanel implements MiniDelegate {
   /** Recompute live git stats + branch per ROOM (keyed by the room's checkout
    *  path, which is exactly the building key the webview uses) and push if it
    *  changed. Git is resolved from the path even when it lives in a parent dir. */
+  /** Manual full refresh: re-scan for sessions, re-read every room's git board,
+   *  and re-poll PRs. Wired to the devtower.refresh command and the tower's
+   *  Refresh button so the user can update on demand — the event-driven path
+   *  (.git watchers, file saves, hooks) handles the rest without background
+   *  polling. */
+  async refreshAll(): Promise<void> {
+    await this.discovery?.refresh().catch(() => 0);
+    await this.refreshState();
+    void this.prs.refresh(true);
+  }
+
   private async refreshState(): Promise<void> {
     // roomKey → absolute path to run git in. Track which keys are island (main)
     // rooms vs worktree rooms so a vanished worktree can be auto-pruned while a
@@ -1709,6 +1737,7 @@ export class ConsolePanel implements MiniDelegate {
       </div>
     </div>
     <div class="spacer"></div>
+    <button class="iconbtn" id="refreshbtn" title="Refresh sessions, git boards, and PRs now">⟳</button>
     <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
     <button class="iconbtn" id="popoutbtn" title="Mini view (compact popout)">⧉</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
