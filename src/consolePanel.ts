@@ -174,6 +174,10 @@ export class ConsolePanel implements MiniDelegate {
     // start (or stop) without reopening the console
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("devtower.debugLog")) this.postConfig();
+      // a live perf-overlay toggle (Settings UI or settings.json) mirrors into the scene
+      if (e.affectsConfiguration("devtower.perfHud")) this.postConfig();
+      // a live graphics-quality change (Settings UI or settings.json) re-applies in the scene
+      if (e.affectsConfiguration("devtower.graphicsQuality")) this.postConfig();
       // an external edit to the project scope re-filters which buildings render
       if (e.affectsConfiguration("devtower.projectScope")) {
         this.postConfig();
@@ -385,8 +389,12 @@ export class ConsolePanel implements MiniDelegate {
         }
         break;
       case "setPerf":
-        // operator picked a performance mode → persist their choice
+        // operator picked a performance mode → persist their choice (legacy path)
         await this.persistValue("performanceMode", String(m.mode));
+        break;
+      case "setQuality":
+        // operator picked a graphics-quality preset → persist their choice
+        await this.persistValue("graphicsQuality", String(m.mode));
         break;
       case "setProjectScope":
         // operator chose global vs this-workspace projects → persist and redraw
@@ -397,6 +405,10 @@ export class ConsolePanel implements MiniDelegate {
       case "setBookPreference":
         // operator picked physical vs ebook for skill books → persist their choice
         await this.persistValue("bookPreference", String(m.mode));
+        break;
+      case "setPerfHud":
+        // operator toggled the on-canvas performance overlay (Settings > Debug)
+        await this.persistToggle("perfHud", !!m.on);
         break;
       case "setDebug": {
         // operator toggled debug logging from the Settings > Debug tab. Persisting
@@ -619,20 +631,25 @@ export class ConsolePanel implements MiniDelegate {
    *  the scene's debug emission tracks the setting without a reopen. */
   private postConfig(): void {
     const cfg = vscode.workspace.getConfiguration("devtower");
-    // Migrate the deprecated boolean: a saved efficiencyMode=true reads as "eco"
-    // unless the operator has explicitly chosen a performanceMode.
+    // Resolve the graphics-quality preset, migrating the deprecated keys when the
+    // operator hasn't explicitly chosen one: performanceMode (smooth/balanced/eco)
+    // maps to high/balanced/low, and an old efficiencyMode=true reads as "low".
+    const qInfo = cfg.inspect<string>("graphicsQuality");
+    const qSet = qInfo?.globalValue ?? qInfo?.workspaceValue ?? qInfo?.workspaceFolderValue;
     const perfInfo = cfg.inspect<string>("performanceMode");
-    const perfSet =
-      perfInfo?.globalValue ?? perfInfo?.workspaceValue ?? perfInfo?.workspaceFolderValue;
-    const perf = perfSet ?? (cfg.get<boolean>("efficiencyMode", false) ? "eco" : "balanced");
+    const perfSet = perfInfo?.globalValue ?? perfInfo?.workspaceValue ?? perfInfo?.workspaceFolderValue;
+    const legacyPerf = perfSet ?? (cfg.get<boolean>("efficiencyMode", false) ? "eco" : undefined);
+    const PERF_TO_QUALITY: Record<string, string> = { smooth: "high", balanced: "balanced", eco: "low" };
+    const quality = qSet ?? (legacyPerf ? PERF_TO_QUALITY[legacyPerf] : undefined) ?? "balanced";
     this.panel?.webview.postMessage({
       type: "config",
-      perf,
+      quality,
       projectScope: cfg.get<string>("projectScope", "global"),
       books: cfg.get<string>("bookPreference", "physical"),
       debug: cfg.get<boolean>("debugLog", false),
       debugLogExists: debugLogExists(),
       debugLogArchives: debugLogArchiveCount(),
+      perfHud: cfg.get<boolean>("perfHud", false),
     });
   }
 

@@ -1,11 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// Screenshot-only harness, NOT part of `npm test` (that's vitest, which only
-// includes test/**). These specs boot the real webview front-end in headless
-// Chromium and dump PNGs to screenshots/out/. Run with: npm run screenshots
+// Browser harness, NOT part of `npm test` (that's vitest, which only includes
+// test/** and can't render a canvas). These boot the real webview front-end in
+// headless Chromium. *.shot.ts dump PNGs to screenshots/out/ (npm run
+// screenshots); *.spec.ts are assertion tests (npm run perf:test). Both need a
+// real <canvas>, which is why they live here and not in vitest.
 export default defineConfig({
   testDir: "screenshots",
-  testMatch: "**/*.shot.ts",
+  testMatch: "**/*.{shot,spec}.ts",
   fullyParallel: false,
   reporter: "list",
   use: {

@@ -542,13 +542,13 @@
       <h3>General</h3>
       <div class="s-row">
         <div class="s-row-t">
-          <div class="s-row-name">Performance</div>
-          <div class="s-row-sub">Animation frame rate while the tower is moving. It still parks when nothing animates.</div>
+          <div class="s-row-name">Graphics quality</div>
+          <div class="s-row-sub">Lower presets cut render resolution and effects so the tower runs smoothly on weak GPUs. It still parks when nothing animates.</div>
         </div>
-        <div class="s-seg" id="s-perf" role="radiogroup" aria-label="Performance mode">
-          ${PERF_MODES.map((p) => `
-            <button class="s-seg-btn ${perf === p.id ? "on" : ""}" data-perf="${p.id}" role="radio" aria-checked="${perf === p.id}">
-              <span class="s-seg-name">${p.name}</span><span class="s-seg-fps">${p.fps} fps</span>
+        <div class="s-seg" id="s-quality" role="radiogroup" aria-label="Graphics quality">
+          ${QUALITY_MODES.map((p) => `
+            <button class="s-seg-btn ${quality === p.id ? "on" : ""}" data-quality="${p.id}" role="radio" aria-checked="${quality === p.id}" title="${p.title}">
+              <span class="s-seg-name">${p.name}</span><span class="s-seg-fps">${p.hint}</span>
             </button>`).join("")}
         </div>
       </div>
@@ -593,6 +593,13 @@
           <div class="s-row-sub">Verbose trace + on-canvas tie labels. Off by default.</div>
         </div>
         <button class="s-toggle ${debug ? "on" : ""}" id="s-debug" role="switch" aria-checked="${debug}"><span class="knob"></span></button>
+      </div>
+      <div class="s-row">
+        <div class="s-row-t">
+          <div class="s-row-name">Performance overlay</div>
+          <div class="s-row-sub">Live FPS, frame cost (ms), and draw counts in the tower's top-left corner. Use it to gauge the tower's load and compare graphics-quality presets.</div>
+        </div>
+        <button class="s-toggle ${perfHud ? "on" : ""}" id="s-perfhud" role="switch" aria-checked="${perfHud}"><span class="knob"></span></button>
       </div>
       ${dbgLogExists ? `
       <div class="s-hookbar">
@@ -675,13 +682,13 @@
     if (clear) clear.onclick = () => vscode.postMessage({ type: "clearGithubToken" });
 
     // General-tab wiring: pick a performance mode (segmented control)
-    const perfSeg = $("#s-perf", s);
-    if (perfSeg) perfSeg.querySelectorAll("[data-perf]").forEach((btn) => {
+    const qualitySeg = $("#s-quality", s);
+    if (qualitySeg) qualitySeg.querySelectorAll("[data-quality]").forEach((btn) => {
       btn.onclick = () => {
-        const mode = btn.getAttribute("data-perf");
-        if (mode === perf) return;
-        applyPerf(mode);
-        vscode.postMessage({ type: "setPerf", mode });
+        const mode = btn.getAttribute("data-quality");
+        if (mode === quality) return;
+        applyQuality(mode);
+        vscode.postMessage({ type: "setQuality", mode });
         renderSettings();
       };
     });
@@ -716,6 +723,15 @@
       debug = !debug;
       if (window.DevTowerCrew && DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug);
       vscode.postMessage({ type: "setDebug", on: debug });
+      renderSettings();
+    };
+    // Performance overlay: flip locally for instant feedback, mirror into the
+    // scene, and persist to devtower.perfHud (the host echoes it back via config).
+    const perfHudT = $("#s-perfhud", s);
+    if (perfHudT) perfHudT.onclick = () => {
+      perfHud = !perfHud;
+      if (window.DevTowerCrew && DevTowerCrew.setPerfHud) DevTowerCrew.setPerfHud(perfHud);
+      vscode.postMessage({ type: "setPerfHud", on: perfHud });
       renderSettings();
     };
     // View / Clear act on the host (the clear runs a native "are you sure" modal);
@@ -839,15 +855,18 @@
     }));
   }
 
-  /* ---------- performance mode ---------- */
+  /* ---------- graphics quality ---------- */
   // defaults to "balanced"; the saved setting arrives via the "config" message,
-  // and each pick persists the new choice back to settings
-  const PERF_MODES = [
-    { id: "smooth", name: "Smooth", fps: 15 },
-    { id: "balanced", name: "Balanced", fps: 10 },
-    { id: "eco", name: "Eco", fps: 6 },
+  // and each pick persists the new choice back to settings. High/Balanced render
+  // the classic scene (only the frame rate differs); Low/Potato cut render
+  // resolution and effects for weak GPUs.
+  const QUALITY_MODES = [
+    { id: "high", name: "High", hint: "15 fps", title: "Full detail at native resolution, 15 fps animation. Smoothest motion, highest GPU use." },
+    { id: "balanced", name: "Balanced", hint: "10 fps", title: "Full detail at native resolution, 10 fps animation. The default." },
+    { id: "low", name: "Low", hint: "8 fps", title: "Half resolution on HiDPI displays, particles off, 8 fps. For weaker GPUs." },
+    { id: "potato", name: "Potato", hint: "6 fps", title: "Half resolution, flat colors, no particles / cable beams / stars, 6 fps. Lowest GPU use." },
   ];
-  let perf = "balanced";
+  let quality = "balanced";
   // devtower.projectScope: which registered projects the tower draws. Arrives via
   // the "config" message; each pick persists the choice back to settings.
   const SCOPE_MODES = [
@@ -865,15 +884,16 @@
   let debug = false; // devtower.debugLog; arrives via the "config" message
   let dbgLogExists = false; // whether a captured log is on disk (config message)
   let dbgArchives = 0; // number of rotated archive files on disk (config message)
-  function applyPerf(mode) {
-    perf = PERF_MODES.some((p) => p.id === mode) ? mode : "balanced";
-    if (window.DevTowerCrew && DevTowerCrew.setPerf) DevTowerCrew.setPerf(perf);
+  let perfHud = false; // devtower.perfHud; on-canvas FPS/frame-cost overlay (config message)
+  function applyQuality(mode) {
+    quality = QUALITY_MODES.some((p) => p.id === mode) ? mode : "balanced";
+    if (window.DevTowerCrew && DevTowerCrew.setQuality) DevTowerCrew.setQuality(quality);
   }
   function applyBookMode(mode) {
     bookMode = BOOK_MODES.some((b) => b.id === mode) ? mode : "physical";
     if (window.DevTowerCrew && DevTowerCrew.setBookMode) DevTowerCrew.setBookMode(bookMode);
   }
-  applyPerf("balanced");
+  applyQuality("balanced");
   applyBookMode("physical");
 
   /* ---------- global wiring ---------- */
@@ -932,13 +952,15 @@
     } else if (m.type === "usage") {
       renderUsage(m.usage);
     } else if (m.type === "config") {
-      applyPerf(m.perf || "balanced"); // saved performance-mode preference
+      applyQuality(m.quality || "balanced"); // saved graphics-quality preset
       projectScope = m.projectScope || "global"; // saved project-scope preference
       applyBookMode(m.books || "physical"); // saved physical/ebook book preference
       debug = !!m.debug; // authoritative devtower.debugLog state from the host
       dbgLogExists = !!m.debugLogExists; // a captured log is on disk
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk
+      perfHud = !!m.perfHud; // saved devtower.perfHud (performance overlay) state
       if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug); // mirror into the scene
+      if (DevTowerCrew.setPerfHud) DevTowerCrew.setPerfHud(perfHud); // mirror overlay state
       if (settingsOpen()) renderSettings(); // reflect an external toggle live
     } else if (m.type === "settings") {
       settings = { caps: m.caps, scopeHelp: m.scopeHelp };

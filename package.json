@@ -382,11 +382,33 @@
           "default": false,
           "description": "Write a structured debug log of agent discovery, session binding, external/internal classification, terminals, and scene events to the \"DevTower Debug\" output channel and .devtower/debug.log. For diagnosing agent issues; leave off in normal use."
         },
+        "devtower.perfHud": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show a performance overlay in the tower (top-left): live FPS, per-frame draw cost in ms (p50/p95), and how many rooms/devs are drawn. Use it to gauge load and compare graphics-quality presets. Toggle from the tower's Settings > Debug tab."
+        },
+        "devtower.graphicsQuality": {
+          "type": "string",
+          "default": "balanced",
+          "enum": [
+            "high",
+            "balanced",
+            "low",
+            "potato"
+          ],
+          "enumDescriptions": [
+            "High - full detail at native resolution, 15 fps animation. Smoothest motion, highest GPU use.",
+            "Balanced - full detail at native resolution, 10 fps animation. The default.",
+            "Low - half resolution on HiDPI displays, particles off, 8 fps. For weaker GPUs.",
+            "Potato - half resolution, flat colors, no particles / cable beams / stars, 6 fps. Lowest GPU use."
+          ],
+          "description": "Graphics quality. The tower only redraws what is on screen and parks when idle; lower presets additionally cut render resolution and effects so it runs smoothly on weak GPUs. Pick from the General tab in the tower's Settings."
+        },
         "devtower.efficiencyMode": {
           "type": "boolean",
           "default": false,
-          "deprecationMessage": "Replaced by devtower.performanceMode. A saved `true` is read as the \"eco\" mode.",
-          "description": "Deprecated: use devtower.performanceMode. Reduce animation/particle work in the tower to save CPU."
+          "deprecationMessage": "Replaced by devtower.graphicsQuality. A saved `true` is read as the \"low\" preset.",
+          "description": "Deprecated: use devtower.graphicsQuality. Reduce animation/particle work in the tower to save CPU."
         },
         "devtower.performanceMode": {
           "type": "string",
@@ -396,12 +418,13 @@
             "balanced",
             "eco"
           ],
+          "deprecationMessage": "Replaced by devtower.graphicsQuality (smooth/balanced/eco map to high/balanced/low).",
           "enumDescriptions": [
             "Smooth - 15 fps animation. Most fluid motion, highest CPU.",
             "Balanced - 10 fps animation, full effects. The default.",
             "Eco - 6 fps animation, reduced particles. Lowest CPU/battery use."
           ],
-          "description": "How much animation work the tower does. The scene still only redraws while something is moving and parks when idle; this sets the frame rate (and particle detail) while it is animating. Pick from the General tab in the tower's Settings."
+          "description": "Deprecated: use devtower.graphicsQuality. How much animation work the tower does while something is moving."
         },
         "devtower.projectScope": {
           "type": "string",
@@ -493,7 +516,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "package": "npx --yes @vscode/vsce package --readme-path MARKETPLACE.md",
-    "screenshots": "playwright test",
+    "screenshots": "playwright test --grep-invert @perf",
+    "perf:test": "playwright test perf.spec",
+    "bench": "node screenshots/bench.js",
     "gen:media": "bash scripts/gen-md-media.sh"
   },
   "devDependencies": {
