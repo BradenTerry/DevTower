@@ -21,11 +21,11 @@ function harnessHtml() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // mirrors listHooks() output
 const hooks = [
-  { id: "notify", event: "Notification", label: "Raised hand", installed: true, description: "Raises an agent's hand the instant Claude needs you (a permission prompt or a question)." },
-  { id: "session", event: "SessionStart", label: "Keep dev on /clear", installed: true, description: "Keeps a dev in its place when you /clear its session, instead of a stranger appearing." },
-  { id: "sessionEnd", event: "SessionEnd", label: "Leave on /exit", installed: false, description: "Sends a dev home the instant you /exit its session, even with several sessions in one folder." },
-  { id: "prompt", event: "UserPromptSubmit", label: "Wake on prompt", installed: false, description: "Lights a dev up active the instant you send it a prompt, instead of waiting for its first transcript line." },
-  { id: "edit", event: "PostToolUse", label: "Beam from the right dev", installed: true, description: "Streams the cable beam from the dev that actually edited a file. Git only sees that a worktree changed, not who changed it." },
+  { id: "notify", event: "Notification", label: "Notification", installed: true, description: "Fires when Claude needs you. DevTower raises the dev's hand the instant it parks on a permission prompt or a question, instead of guessing from the transcript." },
+  { id: "session", event: "SessionStart", label: "SessionStart", installed: true, description: "Fires when a session starts, resumes, or is /cleared. DevTower keeps a dev in place across /clear (no stranger appears) and marks a resumed dev active right away." },
+  { id: "sessionEnd", event: "SessionEnd", label: "SessionEnd", installed: false, description: "Fires when a session exits. DevTower sends that exact dev home immediately, instead of inferring the exit from running-process counts." },
+  { id: "prompt", event: "UserPromptSubmit", label: "UserPromptSubmit", installed: false, description: "Fires the instant you submit a prompt. DevTower marks the dev active right away instead of waiting for its first transcript line." },
+  { id: "edit", event: "PostToolUse", label: "PostToolUse", installed: true, description: "Fires after a file-editing tool runs (Write, Edit, MultiEdit, NotebookEdit). DevTower attributes the change to the dev that made it, so the cable beam streams from the right desk." },
 ];
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });

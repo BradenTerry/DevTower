@@ -96,9 +96,12 @@ interface HookSpec {
   event: string;
   /** the script (under the extension's media/) this hook runs */
   script: string;
-  /** short name shown on the Hooks settings tab */
+  /** the hook's real name = its Claude Code event, shown on the Hooks tab. A hook
+   *  is just an event + its payload, so it's named for the event it listens to,
+   *  not one behavior — DevTower can parse the same event for several things. */
   label: string;
-  /** what the hook does, shown under its name on the Hooks settings tab */
+  /** what DevTower parses this event's payload for (may be several things), shown
+   *  under its name on the Hooks settings tab */
   description: string;
   /** optional tool matcher (for PreToolUse/PostToolUse), so the hook only fires
    *  for the tools it cares about instead of spawning node on every tool call */
@@ -110,42 +113,42 @@ const HOOKS: HookSpec[] = [
     id: "notify",
     event: "Notification",
     script: "devtower-notify.js",
-    label: "Raised hand",
+    label: "Notification",
     description:
-      "Raises an agent's hand the instant Claude needs you (a permission prompt or a question). Without it, waiting is guessed from the transcript and is unreliable.",
+      "Fires when Claude needs you. DevTower raises the dev's hand the instant it parks on a permission prompt or a question, instead of guessing from the transcript.",
   },
   {
     id: "session",
     event: "SessionStart",
     script: "devtower-session.js",
-    label: "Keep dev on /clear",
+    label: "SessionStart",
     description:
-      "Keeps a dev in its place when you /clear its session. Without it the cleared session looks gone and a new stranger appears in the tower.",
+      "Fires when a session starts, resumes, or is /cleared. DevTower keeps a dev in place across /clear (no stranger appears) and marks a resumed dev active right away.",
   },
   {
     id: "sessionEnd",
     event: "SessionEnd",
     script: "devtower-session-end.js",
-    label: "Leave on /exit",
+    label: "SessionEnd",
     description:
-      "Sends a dev home the instant you /exit its session. Without it the exit is guessed from running-process counts, so with several sessions in one folder the wrong dev (or none) leaves.",
+      "Fires when a session exits. DevTower sends that exact dev home immediately, instead of inferring the exit from running-process counts (which picks the wrong dev when several share a folder).",
   },
   {
     id: "prompt",
     event: "UserPromptSubmit",
     script: "devtower-prompt.js",
-    label: "Wake on prompt",
+    label: "UserPromptSubmit",
     description:
-      "Lights a dev up active the instant you send it a prompt, instead of waiting for its first transcript line. Makes the run/idle counts react immediately.",
+      "Fires the instant you submit a prompt. DevTower marks the dev active right away instead of waiting for its first transcript line, so the run/idle counts react immediately.",
   },
   {
     id: "edit",
     event: "PostToolUse",
     script: "devtower-edit.js",
     matcher: "Write|Edit|MultiEdit|NotebookEdit",
-    label: "Beam from the right dev",
+    label: "PostToolUse",
     description:
-      "Streams the cable beam from the dev that actually edited a file. Git only sees that a worktree changed, not who changed it, so without this the beam fires from the first dev in the room when several share it.",
+      "Fires after a file-editing tool runs (Write, Edit, MultiEdit, NotebookEdit). DevTower attributes the change to the dev that made it, so the cable beam streams from the right desk when several devs share a room.",
   },
 ];
 
