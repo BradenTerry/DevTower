@@ -17,8 +17,9 @@
   /* ---------- live state from the host ---------- */
   let agents = [], rooms = [], boards = {}, usedDir = null, selectedId = null;
   let prConnected = false;
-  /** Whether the full tower UI is on screen — gates the agent "View" action. */
-  let towerVisible = true;
+  /** Whether the tower UI is open (it may be hidden behind this tab — View reveals
+   *  it). Gates the agent "View" action: disabled only when no tower exists. */
+  let towerOpen = true;
   /** Top-level tab: "projects" (the drill view) | "agents" (flat all-agents). */
   let tab = "projects";
   /** Drill position. level is derived from which fields are set. */
@@ -267,7 +268,7 @@
       <td class="num c-ctx"><span class="ctx" style="color:${ctxColor(pct)}">${pct === null ? "—" : pct + "%"}</span></td>
       <td class="num c-tasks">${tasks ? `<span class="tag">${tasks}</span>` : `<span class="git muted">—</span>`}</td>
       <td class="c-act"><div class="actions col">
-        <button class="usebtn" data-view="${esc(a.id)}"${towerVisible ? "" : " disabled"} title="${towerVisible
+        <button class="usebtn" data-view="${esc(a.id)}"${towerOpen ? "" : " disabled"} title="${towerOpen
           ? "View this agent in the tower (selects + focuses it)"
           : "Open the tower (DevTower: Open Tower) to view this agent there"}">View</button>
         ${a.external ? "" : `<button class="usebtn chat" data-chat="${esc(a.id)}" title="Open this agent's chat (its Claude session) without moving the tower">Chat</button>
@@ -524,7 +525,7 @@
       usedDir = m.usedDir || null;
       selectedId = m.selectedId || null;
       // absent (e.g. in the screenshot harness) → treat the tower as available
-      towerVisible = m.towerVisible !== false;
+      towerOpen = m.towerOpen !== false;
       reconcileNav();
       render();
     } else if (m.type === "prs") {

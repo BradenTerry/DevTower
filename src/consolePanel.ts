@@ -706,6 +706,9 @@ export class ConsolePanel implements MiniDelegate {
   selectAgent(id: string): void {
     this.store.setSelected(id);
     const sel = this.store.get(id);
+    // "View" jumps to the agent in the tower, so bring the tower to front — it may
+    // be hidden behind the mini tab (same editor group) when this fires.
+    this.showTower();
     // open the agent's chat: reveal its integrated terminal (the live Claude
     // session). External sessions live in their own terminal outside DevTower,
     // so there's nothing of ours to reveal.
@@ -1559,9 +1562,11 @@ export class ConsolePanel implements MiniDelegate {
       selectedDir: collapseHome(this.store.getSelectedDir()),
       rooms,
       boards: Object.fromEntries(this.boardsByPath),
-      // lets the mini disable its "View" action when the tower isn't on screen to
-      // jump to (View selects/zooms an agent in the scene)
-      towerVisible: !!this.panel?.visible,
+      // lets the mini disable its "View" action only when there is no tower to
+      // jump to (View selects/zooms an agent in the scene and reveals the tower).
+      // Gated on the panel EXISTING, not its visibility: a tower hidden behind the
+      // mini tab is still a valid jump target — View reveals it (see selectAgent).
+      towerOpen: !!this.panel,
     };
     this.lastState = payload;
     // only feed the tower webview while it's on screen (see postPrs); the mini
