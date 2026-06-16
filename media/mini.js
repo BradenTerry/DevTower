@@ -515,10 +515,21 @@
     if (nav.pr) { const b = boardFor(nav.pr); if (!b || !b.pr) nav.pr = null; }
   }
 
+  // The host re-posts the SAME state/prs payload on any view-state change —
+  // including the focus the webview gains from your very first click while it is
+  // still unfocused (it opens with preserveFocus). That re-post rebuilds the
+  // table via innerHTML, swapping out the <tr> your mousedown landed on, so the
+  // mouseup never completes a click and the first click appears to do nothing.
+  // Drop identical re-posts so a focus-only change never rebuilds the DOM mid-click.
+  let lastStateJson = null, lastPrsJson = null;
+
   window.addEventListener("message", (e) => {
     const m = e.data;
     if (!m) return;
     if (m.type === "state") {
+      const json = JSON.stringify(m);
+      if (json === lastStateJson) return; // no real change (e.g. focus) — keep the DOM stable
+      lastStateJson = json;
       agents = m.agents || [];
       rooms = m.rooms || [];
       boards = m.boards || {};
@@ -529,6 +540,9 @@
       reconcileNav();
       render();
     } else if (m.type === "prs") {
+      const json = JSON.stringify(m);
+      if (json === lastPrsJson) return; // identical re-post (focus change) — don't rebuild
+      lastPrsJson = json;
       prConnected = !!m.connected;
       // PR specifics live on each board; this just keeps the connected flag fresh
       render();
