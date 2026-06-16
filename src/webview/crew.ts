@@ -2743,16 +2743,26 @@ class PixelCrew {
         // (palette swap in drawToon) so they read as "not one of ours"
         const ghost = tn.agent.external;
         // a dev walking through the lift door (on foot, not riding) is clipped at
-        // the wall's near jamb so the wall hides it as it steps through — it
-        // disappears INTO the doorway instead of skating across the wall.
-        const thru =
+        // the wall's near jamb so the wall hides it as it steps through.
+        // DEPARTING devs (walking out to the cage) disappear INTO the doorway —
+        // clip at the near jamb so they don't skate across the exterior wall.
+        // ARRIVING devs step off the EXTERNAL cage onto the landing, so they're
+        // already in view out on the exterior; clip out to the shaft so they stay
+        // visible crossing the landing instead of blinking out between the cage
+        // and the door (the door overlay still occludes the actual crossing).
+        const departing =
           (tn.leaving && tn.leavePhase === "walk") ||
+          (!!tn.transfer && tn.transfer.phase === "out" && !tn.riding);
+        const arriving =
           (tn.entering && tn.enterPhase === "walk" && !tn.riding) ||
-          (!!tn.transfer && (tn.transfer.phase === "out" || tn.transfer.phase === "in") && !tn.riding);
+          (!!tn.transfer && tn.transfer.phase === "in" && !tn.riding);
+        const thru = departing || arriving;
         if (ghost || thru) ctx.save();
         if (ghost) ctx.globalAlpha *= 0.62;
         if (thru) {
-          const edge = doorGeom(tn.x0, tn.base).rightEdge;
+          const edge = arriving
+            ? shaftX(tn.x0) + SHAFT_W / 2 // out past the cage so the landing stays in view
+            : doorGeom(tn.x0, tn.base).rightEdge; // hide at the near jamb on the way out
           ctx.beginPath();
           ctx.rect(tn.x0 - ROOM_W, tn.base - ROOM_H - 60, edge - (tn.x0 - ROOM_W), ROOM_H + 80);
           ctx.clip();

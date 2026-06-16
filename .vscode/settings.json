@@ -1,4 +1,4 @@
 {
   "devtower.debugLog": true,
-  "git.autoRepositoryDetection": "openEditors"
+  "git.autoRepositoryDetection": false
 }
