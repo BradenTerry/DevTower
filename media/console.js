@@ -289,6 +289,9 @@
       : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + "k"
       : String(n);
   const modelLabel = (m) => (m || "—").replace(/^claude-/, "").replace(/-/g, " ");
+  // compact status labels for the leaderboard's narrow Status column ("Awaiting
+  // input" would overflow into Model); falls back to the shared STATE_LABEL.
+  const LB_STATE_LABEL = { active: "Active", waiting: "Awaiting", complete: "Complete", error: "Error", idle: "Idle" };
 
   // coalesce bursty state updates (git/PR/usage polls all repost state) into one
   // repaint per frame, and skip the repaint entirely when nothing visible moved -
@@ -322,7 +325,7 @@
         <div class="lb-sub">All crew ranked by context-window usage. Click an agent to zoom to them.</div>
         <div class="lb-head">
           <span class="lb-rank">#</span><span class="lb-dot"></span>
-          <span class="lb-id">Agent</span><span class="lb-model">Model</span>
+          <span class="lb-id">Agent</span><span class="lb-state">Status</span><span class="lb-model">Model</span>
           <span class="lb-bar">Context</span><span class="lb-pct"></span><span class="lb-tok">Tokens</span>
         </div>
         <div class="lb-list"></div>
@@ -338,7 +341,8 @@
     el.dataset.id = id;
     el.innerHTML =
       `<span class="lb-rank"></span><span class="lb-dot"></span>` +
-      `<span class="lb-id"><b></b><small></small></span><span class="lb-model"></span>` +
+      `<span class="lb-id"><b></b><small></small></span>` +
+      `<span class="lb-state"><i></i><em></em></span><span class="lb-model"></span>` +
       `<span class="lb-bar"><i></i></span><span class="lb-pct"></span><span class="lb-tok"></span>`;
     el.onclick = () => { selectAgent(id, true); closeLeaderboard(); }; // zoom + open panel
     return el;
@@ -361,6 +365,9 @@
     el.querySelector(".lb-dot").style.background = `hsl(${hueOf(a.id)} 45% 52%)`;
     el.querySelector(".lb-id b").textContent = a.name || "agent";
     el.querySelector(".lb-id small").textContent = a.repo || "";
+    const stateEl = el.querySelector(".lb-state");
+    stateEl.dataset.state = a.state || "idle";
+    stateEl.querySelector("em").textContent = LB_STATE_LABEL[a.state] || a.state || "—";
     el.querySelector(".lb-model").textContent = modelLabel(a.model);
     const bar = el.querySelector(".lb-bar");
     bar.className = "lb-bar" + (pct == null ? "" : pct >= 80 ? " hot" : pct >= 60 ? " warm" : "");
@@ -397,7 +404,7 @@
     // unrelated polls (git stats, PRs, usage) carrying identical token data;
     // repainting every row + remeasuring layout on those is what flashed.
     const sig = ranked
-      .map((a) => `${a.id}:${a.contextTokens ?? 0}:${a.model || ""}:${a.name || ""}:${a.repo || ""}:${a.id === selectedId ? 1 : 0}`)
+      .map((a) => `${a.id}:${a.contextTokens ?? 0}:${a.state || ""}:${a.model || ""}:${a.name || ""}:${a.repo || ""}:${a.id === selectedId ? 1 : 0}`)
       .join("|");
     if (sig === lbSig) return;
     lbSig = sig;
