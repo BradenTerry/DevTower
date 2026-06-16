@@ -405,15 +405,21 @@ export class ConsolePanel implements MiniDelegate {
         const on = !!m.on;
         await this.persistToggle("debugLog", on);
         // Turning OFF with a captured log present: offer to clear it (the logs
-        // stay viewable if the operator declines).
+        // stay viewable if the operator declines). Dismissing the modal (Cancel
+        // or Escape) aborts the whole disable — re-enable logging and bounce the
+        // toggle back on via the config echo, since the webview already flipped
+        // it off optimistically.
         if (!on && debugLogExists()) {
           const pick = await vscode.window.showWarningMessage(
             "Clear the DevTower debug log?",
-            { modal: true, detail: "Debug logging is now off. Clear the captured log, or keep it to review." },
+            { modal: true, detail: "Clear the captured log, keep it to review, or cancel to leave logging on." },
             "Clear log",
             "Keep"
           );
-          if (pick === "Clear log") {
+          if (pick === undefined) {
+            await this.persistToggle("debugLog", true);
+            this.postConfig();
+          } else if (pick === "Clear log") {
             clearDebugLog();
             this.postConfig();
           }
