@@ -18,17 +18,9 @@ import {
   stashSave,
   listBranches,
   checkout,
-  worktreeList,
   GitFile,
 } from "./git";
 import { openGitFileDiff } from "./diffProvider";
-
-/** The slice of the built-in Git extension's API (version 1) we use to read the
- *  set of currently-open repositories and reopen ones we previously closed. */
-interface GitExtensionApi {
-  readonly repositories: ReadonlyArray<{ readonly rootUri: vscode.Uri }>;
-  openRepository(root: vscode.Uri): Promise<unknown>;
-}
 
 /**
  * A native VS Code Source Control provider mirroring the active room/agent's
@@ -128,107 +120,33 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
     };
   };
 
-  // ── Worktree repo visibility ────────────────────────────────────────────
-  // VS Code's built-in Git auto-opens every agent worktree (under
-  // .claude/worktrees/) as its own repo, cluttering the Source Control panel.
-  // A title-bar toggle hides them two ways, because neither alone is enough:
-  //   1. Persist the paths in `git.ignoredRepositories` so FUTURE scans skip
-  //      them. The Git extension only consults this list inside openRepository
-  //      (when it first opens a repo); it never re-checks it to close a repo
-  //      already in the panel. So the setting alone leaves open repos visible.
-  //   2. Reconcile the currently-open repos live via the Git extension: close
-  //      managed worktrees with `git.close` when hiding, reopen them with the
-  //      Git API (which passes openIfClosed) when showing. `git.close` persists
-  //      a repo as closed, which is why showing must explicitly reopen it.
-  // Neither path reloads the window — only individual repos open/close.
-  const WT_MARK = `${path.sep}.claude${path.sep}worktrees${path.sep}`;
-  const isManagedRepo = (p: string): boolean => p.includes(WT_MARK);
-  const worktreesHidden = (): boolean =>
-    context.workspaceState.get<boolean>("devtower.worktreeReposHidden", false);
-
-  /** The built-in Git extension's API (version 1): lets us read which repos are
-   *  currently open and reopen ones we previously closed. `undefined` if the
-   *  extension is missing or fails to activate. */
-  const gitApi = async (): Promise<GitExtensionApi | undefined> => {
-    const ext = vscode.extensions.getExtension<{ getAPI(v: number): GitExtensionApi }>("vscode.git");
-    if (!ext) return undefined;
-    try {
-      if (!ext.isActive) await ext.activate();
-      return ext.exports.getAPI(1);
-    } catch {
-      return undefined;
-    }
-  };
-
-  /** Reconcile both the persisted ignore list AND the live panel with the
-   *  toggle: when hidden, ignore + close every agent worktree (minus any open
-   *  workspace folder); when shown, un-ignore + reopen them. Leaves the user's
-   *  own entries untouched; only writes the setting when it actually changes
-   *  (so it's safe to call from sync). */
-  const applyWorktreeVisibility = async (): Promise<void> => {
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    const repoDir = folders[0]?.uri.fsPath ?? curCwd;
-    const open = new Set(folders.map((f) => f.uri.fsPath));
-    const hidden = worktreesHidden();
-    // Every agent worktree except any that's itself an open workspace folder.
-    const managed = repoDir
-      ? (await worktreeList(repoDir).catch(() => []))
-          .map((w) => w.path)
-          .filter((p) => isManagedRepo(p) && !open.has(p))
-      : [];
-
-    // 1. Persisted ignore list — gates future scans/opens.
+  // ── Removed: "hide agent worktrees" toggle ─────────────────────────────
+  // DevTower used to hide agent worktrees (under .claude/worktrees/) from
+  // Source Control by persisting their paths in `git.ignoredRepositories`. The
+  // toggle is gone; this one-time cleanup undoes its lingering effect so those
+  // worktrees become visible again. It scrubs ONLY the entries DevTower wrote
+  // and clears the stale workspace flag, leaving the user's own ignore entries
+  // alone. Repos the old toggle closed reopen on the next Git rescan (a window
+  // reload or folder change). Early-returns on workspaces that never used it.
+  const cleanupRemovedWorktreeToggle = async (): Promise<void> => {
+    const HIDDEN_KEY = "devtower.worktreeReposHidden";
+    if (context.workspaceState.get<boolean>(HIDDEN_KEY) === undefined) return;
+    const mark = `${path.sep}.claude${path.sep}worktrees${path.sep}`;
     const cfg = vscode.workspace.getConfiguration("git");
-    // Workspace settings require a folder/workspace; in an empty window fall back
-    // to user settings so the toggle never throws "no workspace is opened".
-    const hasWs =
-      !!vscode.workspace.workspaceFile || (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
-    const target = hasWs
-      ? vscode.ConfigurationTarget.Workspace
-      : vscode.ConfigurationTarget.Global;
-    // read the value at the scope we'll write so we don't duplicate inherited entries
     const info = cfg.inspect<string[]>("ignoredRepositories");
-    const scoped = (hasWs ? info?.workspaceValue : info?.globalValue) ?? [];
-    const kept = scoped.filter((p) => !isManagedRepo(p)); // entries the user owns
-    const next = hidden ? [...kept, ...managed] : kept;
-    const same =
-      next.length === scoped.length &&
-      [...next].sort().join("\n") === [...scoped].sort().join("\n");
-    if (!same) {
+    const scrub = async (value: string[] | undefined, target: vscode.ConfigurationTarget): Promise<void> => {
+      if (!value?.length) return;
+      const kept = value.filter((p) => !p.includes(mark));
+      if (kept.length === value.length) return;
       try {
-        await cfg.update("ignoredRepositories", next, target);
-      } catch (e) {
-        vscode.window.showWarningMessage(
-          `DevTower: couldn't update worktree visibility — ${String(e).slice(0, 160)}`
-        );
-      }
-    }
-
-    // 2. Live panel — close/reopen repos that are already open. Runs every time
-    //    (not gated by `same`) so the panel catches up even when the setting was
-    //    already correct. Skips repos already in the target state to avoid
-    //    spurious quick-picks from `git.close`.
-    if (managed.length === 0) return;
-    const api = await gitApi();
-    if (!api) return;
-    const openRepos = new Set(api.repositories.map((r) => r.rootUri.fsPath));
-    for (const p of managed) {
-      try {
-        if (hidden && openRepos.has(p)) {
-          await vscode.commands.executeCommand("git.close", vscode.Uri.file(p));
-        } else if (!hidden && !openRepos.has(p)) {
-          await api.openRepository(vscode.Uri.file(p));
-        }
+        await cfg.update("ignoredRepositories", kept.length ? kept : undefined, target);
       } catch {
-        /* git busy or repo gone — the persisted ignore list still covers re-scans */
+        /* best effort — the user can clear git.ignoredRepositories by hand */
       }
-    }
-  };
-
-  const setWorktreesHidden = async (hidden: boolean): Promise<void> => {
-    await context.workspaceState.update("devtower.worktreeReposHidden", hidden);
-    await vscode.commands.executeCommand("setContext", "devtower.worktreeReposHidden", hidden);
-    await applyWorktreeVisibility();
+    };
+    await scrub(info?.workspaceValue, vscode.ConfigurationTarget.Workspace);
+    await scrub(info?.globalValue, vscode.ConfigurationTarget.Global);
+    await context.workspaceState.update(HIDDEN_KEY, undefined);
   };
 
   let syncing = false;
@@ -277,8 +195,6 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
           tooltip: `Switch branch (currently ${branch})`,
         },
       ];
-      // keep newly-created worktrees ignored while the toggle is on
-      if (worktreesHidden()) void applyWorktreeVisibility();
     } finally {
       syncing = false;
       if (queued) {
@@ -449,9 +365,6 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
       }
       void sync();
     }),
-    vscode.commands.registerCommand("devtower.scmHideWorktrees", () => setWorktreesHidden(true)),
-    vscode.commands.registerCommand("devtower.scmShowWorktrees", () => setWorktreesHidden(false)),
-
     vscode.commands.registerCommand("devtower.scmStash", async () => {
       if (!curCwd) return;
       // reuse the commit message box as the stash message (blank → default WIP)
@@ -490,9 +403,8 @@ export function registerScmView(context: vscode.ExtensionContext, store: DevTowe
     })
   );
 
-  // restore the persisted toggle state (drives the title-bar icon) and enforce it
-  void vscode.commands.executeCommand("setContext", "devtower.worktreeReposHidden", worktreesHidden());
-  void applyWorktreeVisibility();
+  // one-time: undo the removed worktree-hiding toggle's lingering ignore entries
+  void cleanupRemovedWorktreeToggle();
 
   // seed the branch placeholder + initial file list
   void sync();

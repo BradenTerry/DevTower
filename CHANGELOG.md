@@ -5,6 +5,15 @@ All notable changes to the DevTower extension are documented here. This project 
 DevTower is published on the VS Code Marketplace. Older releases are listed at
 [GitHub Releases](https://github.com/BradenTerry/DevTower/releases).
 
+## [Unreleased]
+
+### Removed
+
+- **Hide/show agent worktrees toggle.** The Source Control title-bar control that excluded agent
+  worktrees (under `.claude/worktrees/`) from the panel is gone. A one-time cleanup removes the
+  entries DevTower had added to `git.ignoredRepositories`, so previously hidden worktrees become
+  visible again on the next window reload.
+
 ## [1.4.0] - 2026-06-15
 
 ### Added
