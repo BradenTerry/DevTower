@@ -4052,6 +4052,32 @@ class PixelCrew {
       // keyboard in front of the dev, between them and the screen
       ctx.fillStyle = "#2a3138";
       ctx.fillRect(dx + 8.5, db - 11.2, 5.5, 1);
+      // both hands on the keys (drawn here, after the keyboard, so they sit on top
+      // of it — hands drawn with the dev would be hidden by the desk/monitor). Only
+      // while the dev is actively working at the desk, not reviewing or reading.
+      if (
+        tn && occupied && !tn.agent.reviewOf && (tn.booksInHand ?? 0) === 0 &&
+        (st === "active" || st === "waiting")
+      ) {
+        const tp = tn.p;
+        const press = tn.tapAt !== undefined && this.frame - tn.tapAt < 6;
+        const tap = this.frame % 2 === 0 ? 0 : 0.5;
+        const tapF = this.frame % 2 === 0 ? 0.5 : 0;
+        // short forearms angling in from the dev to the keys; far one darker so it
+        // reads behind the near one
+        ctx.fillStyle = tp.shirtDark;
+        ctx.fillRect(dx + 12.6, db - 13.3, 2.6, 1.3); // far forearm
+        ctx.fillStyle = tp.skin;
+        ctx.fillRect(dx + 12.4, db - 13.4 + tapF, 1.3, 1.3); // far hand on the keys
+        if (!press) {
+          // near arm + hand; skipped mid-press, when it darts to the done button
+          // (drawn in drawToon, left of the monitor)
+          ctx.fillStyle = tp.shirt;
+          ctx.fillRect(dx + 11.2, db - 12.6, 2.6, 1.3); // near forearm
+          ctx.fillStyle = tp.skin;
+          ctx.fillRect(dx + 10.8, db - 12.6 + tap, 1.4, 1.4); // near hand
+        }
+      }
       ctx.fillStyle = "#d9534f";
       ctx.fillRect(dx + 0.5, db - 13, 2, 2);
       if (occupied && this.frame % 8 < 4) {
@@ -4346,21 +4372,17 @@ class PixelCrew {
       ctx.fillRect(x - 4.2 + lean, ty - 5.4 + ease, 1.6, 1.6);
       ctx.fillRect(x + 2.6 + lean, ty - 5.4 - ease, 1.6, 1.6);
     } else if (sitting) {
-      // typing toward the keyboard/monitor on the left — but on a task completion
-      // the near hand darts further down-left to slap the desk's done button
+      // typing: both hands rest on the keyboard, but the keyboard + desk are
+      // painted AFTER the dev (so they'd hide hands drawn here) — the hands are
+      // drawn on top of the keys in drawDesks instead. On a task completion the
+      // near hand instead darts down-left to slap the desk's done button, which
+      // sits left of the monitor in the clear, so that gesture stays here.
       const press = tn.tapAt !== undefined && this.frame - tn.tapAt < 6;
       if (press) {
+        ctx.fillStyle = p.shirt;
         ctx.fillRect(x - 9.4, ty + 2.4, 4, 1.4); // forearm stretched to the button
         ctx.fillStyle = handC;
         ctx.fillRect(x - 10.5, ty + 2.9, 1.6, 1.6); // hand pressing down on it
-        ctx.fillStyle = p.shirt;
-        ctx.fillRect(x + 2.8, ty + 1.6, 1.4, 3.8); // far arm rests on the desk
-      } else {
-        const tap = f % 2 === 0 ? 0 : 0.8;
-        ctx.fillRect(x - 6, ty + 2.2, 3.4, 1.4);
-        ctx.fillStyle = handC;
-        ctx.fillRect(x - 7, ty + 2 + tap, 1.4, 1.4);
-        ctx.fillRect(x - 7, ty + 3.6 - tap, 1.4, 1.4);
       }
     } else if (st === "waiting" && !walking) {
       // asking a question: hand up and WAVING, other hand cupped to mouth
