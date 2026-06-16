@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo, canonicalDir } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers } from "./hooks";
 import { dlog, elog, recordExec } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -173,6 +173,7 @@ export class ClaudeDiscovery {
       resumeDir?: string;
       endedDir?: string;
       activeDir?: string;
+      editedDir?: string;
       persist?: LaunchPersist;
     } = {}
   ) {}
@@ -953,6 +954,7 @@ export class ClaudeDiscovery {
           subagents: f.subagents,
           exploring: f.exploring,
           tasks: f.tasks ?? null, // null = authoritatively no list now → clear stale count
+          lastEditTs: f.lastEditTs,
           external: cleared ? !!this.store.get(id)?.external : false,
           launchId,
           clearedSession: cleared,
@@ -979,6 +981,7 @@ export class ClaudeDiscovery {
           subagents: f.subagents,
           exploring: f.exploring,
           tasks: f.tasks ?? null, // null = authoritatively no list now → clear stale count
+          lastEditTs: f.lastEditTs,
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
           external: cleared ? !!this.store.get(id)?.external : !isAdopted,
@@ -1144,6 +1147,10 @@ export class ClaudeDiscovery {
     // first prompt, so without this a resumed dev keeps its stale mtime and reads
     // idle while you read/type. Folded into activity time below so it reads active.
     const active = await readActiveMarkers(this.deps.activeDir);
+    // hook-backed "this dev just edited": PostToolUse(edit) drops a marker naming
+    // the session that touched the working tree, so a git change beams from the
+    // dev that made it rather than the first dev in the room.
+    const edits = await readEditMarkers(this.deps.editedDir);
     // the Task tool's per-session store lives beside `projects/` under `tasks/`
     const tasksRoot = this.deps.tasksRoot ?? path.join(root, "..", "tasks");
 
@@ -1215,6 +1222,7 @@ export class ClaudeDiscovery {
           subagents: meta.subagents,
           exploring: meta.exploring,
           tasks,
+          lastEditTs: edits.get(sessionId)?.ts,
           prCreatedAt: meta.prCreatedAt,
           prClosedAt: meta.prClosedAt,
         });
@@ -1242,6 +1250,7 @@ interface Found {
   subagents?: number;
   exploring?: boolean; // an Explore subagent is currently in flight
   tasks?: { done: number; total: number };
+  lastEditTs?: number; // ms time this session last edited a file (PostToolUse hook), for beam attribution
   prCreatedAt?: number; // ms time of this session's most recent `gh pr create`
   prClosedAt?: number; // ms time of this session's most recent `gh pr merge`/`close`
 }

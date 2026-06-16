@@ -32,6 +32,11 @@ export const ENDED_DIR = path.join(os.homedir(), ".claude", "devtower", "ended")
 // old mtime and would read as idle. Discovery folds a fresh marker's ts into the
 // session's activity time so a resumed dev reads active until it writes for real.
 export const ACTIVE_DIR = path.join(os.homedir(), ".claude", "devtower", "active");
+// PostToolUse(edit) drops one of these per session that edits the working tree
+// (see media/devtower-edit.js): which session last modified a worktree, so the
+// cable beam can stream from the dev that actually made the change instead of the
+// first dev in the room.
+export const EDITED_DIR = path.join(os.homedir(), ".claude", "devtower", "edited");
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 const MARKER_MAX_AGE = 24 * 3_600_000; // prune markers for sessions long gone
 // a /clear's successor session surfaces within a poll or two; if it never does
@@ -50,11 +55,21 @@ const ENDED_MAX_AGE = 10 * 60_000;
 // reading the resumed context and composing the first prompt, short enough that a
 // resumed-then-abandoned session settles back to idle on its own.
 const ACTIVE_MAX_AGE = 3 * 60_000;
+// an edit marker is only interesting while it is fresh enough to attribute a
+// just-detected git change to it; after that the dev's own activity carries on.
+const EDITED_MAX_AGE = 60_000;
 
 export interface WaitMarker {
   message: string;
   cwd: string;
   ts: number;
+}
+
+/** A PostToolUse(edit) marker: which session last touched the working tree. */
+export interface EditMarker {
+  cwd: string;
+  ts: number;
+  tool?: string;
 }
 
 /** A /clear drops one of these keyed by the NEW session's uuid (see
@@ -85,6 +100,9 @@ interface HookSpec {
   label: string;
   /** what the hook does, shown under its name on the Hooks settings tab */
   description: string;
+  /** optional tool matcher (for PreToolUse/PostToolUse), so the hook only fires
+   *  for the tools it cares about instead of spawning node on every tool call */
+  matcher?: string;
 }
 
 const HOOKS: HookSpec[] = [
@@ -111,6 +129,23 @@ const HOOKS: HookSpec[] = [
     label: "Leave on /exit",
     description:
       "Sends a dev home the instant you /exit its session. Without it the exit is guessed from running-process counts, so with several sessions in one folder the wrong dev (or none) leaves.",
+  },
+  {
+    id: "prompt",
+    event: "UserPromptSubmit",
+    script: "devtower-prompt.js",
+    label: "Wake on prompt",
+    description:
+      "Lights a dev up active the instant you send it a prompt, instead of waiting for its first transcript line. Makes the run/idle counts react immediately.",
+  },
+  {
+    id: "edit",
+    event: "PostToolUse",
+    script: "devtower-edit.js",
+    matcher: "Write|Edit|MultiEdit|NotebookEdit",
+    label: "Beam from the right dev",
+    description:
+      "Streams the cable beam from the dev that actually edited a file. Git only sees that a worktree changed, not who changed it, so without this the beam fires from the first dev in the room when several share it.",
   },
 ];
 
@@ -264,6 +299,32 @@ export async function readActiveMarkers(dir = ACTIVE_DIR): Promise<Map<string, A
         continue;
       }
       out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts });
+    } catch {
+      /* partial write or garbage — ignore this poll */
+    }
+  }
+  return out;
+}
+
+/** Read the edit markers, keyed by session id, pruning stale ones. Used to
+ *  attribute a just-detected git change to the session that made it (the cable
+ *  beam's source dev). */
+export async function readEditMarkers(dir = EDITED_DIR): Promise<Map<string, EditMarker>> {
+  const out = new Map<string, EditMarker>();
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const now = Date.now();
+  for (const fn of files) {
+    if (!fn.endsWith(".json")) continue;
+    const id = fn.slice(0, -5);
+    const full = path.join(dir, fn);
+    try {
+      const raw = await fs.promises.readFile(full, "utf8");
+      const m = JSON.parse(raw) as EditMarker;
+      if (typeof m?.ts !== "number" || now - m.ts > EDITED_MAX_AGE) {
+        await fs.promises.unlink(full).catch(() => {});
+        continue;
+      }
+      out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts, tool: m.tool ? String(m.tool) : undefined });
     } catch {
       /* partial write or garbage — ignore this poll */
     }
@@ -490,7 +551,12 @@ function findHook(settings: Settings, spec: HookSpec): { command?: string } | un
 
 function addHook(settings: Settings, spec: HookSpec, command: string): void {
   settings.hooks ??= {};
-  (settings.hooks[spec.event] ??= []).push({ hooks: [{ type: "command", command }] });
+  // A PostToolUse/PreToolUse hook carries a tool matcher so it only fires for the
+  // tools it cares about (no node spawn on every Read/Bash); other events omit it.
+  const entry: HookEntry = spec.matcher
+    ? { matcher: spec.matcher, hooks: [{ type: "command", command }] }
+    : { hooks: [{ type: "command", command }] };
+  (settings.hooks[spec.event] ??= []).push(entry);
 }
 
 /** Strip DevTower's command (matched by script filename) from an event, dropping

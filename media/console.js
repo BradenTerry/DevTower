@@ -662,7 +662,7 @@
       ? list.map((h) => `
         <div class="s-row">
           <div class="s-row-t">
-            <div class="s-row-name">${esc(h.label)}</div>
+            <div class="s-row-name">${esc(h.label)}${h.event ? ` <span class="s-hook-evt" title="Claude Code ${esc(h.event)} hook">${esc(h.event)}</span>` : ""}</div>
             <div class="s-row-sub">${esc(h.description)}</div>
           </div>
           <button class="s-toggle ${h.installed ? "on" : ""}" data-hook="${esc(h.id)}" role="switch" aria-checked="${h.installed}"><span class="knob"></span></button>

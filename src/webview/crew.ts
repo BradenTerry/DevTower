@@ -26,6 +26,7 @@ interface CrewAgent {
   subagents?: number; // in-flight sub-agents (Task/Agent tool calls not yet returned)
   exploring?: boolean; // an Explore subagent is searching; sends the dev to the shelf with a magnifier
   tasks?: { done: number; total: number }; // Task-tool checklist progress (2+ tasks); drives the desk TV
+  lastEditTs?: number; // ms time this dev last edited a file (PostToolUse hook) — the cable beam's source
   contextTokens?: number; // tokens occupying the session's context window (for the token board)
   external?: boolean; // a live session running OUTSIDE DevTower (not one we launched)
   session?: string; // the claude session uuid this dev is currently tied to (debug tie-label)
@@ -274,10 +275,14 @@ type Gfx = {
   cameraFps: number; // repaint cap during a camera glide (pan / zoom / focus)
 };
 const QUALITY: Record<string, Gfx> = {
+  // The cable beams (packets) are a signature feature and cheap (transient, a few
+  // at a time), so they stay ON at every preset; only the glow halo (overdraw) is
+  // dropped at Potato. Particles (celebration confetti) are the heavier effect and
+  // are what Low/Potato cut.
   high:     { dprCap: 2, flatGround: false, bgDetail: true,  particles: true,  packets: true,  glow: true,  animFps: 15, cameraFps: 60 },
   balanced: { dprCap: 2, flatGround: false, bgDetail: true,  particles: true,  packets: true,  glow: true,  animFps: 10, cameraFps: 60 },
-  low:      { dprCap: 1, flatGround: false, bgDetail: true,  particles: false, packets: true,  glow: false, animFps: 8,  cameraFps: 30 },
-  potato:   { dprCap: 1, flatGround: true,  bgDetail: false, particles: false, packets: false, glow: false, animFps: 6,  cameraFps: 24 },
+  low:      { dprCap: 1, flatGround: false, bgDetail: true,  particles: false, packets: true,  glow: true,  animFps: 8,  cameraFps: 30 },
+  potato:   { dprCap: 1, flatGround: true,  bgDetail: false, particles: false, packets: true,  glow: false, animFps: 6,  cameraFps: 24 },
 };
 /** Legacy performanceMode (smooth/balanced/eco) → graphics-quality preset. */
 const PERF_TO_QUALITY: Record<string, string> = { smooth: "high", balanced: "balanced", eco: "low" };
@@ -1260,7 +1265,12 @@ class PixelCrew {
    *  Falls back to a room-centre → port route when no dev/seat is known. */
   private emitPacket(r: Room, delay = 0, snap?: BoardData) {
     const plug = this.cablePlug(r);
-    const occ = r.agents.find((a) => this.toons.get(a.id)?.sitting) ?? r.agents[0];
+    // Prefer the dev that most recently edited a file (PostToolUse hook) so the
+    // beam streams from the actual author when several devs share the room; fall
+    // back to the first sitting dev (or any agent) when no edit is attributed.
+    const sitting = r.agents.filter((a) => this.toons.get(a.id)?.sitting);
+    let occ: CrewAgent | undefined = sitting[0] ?? r.agents[0];
+    for (const a of sitting) if ((a.lastEditTs ?? 0) > (occ?.lastEditTs ?? 0)) occ = a;
     const seat = occ ? r.plan?.seats.get(occ.id) : undefined;
     // the ball rides the cable and STOPS at the wall port below the screen
     const path = seat

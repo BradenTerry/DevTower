@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker } from "../src/hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readEditMarkers } from "../src/hooks";
 
 /**
  * The Notification hook drops one marker per parked session; readWaitingMarkers
@@ -92,6 +92,49 @@ describe("succession markers", () => {
 
   it("missing dir reads as empty", async () => {
     const markers = await readSuccessionMarkers(path.join(dir, "nope"));
+    expect(markers.size).toBe(0);
+  });
+});
+
+/**
+ * The PostToolUse(edit) hook drops a marker per session that touches the working
+ * tree, so a git change beams from the dev that made it. readEditMarkers is what
+ * discovery folds into each agent's lastEditTs. Covers the happy read (incl. the
+ * tool name), pruning of a stale marker (the change was attributed long ago), and
+ * the missing-dir case.
+ */
+describe("edit markers", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-edit-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (id: string, m: object) => fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(m));
+
+  it("reads a fresh marker keyed by session id, with the tool", async () => {
+    write("sess-1", { cwd: "/repo", ts: Date.now(), tool: "Edit" });
+    const markers = await readEditMarkers(dir);
+    expect(markers.get("sess-1")).toMatchObject({ cwd: "/repo", tool: "Edit" });
+  });
+
+  it("prunes and deletes a marker older than the max age", async () => {
+    write("stale", { cwd: "/repo", ts: Date.now() - 5 * 60_000 }); // > 60s window
+    const markers = await readEditMarkers(dir);
+    expect(markers.has("stale")).toBe(false);
+    expect(fs.existsSync(path.join(dir, "stale.json"))).toBe(false); // swept off disk
+  });
+
+  it("ignores a half-written / garbage marker without throwing", async () => {
+    fs.writeFileSync(path.join(dir, "partial.json"), "{nope");
+    const markers = await readEditMarkers(dir);
+    expect(markers.size).toBe(0);
+  });
+
+  it("missing dir reads as empty", async () => {
+    const markers = await readEditMarkers(path.join(dir, "nope"));
     expect(markers.size).toBe(0);
   });
 });
