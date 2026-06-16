@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 import { DevTowerStore } from "./store";
 import { isRepo, resolveCwd } from "./git";
 import { getGithubToken } from "./github";
+import { recordExec } from "./debugLog";
 
 export interface PrInfo {
   id: string; // "<repo>#<number>"
@@ -43,11 +44,15 @@ export interface PrInfo {
 function runGh(cwd: string | undefined, args: string[], token: string): Promise<string | null> {
   const env: NodeJS.ProcessEnv = { ...process.env, GH_TOKEN: token, GH_PROMPT_DISABLED: "1" };
   return new Promise((resolve) => {
+    const t0 = Date.now();
     execFile(
       "gh",
       args,
       { cwd, timeout: 20000, maxBuffer: 8 * 1024 * 1024, env },
-      (err, stdout) => resolve(err ? null : stdout)
+      (err, stdout) => {
+        recordExec("gh", args, cwd, Date.now() - t0, !err);
+        resolve(err ? null : stdout);
+      }
     );
   });
 }
@@ -62,10 +67,14 @@ function ghApiInclude(cwd: string, apiPath: string, token: string, etag?: string
   const args = ["api", apiPath, "--include"];
   if (etag) args.push("-H", `If-None-Match: ${etag}`);
   return new Promise((resolve) => {
+    const t0 = Date.now();
     execFile("gh", args, { cwd, timeout: 20000, maxBuffer: 8 * 1024 * 1024, env },
       // gh exits 0 for 200/304; on a 4xx/5xx err is set but stdout still holds the
       // response. Treat "no output at all" as a transport failure.
-      (err, stdout) => resolve(err && !stdout ? null : (stdout || "")));
+      (err, stdout) => {
+        recordExec("gh", args, cwd, Date.now() - t0, !err);
+        resolve(err && !stdout ? null : (stdout || ""));
+      });
   });
 }
 

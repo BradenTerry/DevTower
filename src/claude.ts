@@ -6,13 +6,16 @@ import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo, canonicalDir } from "./git";
 import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers } from "./hooks";
-import { dlog, elog } from "./debugLog";
+import { dlog, elog, recordExec } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
+  const kind = cmd.replace(/\.exe$/i, "").replace(/.*[\\/]/, ""); // ps / lsof / powershell
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) =>
-      err ? reject(err) : resolve(stdout)
-    );
+    const t0 = Date.now();
+    execFile(cmd, args, { timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      recordExec(kind, args, undefined, Date.now() - t0, !err);
+      err ? reject(err) : resolve(stdout);
+    });
   });
 }
 

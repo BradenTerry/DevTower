@@ -75,6 +75,10 @@
         "title": "DevTower: Open Error Log"
       },
       {
+        "command": "devtower.showExternalCalls",
+        "title": "DevTower: Show External Call Stats"
+      },
+      {
         "command": "devtower.refreshDirectory",
         "title": "DevTower: Refresh Selected Directory",
         "icon": "$(refresh)"

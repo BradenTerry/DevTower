@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { DevTowerStore } from "./store";
 import { resolveCwd } from "./git";
-import { dlog } from "./debugLog";
+import { dlog, recordExec } from "./debugLog";
 
 /**
  * Binds one NATIVE integrated terminal per agent, rooted in the agent's real
@@ -83,12 +83,14 @@ export class TerminalManager {
           .replace(/\$\{worktree\}/g, cwd ?? ".")
           .replace(/\$\{branch\}/g, agent.branch)
           .replace(/\$\{id\}/g, agent.id);
+        recordExec("launch", [resolved], cwd, 0, true); // a "starting command" the user can see
         term.sendText(resolved, true);
       } else if (agent.transcriptPath) {
         // discovered Claude session → attach the REAL conversation here, so
         // this terminal IS the agent's chat
         const claudeCmd = cfg.get<string>("claudeCommand", "claude").trim() || "claude";
         const sessionId = path.basename(agent.transcriptPath, ".jsonl");
+        recordExec("launch", [`${claudeCmd} --resume ${sessionId}`], cwd, 0, true);
         term.sendText(`${claudeCmd} --resume ${sessionId}`, true);
       }
     }

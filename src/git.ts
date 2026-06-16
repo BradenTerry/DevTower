@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as vscode from "vscode";
 import { Agent } from "./store";
+import { recordExec } from "./debugLog";
 
 export interface GitFile {
   /** repo-relative path */
@@ -104,7 +105,9 @@ export function runGit(cwd: string, args: string[]): Promise<string> {
     // turns into a subprocess storm (and a frozen webview) once a second
     // instance, e.g. the debug Extension Dev Host, watches the same repo too.
     const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+    const t0 = Date.now();
     execFile("git", args, { cwd, env, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+      recordExec("git", args, cwd, Date.now() - t0, !err);
       // git puts the useful reason ("fatal: ...") on stderr; surface that
       if (err) reject(new Error((String(stderr).trim() || err.message).trim()));
       else resolve(stdout);
