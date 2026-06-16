@@ -256,6 +256,32 @@ interface Packet { x: number; y: number; sx: number; sy: number; tx: number; ty:
 
 // A "room" is now one BUILDING = one worktree/checkout. Buildings of the same
 // repo share an island; the map key is the building key (worktree path).
+/** A world-space rectangle (the visible viewport, for culling). */
+type VisRect = { x0: number; x1: number; y0: number; y1: number };
+
+/** A graphics-quality preset: the concrete render switches behind High / Balanced
+ *  / Low / Potato. High and Balanced render the classic scene (identical pixels;
+ *  only the animation frame rate differs). Low and Potato trade visual detail for
+ *  speed on weak GPUs — fewer pixels (dprCap), flat fills, and dropped effects. */
+type Gfx = {
+  dprCap: number; // cap on devicePixelRatio → render resolution (1 = no supersampling)
+  flatGround: boolean; // flat sky/earth fills instead of vertical gradients
+  bgDetail: boolean; // stars + pebble grit in the ground
+  particles: boolean; // celebration / shred confetti particles
+  packets: boolean; // glowing packets that travel the network cables
+  glow: boolean; // soft halos around packets (the expensive overdraw)
+  animFps: number; // animation tick rate while something moves
+  cameraFps: number; // repaint cap during a camera glide (pan / zoom / focus)
+};
+const QUALITY: Record<string, Gfx> = {
+  high:     { dprCap: 2, flatGround: false, bgDetail: true,  particles: true,  packets: true,  glow: true,  animFps: 15, cameraFps: 60 },
+  balanced: { dprCap: 2, flatGround: false, bgDetail: true,  particles: true,  packets: true,  glow: true,  animFps: 10, cameraFps: 60 },
+  low:      { dprCap: 1, flatGround: false, bgDetail: true,  particles: false, packets: true,  glow: false, animFps: 8,  cameraFps: 30 },
+  potato:   { dprCap: 1, flatGround: true,  bgDetail: false, particles: false, packets: false, glow: false, animFps: 6,  cameraFps: 24 },
+};
+/** Legacy performanceMode (smooth/balanced/eco) → graphics-quality preset. */
+const PERF_TO_QUALITY: Record<string, string> = { smooth: "high", balanced: "balanced", eco: "low" };
+
 interface Room {
   name: string; // unique building key (worktree path, or island name if none)
   island: string; // island this building belongs to (the repo/directory name)
@@ -585,6 +611,28 @@ class PixelCrew {
   private eco = false; // reduced-particle mode (perf "eco")
   private ebook = false; // book preference: true = read skills on the phone at the desk, no shelf trip
   private tickMs = 100; // animation tick interval; set by perf mode (100=10fps)
+  private cameraFps = 60; // max repaint rate while only the camera is moving (a pan/zoom/focus
+  // tween). Ticks and explicit invalidations always repaint; this only throttles the extra
+  // monitor-Hz repaints a camera glide would otherwise force. Lowered by the low/potato presets.
+  private lastPaintAt = 0; // rAF timestamp of the last painted frame (for the camera-fps cap)
+  private qualityName = "balanced"; // active graphics-quality preset (for the perf HUD / samples)
+  private gfx: Gfx = QUALITY.balanced; // the concrete render switches for the active preset
+
+  // ---- perf diagnostics: an in-scene HUD + periodic scene.perf dlog samples so
+  // a slow session can be measured on the user's own machine without a profiler.
+  // All cheap and gated: the HUD only draws when toggled on, the samples only
+  // emit when devtower.debugLog is on (dbg is a no-op otherwise). ----
+  private perfHud = false;
+  private drawBuf: number[] = []; // recent draw() self-times (ms)
+  private gapBuf: number[] = []; // recent intervals between draws (ms) → render FPS
+  private lastDrawAt = 0; // performance.now() of the previous painted frame
+  private lastDrawMs = 0; // most recent draw() self-time
+  private lastPerfEmit = 0; // performance.now() of the last scene.perf dlog sample
+  private roomsTotal = 0; // rooms considered last frame
+  private roomsDrawn = 0; // rooms actually painted last frame (after culling)
+  private toonsDrawn = 0; // toons painted last frame
+  private visRooms = new Set<string>(); // room keys on screen this frame (reused; cleared per draw)
+  private cullOn = true; // viewport culling; off => visibleWorld returns an infinite rect (A/B + diagnostics)
   // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
   // viewport so rooms frame into the visible area and stay clickable.
   // insetL/insetR are the TARGETs; curInsetL/curInsetR are the animated values
@@ -1677,14 +1725,133 @@ class PixelCrew {
   /** Apply a performance mode: sets the animation tick rate and whether the
    *  cheap particle effects are suppressed. "smooth" 15fps, "balanced" 10fps
    *  (full effects), "eco" 6fps (reduced particles). */
-  setPerf(mode: string) {
-    this.tickMs = mode === "smooth" ? 66 : mode === "eco" ? 166 : 100;
-    this.eco = mode === "eco";
+  /** Effective device-pixel-ratio: the display's, capped by the quality preset
+   *  (Low/Potato force 1 → a quarter of the pixels of a 2x display). */
+  private dpr(): number {
+    return Math.min(window.devicePixelRatio, this.gfx.dprCap);
+  }
+
+  /** Apply a graphics-quality preset (high / balanced / low / potato): sets the
+   *  render switches, animation/camera frame rates, and render resolution. High
+   *  and Balanced are visually identical to the classic scene. */
+  setQuality(preset: string) {
+    const q = QUALITY[preset];
+    this.qualityName = q ? preset : "balanced";
+    this.gfx = q ?? QUALITY.balanced;
+    this.tickMs = 1000 / this.gfx.animFps;
+    this.cameraFps = this.gfx.cameraFps;
+    this.eco = !this.gfx.particles; // back-compat: tick code reads `eco` to thin particles
+    this.resize(); // dprCap may change the backing-store resolution
     this.invalidate();
+  }
+
+  /** Back-compat: the old performance-mode ids (smooth/balanced/eco) map onto the
+   *  quality presets. */
+  setPerf(mode: string) {
+    this.setQuality(PERF_TO_QUALITY[mode] ?? "balanced");
   }
   /** Back-compat for the old boolean toggle. */
   setEco(on: boolean) {
-    this.setPerf(on ? "eco" : "balanced");
+    this.setQuality(on ? "low" : "balanced");
+  }
+
+  /* ============ PERF DIAGNOSTICS ============ */
+
+  /** Toggle the in-scene performance overlay (FPS / frame cost / draw counts). */
+  setPerfHud(on: boolean) {
+    this.perfHud = on;
+    this.invalidate();
+  }
+
+  /** Toggle viewport culling. Used by the benchmark/correctness harness to A/B the
+   *  same scene with culling on vs off; off must be pixel-identical for what's on
+   *  screen (it just also paints the off-screen rest). */
+  setCull(on: boolean) {
+    this.cullOn = on;
+    this.invalidate();
+  }
+
+  /** Record one painted frame: the gap since the last paint (→ render FPS) and
+   *  this paint's self-time, then emit a throttled scene.perf sample to the
+   *  debug log so a slow session is diagnosable from debug.log alone. */
+  private recordDraw(t0: number, t1: number) {
+    const ms = t1 - t0;
+    this.lastDrawMs = ms;
+    this.drawBuf.push(ms);
+    if (this.drawBuf.length > 180) this.drawBuf.shift();
+    if (this.lastDrawAt) {
+      this.gapBuf.push(t1 - this.lastDrawAt);
+      if (this.gapBuf.length > 180) this.gapBuf.shift();
+    }
+    this.lastDrawAt = t1;
+    if (this.debugOn && t1 - this.lastPerfEmit > 2000) {
+      this.lastPerfEmit = t1;
+      this.dbg("perf.sample", this.perfSample());
+    }
+  }
+
+  /** p-th percentile of a numeric buffer (0 when empty). */
+  private pct(buf: number[], p: number): number {
+    if (!buf.length) return 0;
+    const a = [...buf].sort((x, y) => x - y);
+    return a[Math.min(a.length - 1, Math.floor((p / 100) * a.length))];
+  }
+
+  /** Render FPS from the median gap between recent paints. */
+  private renderFps(): number {
+    const g = this.pct(this.gapBuf, 50);
+    return g > 0 ? Math.min(240, 1000 / g) : 0;
+  }
+
+  /** A snapshot of current render cost — shown in the HUD, logged as scene.perf,
+   *  and read back by the benchmark harness via the DevTowerCrew facade. */
+  perfSample() {
+    return {
+      fps: Math.round(this.renderFps()),
+      drawP50: +this.pct(this.drawBuf, 50).toFixed(2),
+      drawP95: +this.pct(this.drawBuf, 95).toFixed(2),
+      lastMs: +this.lastDrawMs.toFixed(2),
+      roomsDrawn: this.roomsDrawn,
+      roomsTotal: this.roomsTotal,
+      toons: this.toonsDrawn,
+      particles: this.particles.length,
+      packets: this.packets.length,
+      quality: this.qualityName,
+      tickFps: Math.round(1000 / this.tickMs),
+      dpr: this.dpr(),
+    };
+  }
+
+  /** Draw the perf overlay in screen space, anchored bottom-left (clear of the
+   *  telemetry header and the usage meters). Called after draw() so its own cost
+   *  is excluded from the measured draw() self-time. */
+  private drawPerfHud() {
+    const ctx = this.ctx;
+    const dpr = this.dpr();
+    const ch = this.container.clientHeight;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    const s = this.perfSample();
+    const lines = [
+      `FPS ${s.fps}   draw ${s.drawP50.toFixed(1)} / ${s.drawP95.toFixed(1)} ms`,
+      `rooms ${s.roomsDrawn}/${s.roomsTotal}   toons ${s.toons}`,
+      `parts ${s.particles}   pkts ${s.packets}   dpr ${s.dpr}`,
+      `gfx ${s.quality}   anim ${s.tickFps}fps`,
+    ];
+    ctx.font = "10px 'IBM Plex Mono', monospace";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    const w = 188, h = lines.length * 13 + 9;
+    const x = 8, y = Math.max(8, ch - h - 8);
+    ctx.fillStyle = "rgba(8,12,18,0.82)";
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = "rgba(94,145,73,0.5)";
+    ctx.fillRect(x, y, w, 1); // top accent line
+    const fpsColor = s.fps >= 50 ? "#7CFC9A" : s.fps >= 30 ? "#ffd479" : "#ff6b6b";
+    lines.forEach((ln, i) => {
+      ctx.fillStyle = i === 0 ? fpsColor : "#cdd6e0";
+      ctx.fillText(ln, x + 6, y + 14 + i * 13);
+    });
   }
   /** Book preference: "ebook" makes devs read skills on their phone at the desk
    *  (no shelf trip), with a tiny e-reader counter on the desk; "physical" (the
@@ -1702,7 +1869,7 @@ class PixelCrew {
     // the min zoom — that's what made the camera jump to the overview and then
     // re-animate in when you came back.
     if (!w || !h) return;
-    const dpr = Math.min(window.devicePixelRatio, 2);
+    const dpr = this.dpr();
     this.canvas.width = Math.round(w * dpr);
     this.canvas.height = Math.round(h * dpr);
     this.canvas.style.width = w + "px";
@@ -1841,9 +2008,21 @@ class PixelCrew {
       } else {
         this.camTweening = false; // arrived → next target move (resize) will snap
       }
-      if (ticked || moving || this.dirty) {
+      // A tick or an explicit invalidation always repaints. A frame that is ONLY
+      // a camera glide is throttled to cameraFps, so a pan/zoom on weak hardware
+      // costs a handful of full-scene redraws, not one per monitor refresh. The
+      // tween still advances every frame (above), so motion stays smooth-looking.
+      let paint = ticked || this.dirty;
+      if (!paint && moving) {
+        paint = now - this.lastPaintAt >= 1000 / this.cameraFps - 1; // -1ms rAF jitter tolerance
+      }
+      if (paint) {
         this.dirty = false;
+        this.lastPaintAt = now;
+        const t0 = performance.now();
         this.draw();
+        this.recordDraw(t0, performance.now());
+        if (this.perfHud) this.drawPerfHud();
       }
       if (!moving && !this.dirty && this.sceneIdle()) {
         // nothing left to animate — park the loop until woken
@@ -2460,6 +2639,37 @@ class PixelCrew {
     };
   }
 
+  /** The world-space rect currently on the canvas, plus a margin so sprites and
+   *  decoration straddling the edge don't pop. Inverse of screenOf at the canvas
+   *  corners. Culling against this makes render cost scale with what's visible,
+   *  not with total campus size — the single biggest win on weak hardware, where
+   *  the bottleneck is the NUMBER of canvas ops, not pixel fill. */
+  private visibleWorld(): VisRect {
+    if (!this.cullOn) return { x0: -1e9, x1: 1e9, y0: -1e9, y1: 1e9 }; // cull off → keep everything
+    const cw = this.container.clientWidth, ch = this.container.clientHeight;
+    const cx = this.curInsetL + (cw - this.curInsetL - this.curInsetR) / 2;
+    const z = this.cam.z || 1;
+    const m = 56; // world-unit slack around the viewport
+    return {
+      x0: this.cam.x + (0 - cx) / z - m,
+      x1: this.cam.x + (cw - cx) / z + m,
+      y0: this.cam.y - ch / 2 / z - m,
+      y1: this.cam.y + ch / 2 / z + m,
+    };
+  }
+
+  /** Box-vs-visible-rect intersection test (all world coords). */
+  private onScreen(bx0: number, bx1: number, by0: number, by1: number, vw: VisRect): boolean {
+    return bx1 >= vw.x0 && bx0 <= vw.x1 && by1 >= vw.y0 && by0 <= vw.y1;
+  }
+
+  /** A room's generous world bounding box: left wall to the external shaft, roof
+   *  slab down to the floor/plinth + cable run. Seated crew sit inside it; devs
+   *  that have walked out to the elevator are culled by their own position. */
+  private roomBox(r: Room): [number, number, number, number] {
+    return [r.x0 - 16, r.x0 + ROOM_W + SHAFT_GAP + SHAFT_W + 8, r.baseY - ROOM_H - 18, r.baseY + SLAB + 48];
+  }
+
   setInsets(left: number, right: number) {
     if (this.insetL === left && this.insetR === right) return;
     this.insetL = left;
@@ -2594,22 +2804,34 @@ class PixelCrew {
 
   private draw() {
     this.marqueeOn = false; // set true by drawBoard while a PR title is scrolling
+    // perf counters: roomsTotal is the campus size; roomsDrawn/toonsDrawn are
+    // filled by the culling pass below so the HUD shows how much was skipped.
+    this.roomsTotal = this.rooms.size;
+    this.roomsDrawn = 0;
+    this.toonsDrawn = 0;
     const ctx = this.ctx;
-    const dpr = Math.min(window.devicePixelRatio, 2);
+    const dpr = this.dpr();
     const cw = this.container.clientWidth, ch = this.container.clientHeight;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
 
-    // sky gradient backdrop + stars
-    const grad = ctx.createLinearGradient(0, 0, 0, ch);
-    grad.addColorStop(0, "#0a0e14");
-    grad.addColorStop(1, "#141b23");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, cw, ch);
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
-    for (let i = 0; i < 24; i++) {
-      const hsh = hash("star" + i);
-      ctx.fillRect(hsh % cw, (hsh >> 8) % Math.max(1, Math.round(ch * 0.45)), 1.5, 1.5);
+    // sky backdrop + stars
+    if (this.gfx.flatGround) {
+      ctx.fillStyle = "#10161e"; // flat sky — cheaper than a full-canvas gradient fill
+      ctx.fillRect(0, 0, cw, ch);
+    } else {
+      const grad = ctx.createLinearGradient(0, 0, 0, ch);
+      grad.addColorStop(0, "#0a0e14");
+      grad.addColorStop(1, "#141b23");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, cw, ch);
+    }
+    if (this.gfx.bgDetail) {
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      for (let i = 0; i < 24; i++) {
+        const hsh = hash("star" + i);
+        ctx.fillRect(hsh % cw, (hsh >> 8) % Math.max(1, Math.round(ch * 0.45)), 1.5, 1.5);
+      }
     }
 
     const z = this.cam.z;
@@ -2621,6 +2843,18 @@ class PixelCrew {
     const surfaceY = floorBase(0) + SLAB; // ground level under floor 0
     const { minX, maxX, botY, minFloor } = this.bounds;
 
+    // --- viewport culling pre-pass: which rooms are on screen this frame ---
+    // Every per-room layer below (back wall, cables, desks, door, board text) and
+    // the crew/elevator loops test against this so zooming into one building stops
+    // paying to render the rest of the campus.
+    const vw = this.visibleWorld();
+    this.visRooms.clear();
+    for (const r of this.rooms.values()) {
+      const [bx0, bx1, by0, by1] = this.roomBox(r);
+      if (this.onScreen(bx0, bx1, by0, by1, vw)) this.visRooms.add(r.name);
+    }
+    this.roomsDrawn = this.visRooms.size;
+
     // the whole campus sits on a 3D earth slab: a grass top surface that tilts
     // toward the viewer (same apron depth as the island pedestals, so they read
     // as one world) over a shaded dirt front face.
@@ -2630,24 +2864,34 @@ class PixelCrew {
       const grassFront = surfaceY + apron;
       const dirtBot = botY + 50;
       // dirt front face (vertical gradient — lit near the grass, dark deep down)
-      const dg = ctx.createLinearGradient(0, grassFront, 0, dirtBot);
-      dg.addColorStop(0, "#3a2c1d");
-      dg.addColorStop(1, "#140d08");
-      ctx.fillStyle = dg;
+      if (this.gfx.flatGround) {
+        ctx.fillStyle = "#241a10";
+      } else {
+        const dg = ctx.createLinearGradient(0, grassFront, 0, dirtBot);
+        dg.addColorStop(0, "#3a2c1d");
+        dg.addColorStop(1, "#140d08");
+        ctx.fillStyle = dg;
+      }
       ctx.fillRect(gx, grassFront, gw, dirtBot - grassFront);
       // pebbles/grit in the dirt
-      ctx.fillStyle = "#4a3a26";
-      const span = Math.max(1, Math.round(gw));
-      const depth = Math.max(1, Math.round(dirtBot - grassFront - 4));
-      for (let i = 0; i < 110; i++) {
-        const hsh = hash("rock" + i);
-        ctx.fillRect(gx + (hsh % span), grassFront + 3 + ((hsh >> 7) % depth), 2, 1.4);
+      if (this.gfx.bgDetail) {
+        ctx.fillStyle = "#4a3a26";
+        const span = Math.max(1, Math.round(gw));
+        const depth = Math.max(1, Math.round(dirtBot - grassFront - 4));
+        for (let i = 0; i < 110; i++) {
+          const hsh = hash("rock" + i);
+          ctx.fillRect(gx + (hsh % span), grassFront + 3 + ((hsh >> 7) % depth), 2, 1.4);
+        }
       }
       // grass top surface (apron) — darker at the back, lit toward the viewer
-      const gg = ctx.createLinearGradient(0, surfaceY, 0, grassFront);
-      gg.addColorStop(0, "#2f5328");
-      gg.addColorStop(1, "#4f7d3f");
-      ctx.fillStyle = gg;
+      if (this.gfx.flatGround) {
+        ctx.fillStyle = "#3f6633";
+      } else {
+        const gg = ctx.createLinearGradient(0, surfaceY, 0, grassFront);
+        gg.addColorStop(0, "#2f5328");
+        gg.addColorStop(1, "#4f7d3f");
+        ctx.fillStyle = gg;
+      }
       ctx.fillRect(gx, surfaceY, gw, apron);
       // bright lip along the grass front edge + a contact shadow under it
       ctx.fillStyle = "#5e9149";
@@ -2659,23 +2903,35 @@ class PixelCrew {
     // ragged skyline: a roof slab caps each column
     for (const [col, rng] of this.colRange) {
       const x0 = cellX0(col);
+      if (x0 + ROOM_W < vw.x0 || x0 > vw.x1) continue; // off-screen column
       const roofY = floorBase(rng.max) - ROOM_H;
       ctx.fillStyle = "#2c353e";
       ctx.fillRect(x0 - 1.5, roofY - 3, ROOM_W + 3, 3.4);
     }
 
-    // island platforms (the foundation the buildings stand on)
-    for (const isl of this.islands.values()) this.drawIslandPlatform(ctx, isl);
+    // island platforms (the foundation the buildings stand on). A platform draws
+    // a pedestal that overhangs its lane and a name sign, so give the cull box a
+    // full column of slack each side (and generous vertical reach) — platforms are
+    // cheap and few, so erring toward drawing one is the safe trade.
+    for (const isl of this.islands.values()) {
+      const ix0 = cellX0(isl.laneStart) - COL_STEP;
+      const ix1 = cellX0(isl.laneStart + Math.max(1, isl.cols) - 1) + ROOM_W + COL_STEP;
+      if (!this.onScreen(ix0, ix1, surfaceY - 80, botY + 120, vw)) continue;
+      this.drawIslandPlatform(ctx, isl);
+    }
 
     // rooms back layer
-    for (const r of this.rooms.values()) this.drawRoomBack(ctx, r);
+    for (const r of this.rooms.values()) if (this.visRooms.has(r.name)) this.drawRoomBack(ctx, r);
 
     // network cables run each desk's computer down to the floor and back to the
     // screen; drawn here so the desks + devs (next layer) occlude the near runs
-    for (const r of this.rooms.values()) this.drawCables(ctx, r);
+    for (const r of this.rooms.values()) if (this.visRooms.has(r.name)) this.drawCables(ctx, r);
 
     // ghost slots (+building extends an island, +island reserves a directory)
-    for (const g of this.ghosts) this.drawGhost(ctx, g);
+    for (const g of this.ghosts) {
+      if (!this.onScreen(g.x0 - 10, g.x0 + ROOM_W + 10, g.base - ROOM_H - 10, g.base + 24, vw)) continue;
+      this.drawGhost(ctx, g);
+    }
 
     // external elevator shafts: a track bolted to the right exterior wall of
     // every tower; the car (below) rides inside it. A ground-only first floor
@@ -2683,6 +2939,7 @@ class PixelCrew {
     for (const [col, rng] of this.colRange) {
       if (rng.max < 0) continue; // every tower gets a shaft; only skip empty columns
       const sx = shaftX(cellX0(col));
+      if (sx + SHAFT_W < vw.x0 || sx - SHAFT_W > vw.x1) continue; // off-screen column
       const left = sx - SHAFT_W / 2;
       const top = floorBase(rng.max) - ROOM_H;
       const bot = SLAB; // foot planted at the ground / pedestal
@@ -2703,6 +2960,7 @@ class PixelCrew {
     for (const tn of [...this.toons.values(), ...this.leaving]) {
       if (!tn.riding) continue;
       const cx = shaftX(tn.x0);
+      if (cx + CAR_W < vw.x0 || cx - CAR_W > vw.x1) continue; // off-screen column
       const b = tn.base;
       const halfW = CAR_W / 2;
       // hoist cable running up the shaft to the motor at the top
@@ -2741,7 +2999,7 @@ class PixelCrew {
     const seated = [...this.toons.values()];
     for (let row = ROWS_OF_DESKS - 1; row >= 0; row--) {
       for (const r of this.rooms.values()) {
-        if (r.built < 0.7 || !r.plan) continue;
+        if (r.built < 0.7 || !r.plan || !this.visRooms.has(r.name)) continue;
         const base = r.baseY;
         for (const [, seat] of r.plan.seats) {
           if (seat.row !== row) continue;
@@ -2752,6 +3010,10 @@ class PixelCrew {
       for (const tn of this.leaving) if (displayRow(tn) === row) rowToons.push(tn);
       rowToons.sort((a, b) => a.x - b.x);
       for (const tn of rowToons) {
+        // cull devs whose sprite is off-screen (riding devs in a visible shaft are
+        // drawn above; this skips seated/walking devs in culled rooms)
+        if (!this.onScreen(tn.x - 18, tn.x + 18, tn.base - tn.lift - 42, tn.base + 8, vw)) continue;
+        this.toonsDrawn++;
         // a session running OUTSIDE DevTower is rendered ghosted — grayed and
         // semi-transparent — so it reads as "not one of ours" at a glance
         // outside-DevTower sessions render translucent (here) and desaturated
@@ -2785,39 +3047,47 @@ class PixelCrew {
         this.drawToon(ctx, tn);
         if (ghost || thru) ctx.restore();
       }
-      for (const r of this.rooms.values()) this.drawDesks(ctx, r, row);
+      for (const r of this.rooms.values()) if (this.visRooms.has(r.name)) this.drawDesks(ctx, r, row);
     }
     // re-draw an open door's leaf + jamb ON TOP of the crew so a dev passing
     // through reads as behind it — the wall stands in front, not the dev.
     for (const r of this.rooms.values()) {
-      if (r.built >= 1 && r.doorOpen > 0.01) this.drawDoor(ctx, r, "overlay");
+      if (r.built >= 1 && r.doorOpen > 0.01 && this.visRooms.has(r.name)) this.drawDoor(ctx, r, "overlay");
     }
     // particles
-    for (const p of this.particles) {
-      ctx.globalAlpha = clamp(p.life, 0, 1);
-      ctx.fillStyle = p.color;
-      ctx.fillRect(p.x, p.y, p.size, p.size);
+    if (this.gfx.particles) {
+      for (const p of this.particles) {
+        if (p.x < vw.x0 || p.x > vw.x1 || p.y < vw.y0 || p.y > vw.y1) continue; // off-screen
+        ctx.globalAlpha = clamp(p.life, 0, 1);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+      }
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
 
     // a small glowing light that flickers + pulses as it travels the cable
-    for (const p of this.packets) {
-      if (p.t < 0) continue; // still queued at the source (staggered start)
-      const fade = p.t < 0.85 ? 1 : clamp((1 - p.t) / 0.15, 0, 1);
-      const pulse = 0.8 + 0.2 * Math.sin(this.frame * 0.55 + p.ph); // slow breathing
-      const flick = 0.82 + Math.random() * 0.18; // subtle flicker
-      const a = fade * pulse * flick;
-      const rad = 1.3 + 0.45 * Math.sin(this.frame * 0.55 + p.ph);
-      ctx.fillStyle = p.color;
-      ctx.globalAlpha = 0.22 * a; // soft outer halo
-      ctx.fillRect(p.x - rad - 1.4, p.y - rad - 1.4, (rad + 1.4) * 2, (rad + 1.4) * 2);
-      ctx.globalAlpha = 0.5 * a; // colored glow
-      ctx.fillRect(p.x - rad, p.y - rad, rad * 2, rad * 2);
-      ctx.globalAlpha = Math.min(1, a + 0.1); // small bright core
-      ctx.fillStyle = "#e6fff4";
-      ctx.fillRect(p.x - 0.6, p.y - 0.6, 1.2, 1.2);
+    if (this.gfx.packets) {
+      for (const p of this.packets) {
+        if (p.t < 0) continue; // still queued at the source (staggered start)
+        if (p.x < vw.x0 || p.x > vw.x1 || p.y < vw.y0 || p.y > vw.y1) continue; // off-screen
+        const fade = p.t < 0.85 ? 1 : clamp((1 - p.t) / 0.15, 0, 1);
+        const pulse = 0.8 + 0.2 * Math.sin(this.frame * 0.55 + p.ph); // slow breathing
+        const flick = 0.82 + Math.random() * 0.18; // subtle flicker
+        const a = fade * pulse * flick;
+        const rad = 1.3 + 0.45 * Math.sin(this.frame * 0.55 + p.ph);
+        if (this.gfx.glow) {
+          ctx.fillStyle = p.color;
+          ctx.globalAlpha = 0.22 * a; // soft outer halo
+          ctx.fillRect(p.x - rad - 1.4, p.y - rad - 1.4, (rad + 1.4) * 2, (rad + 1.4) * 2);
+          ctx.globalAlpha = 0.5 * a; // colored glow
+          ctx.fillRect(p.x - rad, p.y - rad, rad * 2, rad * 2);
+        }
+        ctx.globalAlpha = Math.min(1, a + 0.1); // small bright core
+        ctx.fillStyle = "#e6fff4";
+        ctx.fillRect(p.x - 0.6, p.y - 0.6, 1.2, 1.2);
+      }
+      ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
 
     /* ---- screen-space pass ---- */
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -2827,7 +3097,7 @@ class PixelCrew {
     const fitPx = (w: number, h: number, len: number) =>
       Math.max(4, Math.min(h * 0.42, (w * 0.68) / (len * 0.6)));
     for (const r of this.rooms.values()) {
-      if (r.built < 0.95) continue;
+      if (r.built < 0.95 || !this.visRooms.has(r.name)) continue;
       // top-row controls live in world space: sized and lettered against the
       // live zoom so they keep their proportion to the console (see topRects)
       const tr = this.topRects(r);
@@ -3108,7 +3378,7 @@ class PixelCrew {
    *  room/ghost and show the agent name floating at the cursor. */
   private paintDropHint() {
     const ctx = this.ctx;
-    const dpr = Math.min(window.devicePixelRatio, 2);
+    const dpr = this.dpr();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const t = this.dropTarget;
     if (t?.room) {
@@ -4711,6 +4981,18 @@ class PixelCrew {
   },
   setPerf(mode: string) {
     this._instance?.setPerf(mode);
+  },
+  setQuality(preset: string) {
+    this._instance?.setQuality(preset);
+  },
+  setPerfHud(on: boolean) {
+    this._instance?.setPerfHud(on);
+  },
+  setCull(on: boolean) {
+    this._instance?.setCull(on);
+  },
+  perfSample() {
+    return this._instance?.perfSample();
   },
   setBookMode(mode: string) {
     this._instance?.setBookMode(mode);

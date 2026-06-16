@@ -20,4 +20,9 @@ screenshots/.harness.elevdown.html
 screenshots/.harness.seldir.html
 screenshots/.harness.run.html
 screenshots/.scm-mock.html
+screenshots/.bench.html
+screenshots/.cullcheck.html
+screenshots/.quality.html
+screenshots/.perf.html
+screenshots/.diffshot.html
 test-results/
