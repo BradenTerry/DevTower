@@ -1,3 +1,4 @@
 {
-  "devtower.debugLog": true
+  "devtower.debugLog": true,
+  "git.autoRepositoryDetection": "openEditors"
 }
