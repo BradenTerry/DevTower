@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState } from "./store";
 import { currentBranch, isRepo, canonicalDir } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SUCCESSION_DIR, RESUME_DIR } from "./hooks";
 import { dlog, elog, recordExec } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -88,12 +88,15 @@ interface LaunchPersist {
  * conversation via session.ts.
  */
 export class ClaudeDiscovery {
-  private timer?: ReturnType<typeof setTimeout>;
-  private baseInterval = 8_000; // configured foreground poll interval
+  // fs.watch handles on the hook marker dirs. Discovery is event-driven: a hook
+  // dropping/clearing a marker (session start/prompt/edit/exit) wakes a refresh,
+  // instead of a timer scanning `ps`/`lsof`/WMI + the transcript tree on a cadence.
+  private markerWatchers: fs.FSWatcher[] = [];
+  private markerDebounce?: ReturnType<typeof setTimeout>;
   private visible = true; // is the DevTower tab currently visible?
   private started = false; // has start() run (discovery enabled)?
   private disposed = false;
-  private lastFound = 0; // sessions found on the last scan (drives idle backoff)
+  private lastFound = 0; // sessions found on the last scan
   private mine = new Set<string>(); // agent ids this service created
   // cwd → its git branch, with the time we read it. A short TTL is essential: a
   // dev that switches branches mid-session (e.g. `git checkout -b feature/...`)
@@ -298,39 +301,57 @@ export class ClaudeDiscovery {
     dlog("discovery.expectSession", { agentId, sessionId });
   }
 
-  /** Adaptive poll cadence. Foreground polls at the configured interval so a new
-   *  session appears promptly; backgrounded (the DevTower tab isn't visible) it
-   *  drops to a slow heartbeat — and slower still when nothing is running — since
-   *  the scan spawns `ps`/`lsof` and walks `~/.claude/projects` every tick. Coming
-   *  back to the foreground refreshes immediately, so the tower is never stale. */
-  start(intervalMs = 8_000): void {
-    this.baseInterval = intervalMs;
+  /** Begin event-driven discovery: watch the hook marker dirs so a session
+   *  starting, submitting a prompt, editing, /clearing, or exiting wakes a
+   *  refresh. No timer — at idle nothing spawns `ps`/`lsof`/WMI or walks
+   *  `~/.claude/projects`. The optional arg is accepted for backward
+   *  compatibility with the old poll-interval call site and ignored. */
+  start(_intervalMs?: number): void {
     this.started = true;
-    this.schedule(this.nextDelay());
+    this.watchMarkers();
   }
 
-  /** Called by the console panel when its tab gains/loses visibility. */
-  setVisible(visible: boolean): void {
-    if (visible === this.visible) return;
-    this.visible = visible;
-    if (!this.started || this.disposed) return; // polling not active (discovery off)
-    if (visible) {
-      void this.poll(); // foreground again → refresh now, then resume fast cadence
-    } else {
-      this.schedule(this.nextDelay()); // stretch the pending tick out to the heartbeat
+  /** Watch each hook marker dir. A hook writing/clearing a marker fires the
+   *  watcher → a debounced refresh. mkdir first so the watch doesn't throw when
+   *  no marker has ever landed; a platform without dir watch just relies on the
+   *  activation refresh + manual Refresh (the `⟳` button / devtower.refresh). */
+  private watchMarkers(): void {
+    const dirs = [
+      this.deps.waitingDir ?? WAITING_DIR,
+      this.deps.activeDir ?? ACTIVE_DIR,
+      this.deps.endedDir ?? ENDED_DIR,
+      this.deps.editedDir ?? EDITED_DIR,
+      this.deps.successionDir ?? SUCCESSION_DIR,
+      this.deps.resumeDir ?? RESUME_DIR,
+    ];
+    for (const dir of dirs) {
+      try { fs.mkdirSync(dir, { recursive: true }); } catch { /* */ }
+      try {
+        this.markerWatchers.push(fs.watch(dir, () => this.onMarkerChange()));
+      } catch {
+        dlog("discovery.markerWatch.fail", { dir });
+      }
     }
   }
 
-  private nextDelay(): number {
-    if (this.visible) return this.baseInterval; // foreground: stay responsive
-    // backgrounded: heartbeat only, even slower when no sessions were found.
-    return this.lastFound > 0 ? Math.max(this.baseInterval, 30_000) : 60_000;
+  /** A marker landed/cleared — coalesce a burst (a hook drop plus refresh's own
+   *  marker unlink both fire the watcher) into a single refresh. Skipped while the
+   *  tower is hidden so a busy agent's edit markers don't drive a background
+   *  `ps`/`lsof`/WMI storm; foregrounding runs a catch-up refresh via setVisible. */
+  private onMarkerChange(): void {
+    if (this.disposed || !this.visible) return;
+    if (this.markerDebounce) clearTimeout(this.markerDebounce);
+    this.markerDebounce = setTimeout(() => void this.poll(), 250);
   }
 
-  private schedule(delayMs: number): void {
-    if (this.timer) clearTimeout(this.timer);
-    if (this.disposed) return;
-    this.timer = setTimeout(() => void this.poll(), delayMs);
+  /** Called by the console panel when its tab gains/loses visibility. Coming back
+   *  to the foreground refreshes once so the tower catches up on anything that
+   *  changed while hidden (a missed marker, an external session). */
+  setVisible(visible: boolean): void {
+    if (visible === this.visible) return;
+    this.visible = visible;
+    if (!this.started || this.disposed) return; // discovery off
+    if (visible) void this.poll();
   }
 
   private async poll(): Promise<void> {
@@ -339,12 +360,13 @@ export class ClaudeDiscovery {
     } catch (e) {
       elog("discovery.poll", { message: String(e), stack: (e as any)?.stack });
     }
-    if (!this.disposed) this.schedule(this.nextDelay());
   }
 
   dispose(): void {
     this.disposed = true;
-    if (this.timer) clearTimeout(this.timer);
+    if (this.markerDebounce) clearTimeout(this.markerDebounce);
+    for (const w of this.markerWatchers) w.close();
+    this.markerWatchers = [];
     this._onPrCreated.dispose();
     this._onPrClosed.dispose();
   }

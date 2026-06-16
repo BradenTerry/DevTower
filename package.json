@@ -366,11 +366,6 @@
           "default": true,
           "description": "Scan ~/.claude/projects for live Claude Code CLI sessions and show them in the tower."
         },
-        "devtower.pollIntervalMs": {
-          "type": "number",
-          "default": 8000,
-          "description": "How often (ms) to rescan for live Claude sessions. Lower = sessions leave the tower sooner after Claude exits, at the cost of more frequent ps/lsof checks."
-        },
         "devtower.sessionMaxAgeHours": {
           "type": "number",
           "default": 24,

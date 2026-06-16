@@ -5,10 +5,10 @@ import { getSession } from "./session";
 import { openGitFileDiff, openMockFileDiff } from "./diffProvider";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit, canonicalDir } from "./git";
+import { isRepo, resolveCwd, resolveDir, status, stage, unstage, stageAll, unstageAll, changedFiles, worktreeAdd, worktreeRemove, worktreeList, currentBranch, branchSummary, runGit, canonicalDir, BranchSummary } from "./git";
 import { PrService, PrInfo } from "./prs";
 import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./github";
-import { listHooks, setHookEnabled, setAllHooksEnabled } from "./hooks";
+import { listHooks, setHookEnabled, setAllHooksEnabled, EDITED_DIR, readEditMarkers } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
 import { MiniPanel, MiniDelegate } from "./miniPanel";
 import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir, execStatsSnapshot, resetExecStats } from "./debugLog";
@@ -107,12 +107,16 @@ export class ConsolePanel implements MiniDelegate {
   private boardsByPath = new Map<string, BoardData>();
   /** Branch name per room key, so the main building shows its real branch. */
   private branchByPath = new Map<string, string>();
-  private statsTimer?: ReturnType<typeof setInterval>;
   private lastWtSignature = "";
   /** fs.watch handles on each tracked repo's .git dir, so staging/committing is
    *  reflected at once instead of waiting for the poll. Keyed by repo top-level. */
   private gitWatchers = new Map<string, fs.FSWatcher>();
   private gitDebounce?: ReturnType<typeof setTimeout>;
+  /** fs.watch on the PostToolUse(edit) marker dir: an agent's working-tree edit
+   *  (which never touches .git) updates just that worktree's board, the job the
+   *  old 6s git poll used to do. Needs the PostToolUse hook installed. */
+  private editWatcher?: fs.FSWatcher;
+  private editDebounce?: ReturnType<typeof setTimeout>;
   /** room key → absolute git path, so a sync request can run git in the right dir. */
   private roomGitPaths = new Map<string, string>();
   /** room key whose worktree is mounted in the Selected Directory view (set only
@@ -187,12 +191,10 @@ export class ConsolePanel implements MiniDelegate {
     this.startUsage();
     // a saved file is a working-tree (unstaged) change → refresh promptly
     vscode.workspace.onDidSaveTextDocument(() => this.onGitChange(), null, this.disposables);
-    // poll each worktree's git stats as a fallback (the .git watchers below catch
-    // stage/commit/push instantly; the poll covers edits made outside VS Code).
-    // Runs while EITHER view is on screen since both render git stats.
-    this.statsTimer = setInterval(() => {
-      if (this.anyVisible()) void this.refreshState();
-    }, 6_000);
+    // event-driven board updates (no 6s git poll): the .git watchers catch stage/
+    // commit/push, onDidSaveTextDocument catches in-editor saves, and this watches
+    // the PostToolUse(edit) marker dir to catch an agent's working-tree edits.
+    this.watchEditMarkers();
     // background fetch so "behind" (out-of-date) is meaningful; once shortly after
     // open, then periodically while visible
     setTimeout(() => void this.fetchAll(), 5_000);
@@ -364,9 +366,103 @@ export class ConsolePanel implements MiniDelegate {
         const w = fs.watch(gitDir, { recursive: true }, () => this.onGitChange());
         this.gitWatchers.set(dir, w);
       } catch {
-        /* platform without recursive watch / dir gone — poll still covers it */
+        /* platform without recursive watch / dir gone — manual Refresh still covers it */
       }
     }
+  }
+
+  /** Watch the PostToolUse(edit) marker dir so an agent's working-tree edit (which
+   *  never touches .git, so the .git watchers miss it) updates that worktree's
+   *  board at once — the unique job the old 6s git poll did. mkdir first so the
+   *  watch doesn't throw before any marker has landed. */
+  private watchEditMarkers(): void {
+    try { fs.mkdirSync(EDITED_DIR, { recursive: true }); } catch { /* */ }
+    try {
+      this.editWatcher = fs.watch(EDITED_DIR, () => this.onEditMarker());
+    } catch {
+      dlog("editWatch.fail", { dir: EDITED_DIR }); // manual Refresh still covers it
+    }
+  }
+
+  /** An edit marker landed — debounce a burst of edits, then refresh only the
+   *  worktrees those markers name (not the full per-worktree fan-out). */
+  private onEditMarker(): void {
+    if (this.editDebounce) clearTimeout(this.editDebounce);
+    this.editDebounce = setTimeout(async () => {
+      if (!this.anyVisible()) return; // no view on screen → nothing to update
+      const markers = await readEditMarkers();
+      const cwds = new Set<string>();
+      for (const m of markers.values()) if (m.cwd) cwds.add(m.cwd);
+      await this.refreshEditedWorktrees(cwds);
+    }, 300);
+  }
+
+  /** Recompute boards for only the rooms whose checkout matches one of `cwds`
+   *  (the edited worktree roots), reusing buildBoard. Scoped so a single agent's
+   *  edit doesn't trigger a git-spawn storm across every tracked worktree. */
+  private async refreshEditedWorktrees(cwds: Set<string>): Promise<void> {
+    if (!cwds.size) return;
+    const canon = new Set([...cwds].map((c) => canonicalDir(c)));
+    const targets = [...this.roomGitPaths].filter(([, gp]) => canon.has(canonicalDir(gp)));
+    if (!targets.length) return;
+    // fork-point base per worktree room, so a worktree's commit count is measured
+    // from where it branched (mirrors refreshState's forkBase).
+    const forkBase = new Map<string, string>();
+    for (const w of this.getWorktreeRooms()) if (w.base) forkBase.set(w.path, w.base);
+    const prs = [...this.prs.getCrew(), ...this.prs.getReview()];
+    let changed = false;
+    for (const [roomKey, gp] of targets) {
+      try {
+        if (!fs.existsSync(gp) || !(await isRepo(gp))) continue;
+        const sum = await branchSummary(gp, forkBase.get(roomKey));
+        if (!sum) continue;
+        const branch = await currentBranch(gp);
+        const pr = prs.find((x) => x.branch && x.branch === branch);
+        this.boardsByPath.set(roomKey, this.buildBoard(sum, branch, pr));
+        this.branchByPath.set(roomKey, branch);
+        changed = true;
+      } catch {
+        /* path vanished or git hiccup — leave that board for the next refresh */
+      }
+    }
+    if (changed) {
+      this.lastWtSignature = ""; // force the next refreshState to re-broadcast too
+      this.postState();
+    }
+  }
+
+  /** Assemble a room's back-wall board from its git summary, branch, and matched
+   *  PR. Shared by the full refreshState fan-out and the scoped edit-watcher. */
+  private buildBoard(sum: BranchSummary, branch: string, pr?: PrInfo): BoardData {
+    return {
+      branch,
+      modified: sum.modified,
+      staged: sum.staged,
+      modifiedFiles: sum.modifiedFiles.slice(0, 30),
+      stagedFiles: sum.stagedFiles.slice(0, 30),
+      unstagedAdd: sum.unstagedAdd,
+      unstagedDel: sum.unstagedDel,
+      stagedAdd: sum.stagedAdd,
+      stagedDel: sum.stagedDel,
+      committedAdd: sum.committedAdd,
+      committedDel: sum.committedDel,
+      base: sum.base,
+      prReady: this.prs.hasFetched(),
+      ahead: sum.ahead,
+      unpushed: sum.unpushed,
+      behind: sum.behind,
+      commits: sum.commits,
+      pr: pr
+        ? {
+            number: pr.number, title: pr.title, url: pr.url, draft: pr.isDraft,
+            checks: pr.checks, checksPass: pr.checksPass, checksFailed: pr.checksFailed,
+            checksRunning: pr.checksRunning, checksTotal: pr.checksTotal,
+            review: pr.review, approvals: pr.approvals,
+            changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
+            comments: pr.comments, merged: pr.merged,
+          }
+        : undefined,
+    };
   }
 
   private async onMessage(m: any): Promise<void> {
@@ -1303,35 +1399,7 @@ export class ConsolePanel implements MiniDelegate {
         const branch = await currentBranch(p);
         branches.set(roomKey, branch);
         const pr = prs.find((x) => x.branch && x.branch === branch);
-        boards.set(roomKey, {
-          branch,
-          modified: sum.modified,
-          staged: sum.staged,
-          modifiedFiles: sum.modifiedFiles.slice(0, 30),
-          stagedFiles: sum.stagedFiles.slice(0, 30),
-          unstagedAdd: sum.unstagedAdd,
-          unstagedDel: sum.unstagedDel,
-          stagedAdd: sum.stagedAdd,
-          stagedDel: sum.stagedDel,
-          committedAdd: sum.committedAdd,
-          committedDel: sum.committedDel,
-          base: sum.base,
-          prReady: this.prs.hasFetched(),
-          ahead: sum.ahead,
-          unpushed: sum.unpushed,
-          behind: sum.behind,
-          commits: sum.commits,
-          pr: pr
-            ? {
-                number: pr.number, title: pr.title, url: pr.url, draft: pr.isDraft,
-                checks: pr.checks, checksPass: pr.checksPass, checksFailed: pr.checksFailed,
-                checksRunning: pr.checksRunning, checksTotal: pr.checksTotal,
-                review: pr.review, approvals: pr.approvals,
-                changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
-                comments: pr.comments, merged: pr.merged,
-              }
-            : undefined,
-        });
+        boards.set(roomKey, this.buildBoard(sum, branch, pr));
       } catch {
         /* path vanished or git hiccup — skip this round */
       }
@@ -1680,11 +1748,12 @@ export class ConsolePanel implements MiniDelegate {
     this.mini?.close();
     this.mini = undefined;
     if (this.usageTimer) clearInterval(this.usageTimer);
-    if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.fetchTimer) clearInterval(this.fetchTimer);
     if (this.gitDebounce) clearTimeout(this.gitDebounce);
+    if (this.editDebounce) clearTimeout(this.editDebounce);
     for (const w of this.gitWatchers.values()) w.close();
     this.gitWatchers.clear();
+    this.editWatcher?.close();
     this.usageWatcher?.close();
     this.towerDisposables.forEach((d) => d.dispose());
     this.towerDisposables = [];
