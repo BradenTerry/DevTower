@@ -929,6 +929,7 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
           skills: f.skills,
           subagents: f.subagents,
+          exploring: f.exploring,
           tasks: f.tasks ?? null, // null = authoritatively no list now → clear stale count
           external: cleared ? !!this.store.get(id)?.external : false,
           launchId,
@@ -954,6 +955,7 @@ export class ClaudeDiscovery {
           contextTokens: f.contextTokens,
           skills: f.skills,
           subagents: f.subagents,
+          exploring: f.exploring,
           tasks: f.tasks ?? null, // null = authoritatively no list now → clear stale count
           // a purely discovered session (not adopted into a DevTower placeholder)
           // is running in its own terminal outside DevTower
@@ -1189,6 +1191,7 @@ export class ClaudeDiscovery {
           contextTokens: meta.contextTokens,
           skills: meta.skills,
           subagents: meta.subagents,
+          exploring: meta.exploring,
           tasks,
           prCreatedAt: meta.prCreatedAt,
           prClosedAt: meta.prClosedAt,
@@ -1215,6 +1218,7 @@ interface Found {
   contextTokens?: number;
   skills?: string[];
   subagents?: number;
+  exploring?: boolean; // an Explore subagent is currently in flight
   tasks?: { done: number; total: number };
   prCreatedAt?: number; // ms time of this session's most recent `gh pr create`
   prClosedAt?: number; // ms time of this session's most recent `gh pr merge`/`close`
@@ -1268,7 +1272,7 @@ export async function newestSubMtime(projectDir: string, sessionId: string): Pro
 export async function readMeta(
   file: string,
   size: number
-): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; aiTitle?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; working?: boolean; prCreatedAt?: number; prClosedAt?: number }> {
+): Promise<{ cwd?: string; launchCwd?: string; lastRole?: string; task?: string; model?: string; aiTitle?: string; question?: string; contextTokens?: number; skills?: string[]; subagents?: number; exploring?: boolean; working?: boolean; prCreatedAt?: number; prClosedAt?: number }> {
   const CHUNK = 32 * 1024;
   const fh = await fs.promises.open(file, "r").catch(() => null);
   if (!fh) return {};
@@ -1342,6 +1346,16 @@ export async function readMeta(
     const fgPending = new Set<string>(); // foreground tool_use ids, still open
     const bgPendingTool = new Set<string>(); // background tool ids awaiting their ack
     const bgPendingId = new Set<string>(); // background agentIds, still running
+    // in-flight Explore subagents specifically (a Task/Agent call whose
+    // subagent_type is "Explore"), tracked the same three ways as the general
+    // pending sets so the scene can send the dev to the bookshelf with a
+    // magnifying glass while an Explore is searching, then call it back when done.
+    const explorePending = new Set<string>(); // foreground Explore tool ids, open
+    const exploreBgTool = new Set<string>(); // background Explore tool ids awaiting ack
+    const exploreBgId = new Set<string>(); // background Explore agentIds, running
+    const isExplore = (b: any) =>
+      typeof b?.input?.subagent_type === "string" &&
+      b.input.subagent_type.toLowerCase() === "explore";
     // `gh pr create` Bash tool_use ids awaiting their result. When the result
     // lands the PR exists, so we stamp `prCreatedAt` with that turn's time — the
     // discovery loop uses it to kick an immediate PR fetch instead of letting the
@@ -1364,8 +1378,13 @@ export async function readMeta(
         for (const b of content) {
           if (!b || typeof b !== "object") continue;
           if (b.type === "tool_use" && (b.name === "Task" || b.name === "Agent")) {
-            if (b.input && b.input.run_in_background) bgPendingTool.add(b.id);
-            else fgPending.add(b.id);
+            if (b.input && b.input.run_in_background) {
+              bgPendingTool.add(b.id);
+              if (isExplore(b)) exploreBgTool.add(b.id);
+            } else {
+              fgPending.add(b.id);
+              if (isExplore(b)) explorePending.add(b.id);
+            }
           } else if (b.type === "tool_use" && b.name === "Bash" &&
                      typeof b.input?.command === "string" && /\bgh\s+pr\s+(?:create|new)\b/.test(b.input.command)) {
             prCreateTools.add(b.id);
@@ -1388,8 +1407,10 @@ export async function readMeta(
             if (bgPendingTool.has(b.tool_use_id) && ack) {
               bgPendingTool.delete(b.tool_use_id);
               bgPendingId.add(ack[1]);
+              if (exploreBgTool.delete(b.tool_use_id)) exploreBgId.add(ack[1]);
             } else {
               fgPending.delete(b.tool_use_id); // foreground subagent returned
+              explorePending.delete(b.tool_use_id);
             }
           }
         }
@@ -1398,10 +1419,11 @@ export async function readMeta(
       if (t.includes("task-notification")) {
         reNote.lastIndex = 0;
         let nm: RegExpExecArray | null;
-        while ((nm = reNote.exec(t))) bgPendingId.delete(nm[1]);
+        while ((nm = reNote.exec(t))) { bgPendingId.delete(nm[1]); exploreBgId.delete(nm[1]); }
       }
     }
     const subagents = fgPending.size + bgPendingTool.size + bgPendingId.size;
+    const exploring = explorePending.size + exploreBgTool.size + exploreBgId.size > 0;
 
     // context usage = the prompt window of the latest MAIN-THREAD assistant turn.
     // Mirrors Claude Code's own `/context`: input + the two cache buckets (all
@@ -1477,7 +1499,7 @@ export async function readMeta(
         question = windowText.slice(sentenceStart + 1).trim().slice(0, 220);
       }
     }
-    return { cwd, launchCwd: headCwd, lastRole, task, model, aiTitle, question, contextTokens, skills, subagents, working, prCreatedAt: prCreatedAt || undefined, prClosedAt: prClosedAt || undefined };
+    return { cwd, launchCwd: headCwd, lastRole, task, model, aiTitle, question, contextTokens, skills, subagents, exploring, working, prCreatedAt: prCreatedAt || undefined, prClosedAt: prClosedAt || undefined };
   } finally {
     await fh.close();
   }

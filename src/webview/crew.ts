@@ -24,6 +24,7 @@ interface CrewAgent {
   branch?: string; // branch name, shown on the cluster sign
   skills?: string[]; // skills this session has used (accumulated, first-use order)
   subagents?: number; // in-flight sub-agents (Task/Agent tool calls not yet returned)
+  exploring?: boolean; // an Explore subagent is searching; sends the dev to the shelf with a magnifier
   tasks?: { done: number; total: number }; // Task-tool checklist progress (2+ tasks); drives the desk TV
   contextTokens?: number; // tokens occupying the session's context window (for the token board)
   external?: boolean; // a live session running OUTSIDE DevTower (not one we launched)
@@ -128,6 +129,13 @@ const SHELF_REACH = 20; // world x (from room left) a dev stands at to fetch a b
 // bookshelf, to the right, rather than riding up into the spines and reading as
 // standing on the shelf itself.
 const SHELF_LIFT = 7;
+// A dev INSPECTING the shelf with a magnifier (Explore trip) stands deeper into
+// the room than a quick book-grab, so its raised glass falls over the front of
+// the cabinet's spines rather than the open floor in front of it. It also stands
+// a touch to the RIGHT of (EXPLORE_DX) and lower than the plain book-grab spot so
+// the glass sweeps over the colourful spines, not the cabinet's near end cap.
+const EXPLORE_LIFT = 8;
+const EXPLORE_DX = 7;
 const BOOK_HUES = [4, 28, 48, 140, 200, 262, 320]; // spine colours, cycled per book
 // Ebook mode: instead of walking to the shelf, a dev borrows a skill on its phone
 // and reads it at the desk. A short chat bubble announces each borrow /
@@ -391,6 +399,12 @@ interface Toon {
   // counted down in tick. At 0 the book is set down on the desk even while active.
   readT?: number;
   errand?: { phase: "out" | "grab" | "back"; grab: number };
+  // Explore trip: while the session has an Explore subagent in flight the dev
+  // walks to the bookshelf ("out"), stands inspecting the spines with a
+  // magnifying glass ("look") for as long as the Explore runs, then walks back
+  // to its desk ("back") once it returns. Distinct from `errand` (which fetches
+  // a new skill book) — this one holds at the shelf and carries no book.
+  explore?: { phase: "out" | "look" | "back" };
   // context-clear (/clear) trip: a session replaced by a new one in the SAME
   // worktree keeps this dev, which carries its context papers to the shredder
   // ("out"), feeds the stack in ("feed"), then carries its skill books on to the
@@ -1894,6 +1908,9 @@ class PixelCrew {
       // loop alive through it even though the dev's state is idle and it hasn't
       // started moving yet (tick sets its targetX on the next frame).
       if (tn.shred || tn.errand || tn.transfer) return false;
+      // the explore trip (walk out, inspect the shelf with a sweeping magnifier,
+      // walk back) animates every frame, so never quiesce while it is active
+      if (tn.explore) return false;
       if (tn.note && tn.note.t > 0) return false; // an ebook chat bubble is showing
       if ((tn.phone ?? 0) > 0) return false; // the ebook phone-out return pose is playing
       // the desk TV mid-deploy, or a just-pressed completion button, both animate
@@ -2035,10 +2052,24 @@ class PixelCrew {
       this.retargetToon(tn); // glue base/x0 + aim at the desk seat
       const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
       if (!room) continue;
+      // a /clear (shred) trip cancels an in-progress explore trip; it takes
+      // priority and the explore trip restarts afterwards if still running
+      if (tn.explore && tn.shred) tn.explore = undefined;
+      // start/stop the Explore trip: an in-flight Explore subagent sends the dev
+      // to the shelf to inspect the books with a magnifier, and calls it back to
+      // the desk once the Explore returns. Don't start while a /clear or book
+      // errand owns the dev — those run first, then the explore trip resumes.
+      const wantExplore = !!tn.agent.exploring;
+      if (wantExplore && !tn.explore && !tn.shred && !tn.errand && Math.abs(tn.targetX - tn.x) <= 1) {
+        tn.explore = { phase: "out" };
+      } else if (!wantExplore && tn.explore && tn.explore.phase !== "back") {
+        tn.explore.phase = "back";
+      }
       // a skill's book is still missing (neither on the desk nor already in hand)
-      // once the dev has settled at the desk. Physical: send it on a shelf trip.
-      // Ebook: borrow it straight onto the phone (no walk) and announce it in a bubble.
-      if (!tn.errand && !tn.shred && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
+      // once the dev has settled at the desk — but not mid explore trip. Physical:
+      // send it on a shelf trip. Ebook: borrow it straight onto the phone (no walk)
+      // and announce it in a bubble.
+      if (!tn.errand && !tn.shred && !tn.explore && tn.skills.length > tn.booksShown + tn.booksInHand && Math.abs(tn.targetX - tn.x) <= 1) {
         if (this.ebook) {
           const fresh = tn.skills.slice(tn.booksShown + tn.booksInHand);
           tn.booksInHand += fresh.length; // read on the phone now, set down after the read beat
@@ -2054,6 +2085,9 @@ class PixelCrew {
       }
       // out/grab: head for (and hold at) the shelf; back: keep the desk aim above
       if (tn.errand && tn.errand.phase !== "back") tn.targetX = room.x0 + SHELF_REACH;
+      // the explore trip aims at the shelf while heading out and inspecting,
+      // standing a touch right of the plain book-grab spot (EXPLORE_DX)
+      if (tn.explore && tn.explore.phase !== "back") tn.targetX = room.x0 + SHELF_REACH + EXPLORE_DX;
       // the /clear trip overrides the desk aim: first toward the shredder (out/feed),
       // then on to the shelf to return the books (shelf/place), then back to the seat
       if (tn.shred) {
@@ -2092,7 +2126,7 @@ class PixelCrew {
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
       const seatable = tn.agent.state === "active" || tn.agent.state === "idle" || tn.agent.state === "complete";
-      tn.sitting = seatable && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.transfer && Math.abs(dx) <= 1;
+      tn.sitting = seatable && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.explore && !tn.transfer && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
       // (lift -> 0) whenever walking, entering, or leaving. A dev AT the bookshelf
       // (fetching a book, or returning one on /clear) steps back to SHELF_LIFT so it
@@ -2100,12 +2134,13 @@ class PixelCrew {
       // shredder — but the /clear papers leg keeps it forward at the shredder.
       const atShelf =
         (!!tn.errand && tn.errand.phase !== "back") ||
-        (!!tn.shred && (tn.shred.phase === "shelf" || tn.shred.phase === "place"));
+        (!!tn.shred && (tn.shred.phase === "shelf" || tn.shred.phase === "place")) ||
+        (!!tn.explore && tn.explore.phase !== "back");
       // a relocating dev only settles into its back-row seat once it has walked
       // in to the destination desk ("in" phase); through every other phase it
       // stays down in the aisle.
       const transferSeating = !!tn.transfer && tn.transfer.phase === "in";
-      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred &&
+      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.explore &&
         (!tn.transfer || transferSeating);
       // a dev walking through the lift door steps back to the door's depth so it
       // lines up with the raised sill instead of clipping the wall below it. The
@@ -2115,7 +2150,8 @@ class PixelCrew {
         ((tn.leaving && tn.leavePhase === "walk") ||
           (tn.entering && tn.enterPhase === "walk") ||
           (tn.transfer && (tn.transfer.phase === "out" || tn.transfer.phase === "in"))) && !tn.riding;
-      let targetLift = atDesk ? tn.row * ROW_DY : atShelf ? SHELF_LIFT : 0;
+      const atExploreShelf = !!tn.explore && tn.explore.phase !== "back";
+      let targetLift = atDesk ? tn.row * ROW_DY : atExploreShelf ? EXPLORE_LIFT : atShelf ? SHELF_LIFT : 0;
       if (thruDoor) {
         const dist = tn.x0 + ROOM_W - tn.x; // px left of the near corner
         targetLift = Math.max(targetLift, clamp(1 - dist / DOOR_APPROACH, 0, 1) * DOOR_LIFT);
@@ -2147,6 +2183,19 @@ class PixelCrew {
           t: NOTE_SECS,
           book: true,
         };
+      }
+    }
+    // advance the explore trip: walk out to the shelf → inspect the spines (held
+    // by the exploring flag; the start/stop logic flips it to "back" when the
+    // Explore returns) → walk back to the desk.
+    for (const tn of this.toons.values()) {
+      const ex = tn.explore;
+      if (!ex) continue;
+      const arrived = Math.abs(tn.targetX - tn.x) <= 1;
+      if (ex.phase === "out") {
+        if (arrived) ex.phase = "look";
+      } else if (ex.phase === "back" && arrived) {
+        tn.explore = undefined;
       }
     }
     // advance the /clear trip: arrive at the shredder → feed the papers in → carry
@@ -4158,7 +4207,10 @@ class PixelCrew {
       st === "waiting" && !walking ? -Math.abs(Math.sin(f * 0.35 + tn.ph)) * 1 : 0;
     const slump = st === "error" && !walking ? 1.4 : 0;
     const base = y0 + hop;
-    const facingLeft = sitting; // seated devs face their monitor (to the left)
+    // standing at the bookshelf inspecting the spines with a magnifying glass
+    // while an Explore subagent searches (the shelf is on the left wall)
+    const inspecting = !!tn.explore && tn.explore.phase === "look" && !walking;
+    const facingLeft = sitting || inspecting; // seated/inspecting devs face left
     // reading a fetched skill book at the desk: the dev looks DOWN at an open book
     // held in front of it, so the pages (and their text) face up toward its gaze.
     // A dev only reads while it's actually working a task — once idle/complete it
@@ -4221,7 +4273,27 @@ class PixelCrew {
 
     ctx.fillStyle = p.shirt;
     const handC = p.skin;
-    if (sitting && tn.agent.reviewOf) {
+    if (inspecting) {
+      // standing at the bookshelf with a magnifying glass held up toward the
+      // spines on the left wall, sweeping it slowly across and up/down the shelf
+      // as if hunting for the right title while an Explore subagent searches.
+      const sweep = Math.sin(f * 0.13 + tn.ph) * 1.6; // pan across the spines
+      const rise = Math.cos(f * 0.13 + tn.ph) * 1.0;  // ...and up/down the shelf
+      const mx = x - 6 + sweep, my = ty - 2.5 + rise;
+      ctx.fillStyle = p.shirt; // forearm reaching up-left to the glass
+      ctx.fillRect(x - 5, ty + 0.4, 3.2, 1.4);
+      ctx.strokeStyle = "#7a5a2a"; // magnifier handle
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(mx + 1.4, my + 1.4); ctx.lineTo(mx + 2.8, my + 2.8); ctx.stroke();
+      ctx.fillStyle = "rgba(159,216,255,0.45)"; // glass
+      ctx.beginPath(); ctx.arc(mx, my, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#2a2f35"; // rim
+      ctx.beginPath(); ctx.arc(mx, my, 2.3, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = handC; // hand gripping the handle
+      ctx.fillRect(mx + 2.3, my + 2.3, 1.6, 1.6);
+      ctx.fillStyle = p.shirt; // other arm resting at the side
+      ctx.fillRect(x + 2.6, ty + 1.4, 1.4, 3.8);
+    } else if (sitting && tn.agent.reviewOf) {
       // reviewing a PR: hold a magnifier out over a printout on the desk and
       // sweep it slowly back and forth as if scanning the diff
       const sweep = Math.sin(f * 0.12 + tn.ph) * 1.3;

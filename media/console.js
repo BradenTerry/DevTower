@@ -55,7 +55,7 @@
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, tasks: a.tasks, contextTokens: a.contextTokens, external: a.external, session: a.transcriptPath ? a.transcriptPath.replace(/\\/g, "/").split("/").pop().replace(/\.jsonl$/, "") : undefined, launchId: a.launchId, terminalPid: a.terminalPid, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, exploring: a.exploring, tasks: a.tasks, contextTokens: a.contextTokens, external: a.external, session: a.transcriptPath ? a.transcriptPath.replace(/\\/g, "/").split("/").pop().replace(/\.jsonl$/, "") : undefined, launchId: a.launchId, terminalPid: a.terminalPid, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 

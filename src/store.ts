@@ -53,6 +53,9 @@ export interface Agent {
   /** In-flight sub-agents (Task/Agent tool calls not yet returned) this session
    *  has spawned. Surfaced as a count badge beside the agent's name. */
   subagents?: number;
+  /** An Explore subagent is currently in flight. Sends the dev to the bookshelf
+   *  with a magnifying glass to inspect the books while it searches. */
+  exploring?: boolean;
   /** This session's Task-tool checklist progress (read from
    *  `~/.claude/tasks/<session>/`), present only for a list of 2+ tasks. Drives
    *  the desk TV the dev deploys to track its tasks. */
@@ -109,6 +112,8 @@ export interface StateEvent {
   skills?: string[];
   /** In-flight sub-agent count from this poll's transcript window. */
   subagents?: number;
+  /** Whether an Explore subagent is in flight this poll. */
+  exploring?: boolean;
   /** Task-tool checklist progress read this poll (2+ tasks only). `null` means the
    *  poll authoritatively found no list (cleared, or dropped below 2) and the
    *  stale count must be cleared; `undefined` means this writer didn't report
@@ -283,6 +288,9 @@ export class DevTowerStore {
       // a fresh poll reports the current in-flight count (0 when settled), so
       // honor it directly; fall back to last-known only when absent this poll
       subagents: ev.subagents ?? existing?.subagents,
+      // a fresh transcript poll always reports the live value (true/false), so
+      // honor it directly; only a writer that omits it falls back to last-known
+      exploring: ev.exploring ?? existing?.exploring,
       // a fresh transcript poll reports the live list each time. `null` is an
       // explicit "no list now" (cleared / dropped below 2) → clear the stale
       // count; `undefined` means this writer didn't report tasks → keep last-known

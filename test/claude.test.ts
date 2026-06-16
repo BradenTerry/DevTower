@@ -186,6 +186,83 @@ describe("readMeta", () => {
     expect(meta.subagents).toBe(1);
   });
 
+  it("flags exploring while an Explore subagent is in flight", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "look into it" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_x", name: "Task", input: { subagent_type: "Explore" } }],
+        },
+      },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.exploring).toBe(true);
+  });
+
+  it("clears exploring once the Explore subagent returns", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "look into it" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_x", name: "Task", input: { subagent_type: "Explore" } }],
+        },
+      },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_x", content: "found it" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.exploring).toBe(false);
+  });
+
+  it("does not flag exploring for a non-Explore subagent", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "build it" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_d", name: "Task", input: { subagent_type: "developer" } }],
+        },
+      },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.exploring).toBe(false);
+  });
+
+  it("flags exploring for a background Explore subagent until its task-notification", async () => {
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "explore in background" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_bgx", name: "Agent", input: { subagent_type: "Explore", run_in_background: true } }],
+        },
+      },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bgx", content: "Async agent launched successfully.\nagentId: bgx99" }] } },
+    ]);
+    const live = await readMeta(file, size);
+    expect(live.exploring).toBe(true);
+
+    const { file: f2, size: s2 } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "explore in background" } },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "toolu_bgx", name: "Agent", input: { subagent_type: "Explore", run_in_background: true } }],
+        },
+      },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bgx", content: "Async agent launched successfully.\nagentId: bgx99" }] } },
+      { type: "user", message: { role: "user", content: "<task-notification>\n<task-id>bgx99</task-id>\n<status>completed</status>\n</task-notification>" } },
+    ]);
+    const done = await readMeta(f2, s2);
+    expect(done.exploring).toBe(false);
+  });
+
   it("stamps prCreatedAt when a `gh pr create` command completes", async () => {
     const ts = "2026-06-14T17:30:00.000Z";
     const { file, size } = write([
