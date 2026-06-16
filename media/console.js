@@ -885,9 +885,16 @@
   window.addEventListener("message", (e) => {
     const m = e.data;
     if (m.type === "state") {
+      const prevIds = new Set(agents.map((a) => a.id)); // capture before we overwrite `agents`
       diffCrew(m.agents || []);
       agents = m.agents || [];
-      if (m.selectedId && panelOpen) selectedId = m.selectedId;
+      // Adopt the host's selection when the panel is open, OR when it points at a
+      // brand-new agent (a just-added + DEV). Without the fresh-agent case a closed
+      // panel would ignore the host's selectedId, so setSelected() never reaches the
+      // new dev and the camera stays on the tower overview instead of framing the
+      // new dev's room.
+      const freshSelect = m.selectedId && !prevIds.has(m.selectedId) && agents.some((a) => a.id === m.selectedId);
+      if (m.selectedId && (panelOpen || freshSelect)) selectedId = m.selectedId;
       renderTelemetry();
       renderSelDir(m.selectedDir);
       if (window.DevTowerCrew) {
