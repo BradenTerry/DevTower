@@ -25,9 +25,23 @@ SessionStart/SessionEnd hooks:
 
 **Tradeoff (intended):** a session whose `SessionEnd` never fires (a crash /
 `kill -9`, which the hook can't catch) lingers until its transcript drops out of
-the `sessionMaxAgeHours` scan window. And a session that started *before* the
-hooks were installed is not discovered (it left no `started` marker) — enabling
-the SessionStart hook is now required for a dev to appear.
+the `sessionMaxAgeHours` scan window.
+
+**Active-agent search (the fallback for un-hooked / pre-existing sessions).**
+`ClaudeDiscovery.searchActive()` sweeps `~/.claude/projects` for transcripts
+written within `ACTIVE_SEARCH_WINDOW_MS` (15 min) and seeds the live ones into a
+persisted `scanLive` set that `hookLiveCounts()` unions in — **no process scan**,
+a recently-written transcript is the liveness signal. It runs:
+
+- **on startup** (`extension.ts` → `discovery.searchActive()`), so any
+  already-running session surfaces on load even if it started before the hooks
+  were watching; and
+- **on the HUD ⟳ button / `devtower.refresh`** (`ConsolePanel.refreshAll()`).
+
+A discovered session persists across later hook-driven refreshes and self-prunes
+once its transcript goes idle past the window. So a session started before the
+SessionStart hook was installed now appears on startup or a manual refresh,
+rather than never.
 
 ## Done (this branch: `devtower/event-driven-cutover`)
 

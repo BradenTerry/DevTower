@@ -1497,13 +1497,14 @@ export class ConsolePanel implements MiniDelegate {
   /** Recompute live git stats + branch per ROOM (keyed by the room's checkout
    *  path, which is exactly the building key the webview uses) and push if it
    *  changed. Git is resolved from the path even when it lives in a parent dir. */
-  /** Manual full refresh: re-scan for sessions, re-read every room's git board,
-   *  and re-poll PRs. Wired to the devtower.refresh command and the tower's
-   *  Refresh button so the user can update on demand — the event-driven path
-   *  (.git watchers, file saves, hooks) handles the rest without background
-   *  polling. */
+  /** Manual full refresh: SEARCH for active agents (sweep the transcripts for
+   *  live sessions, including ones that started before the hooks were watching),
+   *  re-read every room's git board, and re-poll PRs. Wired to the devtower.refresh
+   *  command and the tower's Refresh button so the user can update on demand — the
+   *  event-driven path (.git watchers, file saves, hooks) handles the rest without
+   *  background polling. */
   async refreshAll(): Promise<void> {
-    await this.discovery?.refresh().catch(() => 0);
+    await this.discovery?.searchActive().catch(() => 0);
     // rebind any revived terminals to their agents (manual resync) so chat reveals
     // the live terminal instead of forking a duplicate session
     await this.terminals.reconcile().catch(() => {});

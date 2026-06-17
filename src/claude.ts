@@ -127,6 +127,18 @@ export class ClaudeDiscovery {
   // until it ages out (or its process genuinely returns as a live argv id).
   private retiredSessions = new Map<string, number>();
   private static readonly RETIRED_MAX_AGE_MS = 60 * 60_000;
+  // session uuid (lc) → cwd of a session DISCOVERED by an active-agent search
+  // (the HUD ⟳ button / startup), as opposed to one announced by a SessionStart
+  // hook. The hook markers only know about sessions that started while DevTower
+  // was watching; a search sweeps `~/.claude/projects` for transcripts written
+  // recently and seeds the still-live ones here so they surface (and persist
+  // across later hook-driven refreshes) without any process scan. Mirrored to
+  // persistence so a reload keeps them until they exit or go idle past the window.
+  private scanLive = new Map<string, { cwd: string }>();
+  // a transcript written within this window is treated as a live ("active")
+  // session by the search. Long enough to catch a session paused between turns,
+  // short enough that a finished one drops out on the next search.
+  private static readonly ACTIVE_SEARCH_WINDOW_MS = 15 * 60_000;
   // Fires when a watched session just ran `gh pr create` (seen in its transcript)
   // so the PR poller can fetch right away. `knownSessions` gates first-sight
   // seeding (a PR that predates discovery must NOT trigger on startup);
@@ -172,6 +184,19 @@ export class ClaudeDiscovery {
 
   private static readonly OWNED_KEY = "devtower.ownedLaunches";
   private static readonly RETIRED_KEY = "devtower.retiredLaunches";
+  private static readonly SCANLIVE_KEY = "devtower.scanLive";
+
+  /** session uuid (lc) → cwd of a search-discovered live session, mirrored to
+   *  persistence so a reload keeps showing it until it exits or ages out. */
+  private loadScanLive(): void {
+    const raw = this.deps.persist?.get<Record<string, { cwd: string }>>(ClaudeDiscovery.SCANLIVE_KEY, {}) ?? {};
+    for (const [u, v] of Object.entries(raw)) {
+      if (!this.retiredSessions.has(u) && v && typeof v.cwd === "string") this.scanLive.set(u, { cwd: v.cwd });
+    }
+  }
+  private saveScanLive(): void {
+    void this.deps.persist?.set(ClaudeDiscovery.SCANLIVE_KEY, Object.fromEntries(this.scanLive));
+  }
 
   /** session uuid (lc) → identity of a dev DevTower launched, mirrored to
    *  persistence so it survives a reload. */
@@ -197,6 +222,7 @@ export class ClaudeDiscovery {
     for (const [lc, ts] of Object.entries(retired)) {
       if (Date.now() - ts <= ClaudeDiscovery.RETIRED_MAX_AGE_MS) this.retiredSessions.set(lc, ts);
     }
+    this.loadScanLive(); // re-seed search-discovered sessions (after retired, so culled ones stay out)
     const owned = this.loadOwned();
     let restored = 0;
     for (const [uuid, o] of Object.entries(owned)) {
@@ -389,6 +415,12 @@ export class ClaudeDiscovery {
    * transcript can't be counted live. (A bare `claude` carries no launch id and is
    * left as-is — its /clear predecessor is dropped by the succession bind instead.)
    *
+   * Sessions found by an active-agent search (`scanLive`, seeded by the HUD ⟳
+   * button / startup) are unioned in too, so a session that started before the
+   * hooks were watching still surfaces. A dead predecessor that lingers in
+   * `scanLive` does no harm: refresh() suppresses stale/cleared/ended transcripts
+   * from `found` before the keep passes regardless of the live set.
+   *
    * `sessionIds` are the live sessions' exact uuids (so PASS 1 pins each running
    * transcript by identity); `counts` is the per-cwd tally (the claim budget).
    */
@@ -417,11 +449,52 @@ export class ClaudeDiscovery {
     const ended = await readEndMarkers(this.deps.endedDir);
     for (const [id] of ended) {
       const lc = id.toLowerCase();
-      if (live.delete(lc)) clearStartMarker(id, this.deps.startedDir);
+      live.delete(lc);
+      clearStartMarker(id, this.deps.startedDir);
+      this.scanLive.delete(lc); // an exited session is no longer search-live either
     }
+    // union in the active-agent search results (drop any that since exited/retired)
+    let scanChanged = false;
+    for (const [lc, s] of [...this.scanLive]) {
+      if (this.retiredSessions.has(lc)) { this.scanLive.delete(lc); scanChanged = true; continue; }
+      if (!live.has(lc)) live.set(lc, { cwd: s.cwd });
+    }
+    if (scanChanged) this.saveScanLive();
     const counts = new Map<string, number>();
     for (const s of live.values()) counts.set(s.cwd, (counts.get(s.cwd) ?? 0) + 1);
     return { mode: "perCwd", counts, sessionIds: new Set(live.keys()) };
+  }
+
+  /** Search `~/.claude/projects` for sessions that are LIVE right now (a transcript
+   *  written within ACTIVE_SEARCH_WINDOW_MS) and seed them into `scanLive` so they
+   *  surface even though no SessionStart hook announced them — the manual ⟳ button
+   *  and the startup scan. This is the only discovery path that finds sessions
+   *  started before DevTower was watching, and it uses NO process scan: a recently
+   *  written transcript is the liveness signal. Idle/finished sessions (mtime past
+   *  the window) are dropped so the search self-prunes. Then runs a refresh. */
+  async searchActive(): Promise<number> {
+    const root = this.deps.projectsRoot ?? path.join(os.homedir(), ".claude", "projects");
+    let found: Found[] = [];
+    try {
+      found = await this.scan(root);
+    } catch (e) {
+      elog("discovery.searchActive.scan", { root, message: String(e), stack: (e as any)?.stack });
+    }
+    const fresh = new Set<string>();
+    for (const f of found) {
+      if (Date.now() - f.mtime > ClaudeDiscovery.ACTIVE_SEARCH_WINDOW_MS) continue;
+      const lc = f.sessionId.toLowerCase();
+      if (this.retiredSessions.has(lc)) continue; // a closed dev must not be revived
+      fresh.add(lc);
+      this.scanLive.set(lc, { cwd: f.launchCwd });
+    }
+    // drop previously-discovered sessions that have gone quiet past the window, so
+    // the search reflects who is active NOW (a hook-announced one keeps its own
+    // `started` marker, so this only forgets search-only entries).
+    for (const lc of [...this.scanLive.keys()]) if (!fresh.has(lc)) this.scanLive.delete(lc);
+    this.saveScanLive();
+    dlog("discovery.searchActive", { found: found.length, live: [...this.scanLive.keys()].map((u) => u.slice(0, 8)) });
+    return this.refresh();
   }
 
   /** Scan + sync into the store. Returns how many sessions were found. */

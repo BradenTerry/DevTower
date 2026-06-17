@@ -1101,12 +1101,14 @@ describe("ClaudeDiscovery hook-driven liveness (no process scan)", () => {
   const newStore = () => new DevTowerStore({ subscriptions: [] } as any);
   const sid = (u: string) => "cc-" + u.slice(0, 8);
 
-  /** Write a transcript <uuid>.jsonl reporting `cwd`. */
-  const writeSession = (cwd: string, uuid = randomUUID()): string => {
-    fs.writeFileSync(
-      path.join(proj, `${uuid}.jsonl`),
-      JSON.stringify({ type: "user", cwd, message: { role: "user", content: "go" } }) + "\n"
-    );
+  /** Write a transcript <uuid>.jsonl reporting `cwd`, mtime `agoSec` ago. */
+  const writeSession = (cwd: string, uuid = randomUUID(), agoSec = 0): string => {
+    const file = path.join(proj, `${uuid}.jsonl`);
+    fs.writeFileSync(file, JSON.stringify({ type: "user", cwd, message: { role: "user", content: "go" } }) + "\n");
+    if (agoSec) {
+      const t = Date.now() / 1000 - agoSec;
+      fs.utimesSync(file, t, t);
+    }
     return uuid;
   };
   /** Drop a SessionStart `started` (liveness) marker for `uuid`. */
@@ -1195,5 +1197,58 @@ describe("ClaudeDiscovery hook-driven liveness (no process scan)", () => {
     // the superseded predecessor marker was swept from the registry
     await new Promise((r) => setTimeout(r, 10)); // clearStartMarker is fire-and-forget
     expect(fs.existsSync(path.join(startedDir, `${launch}.json`))).toBe(false);
+  });
+
+  // ---- searchActive: the HUD ⟳ button / startup transcript sweep -------------
+
+  it("searchActive surfaces a recently-active session with no SessionStart marker", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u = writeSession(wt, randomUUID(), 30); // active 30s ago, NO started marker
+
+    // a plain refresh ignores it (no hook said it's live)
+    await d.refresh();
+    expect(store.list()).toHaveLength(0);
+
+    // the ⟳ button / startup search sweeps it up as a live (external) agent
+    await d.searchActive();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+    expect(store.get(sid(u))!.external).toBe(true);
+  });
+
+  it("searchActive ignores a session whose transcript is past the active window", async () => {
+    const store = newStore();
+    const d = disc(store);
+    writeSession(wt, randomUUID(), 30 * 60); // 30 min stale → not active
+
+    await d.searchActive();
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("a searchActive-discovered session persists across a later plain refresh", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u = writeSession(wt, randomUUID(), 5);
+    await d.searchActive();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+
+    // a subsequent hook-driven refresh (e.g. a marker elsewhere woke it) keeps the
+    // discovered session — scanLive is unioned into liveness on every refresh.
+    await d.refresh();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+  });
+
+  it("searchActive forgets a discovered session once it goes idle past the window", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u = writeSession(wt, randomUUID(), 5);
+    await d.searchActive();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+
+    // its transcript goes quiet (now older than the window); a fresh search drops it
+    const stale = Date.now() / 1000 - 30 * 60;
+    fs.utimesSync(path.join(proj, `${u}.jsonl`), stale, stale);
+    await d.searchActive();
+    expect(store.list()).toHaveLength(0);
   });
 });
