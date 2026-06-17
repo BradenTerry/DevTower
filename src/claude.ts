@@ -887,6 +887,12 @@ export class ClaudeDiscovery {
           this.expecting.delete(key!);
           this.launchPending.delete(want);
           bindReason.set(want, viaLaunch ? "launch-id-cleared" : "launch-id");
+          // a viaLaunch bind IS a /clear (the operator cleared this dev before its
+          // first prompt, so the launch transcript never landed and case 3 can't
+          // fire). Flag it as cleared too, exactly like the succession bind, so the
+          // scene runs the shred trip instead of the dev silently adopting the new
+          // session and reading on as if nothing happened.
+          if (viaLaunch) succeeded.set(want, f.sessionId);
           // consume the succession marker that linked this successor: the
           // placeholder now owns the live session, so a later poll must not treat
           // the marker as a /clear still in flight (which would park the dev) or
