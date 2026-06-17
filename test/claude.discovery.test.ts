@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import { ClaudeDiscovery, parseLiveSessionIds } from "../src/claude";
-import { DevTowerStore } from "../src/store";
+import { DevTowerStore, resolveShirtColor } from "../src/store";
 
 /**
  * Exercises ClaudeDiscovery.refresh() end to end against a fake ~/.claude
@@ -25,6 +25,7 @@ describe("ClaudeDiscovery binding", () => {
   let endedDir: string; // fake ~/.claude/devtower/ended
   let activeDir: string; // fake ~/.claude/devtower/active
   let cmdDir: string; // fake ~/.claude/devtower/command
+  let histFile: string; // fake ~/.claude/history.jsonl
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-disc-"));
@@ -37,6 +38,7 @@ describe("ClaudeDiscovery binding", () => {
     endedDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-ended-"));
     activeDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-active-"));
     cmdDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-cmd-"));
+    histFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "devtower-hist-")), "history.jsonl");
   });
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
@@ -47,6 +49,7 @@ describe("ClaudeDiscovery binding", () => {
     fs.rmSync(endedDir, { recursive: true, force: true });
     fs.rmSync(activeDir, { recursive: true, force: true });
     fs.rmSync(cmdDir, { recursive: true, force: true });
+    fs.rmSync(path.dirname(histFile), { recursive: true, force: true });
   });
 
   /** Drop a SessionStart(clear) succession marker for the new session uuid,
@@ -122,6 +125,7 @@ describe("ClaudeDiscovery binding", () => {
       endedDir,
       activeDir,
       commandDir: cmdDir,
+      historyFile: histFile,
     });
 
   /** Drop a UserPromptSubmit control-command marker for a session. */
@@ -129,6 +133,14 @@ describe("ClaudeDiscovery binding", () => {
     fs.writeFileSync(
       path.join(cmdDir, `${uuid}.json`),
       JSON.stringify({ cwd: wt, ts: Date.now(), cmd, arg })
+    );
+
+  /** Append a built-in /rename or /color to the fake global history.jsonl, the
+   *  one signal those host-consumed commands leave behind. */
+  const appendHistory = (uuid: string, display: string, project = wt) =>
+    fs.appendFileSync(
+      histFile,
+      JSON.stringify({ display, pastedContents: {}, timestamp: Date.now(), project, sessionId: uuid }) + "\n"
     );
 
   /** Create a panel placeholder exactly as addDev does (no transcript yet). */
@@ -480,6 +492,29 @@ describe("ClaudeDiscovery binding", () => {
     const a = store.list()[0];
     expect(a.state).toBe("complete");
     expect(a.question).toBeUndefined(); // no question to answer
+  });
+
+  it("raises the hand when the turn asks a question then trails it with elaboration", async () => {
+    // The idle ping fires (turn ended), but the assistant's last paragraph posed
+    // a question followed by a long clause of detail after the "?". A short tail
+    // window misses it and wrongly shows complete; it must read as waiting.
+    const uuid = randomUUID();
+    const file = path.join(proj, `${uuid}.jsonl`);
+    const text =
+      "Two ways forward.\n\n" +
+      "Want me to do option 1? I'd rename the operator command to /shirt <colour> " +
+      "(keeping /rename as-is) and wire it through the four spots above.";
+    fs.writeFileSync(file,
+      JSON.stringify({ type: "user", cwd: wt, message: { role: "user", content: "fix it" } }) + "\n" +
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: text } }) + "\n");
+    writeMarker(uuid, "Claude is waiting for your input"); // idle ping, fresh
+
+    const store = newStore();
+    await discovery(store, { [wt]: 1 }, [uuid]).refresh();
+
+    const a = store.get("cc-" + uuid.slice(0, 8))!;
+    expect(a.state).toBe("waiting");
+    expect(a.question).toBe("Want me to do option 1?");
   });
 
   it("a just-resumed session reads active even before it writes to its transcript", async () => {
@@ -1039,6 +1074,53 @@ describe("ClaudeDiscovery binding", () => {
     writeCommand(uuid, "color", ""); // empty → clear back to procedural
     await disc.refresh();
     expect(store.get("isle-a1")!.shirtColor).toBeUndefined();
+  });
+
+  it("mirrors the BUILT-IN /rename and /color from history.jsonl onto the bound dev", async () => {
+    // The host consumes these before any hook runs, so they only surface in
+    // ~/.claude/history.jsonl. DevTower tails it and mirrors them onto the dev.
+    const store = newStore();
+    const disc = discovery(store, { [wt]: 1 });
+    placeholder(store, "isle-a1", wt);
+    const uuid = randomUUID();
+    disc.expectSession("isle-a1", uuid);
+    writeSession(wt, 0, uuid);
+
+    // a (valid) /color typed BEFORE DevTower started watching must NOT replay
+    appendHistory(uuid, "/color green");
+    await disc.refresh(); // binds the session AND seeks history to EOF
+    expect(store.get("isle-a1")!.shirtColor).toBeUndefined();
+
+    const renamed: { id: string; name: string }[] = [];
+    disc.onRenamed((e) => renamed.push(e));
+    appendHistory(uuid, "/rename Ada Lovelace");
+    appendHistory(uuid, "/color teal"); // not a built-in colour → host rejected → ignored
+    appendHistory(uuid, "/color red");
+    await disc.refresh();
+
+    expect(store.get("isle-a1")!.name).toBe("Ada Lovelace");
+    expect(store.get("isle-a1")!.shirtColor).toBe(resolveShirtColor("red"));
+    expect(renamed).toEqual([{ id: "isle-a1", name: "Ada Lovelace" }]);
+
+    // the built-in's /color default resets the override back to procedural
+    appendHistory(uuid, "/color default");
+    await disc.refresh();
+    expect(store.get("isle-a1")!.shirtColor).toBeUndefined();
+  });
+
+  it("ignores history lines for sessions DevTower does not track", async () => {
+    const store = newStore();
+    const disc = discovery(store, { [wt]: 1 });
+    placeholder(store, "isle-a1", wt);
+    const mine = randomUUID();
+    disc.expectSession("isle-a1", mine);
+    writeSession(wt, 0, mine);
+    await disc.refresh(); // bind + seek history EOF
+
+    appendHistory(randomUUID(), "/rename Somebody Else"); // a different, unbound session
+    await disc.refresh();
+
+    expect(store.get("isle-a1")!.name).toBe("isle-a1"); // untouched
   });
 
   it("keeps a command marker until its session binds, then applies it", async () => {
