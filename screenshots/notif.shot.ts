@@ -47,7 +47,7 @@ test("capture: notif", async ({ page }) => {
   await page.evaluate(() => (window as any).DevTowerCrew?.setPerfHud(true));
   await page.waitForTimeout(400);
 
-  // BEFORE: just the debug/perf HUD anchored at the bottom-left, no log
+  // BEFORE: the empty notification box (always present) with the debug HUD above
   await page.screenshot({ path: path.join(OUT, "notif-before.png"), clip });
   console.log("wrote notif-before.png");
 

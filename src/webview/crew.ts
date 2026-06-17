@@ -1924,21 +1924,24 @@ class PixelCrew {
     });
   }
 
-  /** Draw the notification log in screen space, anchored bottom-left. Records the
-   *  clickable row/clear rects for hit-testing and returns the total height it
-   *  consumed (incl. its bottom margin, 0 when empty) so the perf HUD can stack
-   *  on top of it. Called after draw() so its cost isn't measured. */
+  /** Draw the notification log in screen space, anchored bottom-left. The box is
+   *  always present (so it's a visible affordance even before any alert lands);
+   *  empty it shows a hint, otherwise the newest alerts. Records the clickable
+   *  row/clear rects for hit-testing and returns the total height it consumed
+   *  (incl. its bottom margin) so the perf HUD can stack on top of it. Called
+   *  after draw() so its cost isn't measured. */
   private drawNotifications(): number {
     this.notifRects = [];
-    if (this.notifs.length === 0) return 0;
     const ctx = this.ctx;
     const dpr = this.dpr();
     const ch = this.container.clientHeight;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
+    const empty = this.notifs.length === 0;
     const shown = this.notifs.slice(-this.NOTIF_SHOWN); // newest at the bottom
     const W = 256, rowH = 30, headH = 20, padX = 8;
-    const H = headH + shown.length * rowH + 6;
+    const bodyRows = empty ? 1 : shown.length; // reserve one line for the empty hint
+    const H = headH + bodyRows * rowH + 6;
     const x = 8, y = Math.max(8, ch - H - 8);
     // panel
     ctx.fillStyle = "rgba(8,12,18,0.9)";
@@ -1951,14 +1954,25 @@ class PixelCrew {
     ctx.font = "9px 'IBM Plex Mono', monospace";
     ctx.fillStyle = "#8a98a3";
     ctx.fillText(`NOTIFICATIONS  ${this.notifs.length}`, x + padX, y + headH / 2 + 1);
-    // clear-all ✕ in the header
-    const clrW = 16, clrX = x + W - clrW - 5, clrY = y + 2, clrH = headH - 4;
-    const clrHover = this.notifHoverKey === "notif:clear";
-    ctx.textAlign = "center";
-    ctx.font = "11px 'IBM Plex Mono', monospace";
-    ctx.fillStyle = clrHover ? "#ff6055" : "#6b7780";
-    ctx.fillText("✕", clrX + clrW / 2, y + headH / 2 + 1);
-    this.notifRects.push({ x: clrX, y: clrY, w: clrW, h: clrH, key: "notif:clear", clear: true });
+    // clear-all ✕ in the header (only when there's something to clear)
+    if (!empty) {
+      const clrW = 16, clrX = x + W - clrW - 5, clrY = y + 2, clrH = headH - 4;
+      const clrHover = this.notifHoverKey === "notif:clear";
+      ctx.textAlign = "center";
+      ctx.font = "11px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = clrHover ? "#ff6055" : "#6b7780";
+      ctx.fillText("✕", clrX + clrW / 2, y + headH / 2 + 1);
+      this.notifRects.push({ x: clrX, y: clrY, w: clrW, h: clrH, key: "notif:clear", clear: true });
+    }
+    // empty state: a muted hint instead of rows
+    if (empty) {
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.font = "10px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#5e6a73";
+      ctx.fillText("Agent alerts will show here", x + padX, y + headH + rowH / 2);
+      return H + 8;
+    }
     // rows (newest at the bottom, nearest the corner)
     let ry = y + headH;
     for (const n of shown) {
