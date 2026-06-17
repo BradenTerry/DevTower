@@ -4427,7 +4427,7 @@ class PixelCrew {
         ctx.fillStyle = "#ffb13d"; // amber, AA-contrast (see palette test)
         ctx.fillText("not connected", px, py);
       } else {
-        ctx.fillStyle = TEXT.muted;
+        ctx.fillStyle = "#ffffff"; // white so the empty-state reads as clearly as the heading
         ctx.fillText("no open PR", px, py);
       }
     } else {
