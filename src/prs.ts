@@ -28,6 +28,17 @@ export interface PrInfo {
   changesRequested: number;
   reviewersPending: number;
   comments: number; // discussion comments (issue + review "commented" submissions)
+  /** GitHub's merge-state status (mergeStateStatus), lowercased. The one that
+   *  trips people up is "behind": the branch is out of date with its base and
+   *  must be updated before it can merge (GitHub's "This branch is out-of-date
+   *  with the base branch"), even when every check is green. "dirty" = merge
+   *  conflicts; others are blocked/unstable/clean/draft/has_hooks/unknown. */
+  mergeState?: "behind" | "blocked" | "clean" | "dirty" | "draft" | "has_hooks" | "unstable" | "unknown";
+  /** True when the head has merge conflicts with the base (mergeable CONFLICTING). */
+  mergeConflict?: boolean;
+  /** Auto-merge is enabled: GitHub will merge this PR automatically once its
+   *  required checks/reviews pass, so a green-but-unmerged PR isn't stuck. */
+  autoMerge?: boolean;
   author?: string;
   agentId?: string;
   updatedAt?: string;
@@ -165,6 +176,22 @@ export function mapDecision(d: string | undefined): PrInfo["review"] {
     case "CHANGES_REQUESTED": return "changes";
     case "REVIEW_REQUIRED": return "required";
     default: return "none";
+  }
+}
+
+/** Map GitHub's mergeStateStatus enum onto our lowercased union. Anything we
+ *  don't recognise (including the transient "UNKNOWN" GitHub returns while it
+ *  recomputes mergeability) falls back to "unknown" so the board shows nothing. */
+export function mapMergeState(s: string | undefined): PrInfo["mergeState"] {
+  switch ((s ?? "").toUpperCase()) {
+    case "BEHIND": return "behind";
+    case "BLOCKED": return "blocked";
+    case "CLEAN": return "clean";
+    case "DIRTY": return "dirty";
+    case "DRAFT": return "draft";
+    case "HAS_HOOKS": return "has_hooks";
+    case "UNSTABLE": return "unstable";
+    default: return "unknown";
   }
 }
 
@@ -422,7 +449,7 @@ export class PrService {
 
     const raw = await runGh(cwd, [
       "pr", "list", "--head", branch, "--state", "open", "--limit", "1",
-      "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,author,reviews,reviewRequests,comments",
+      "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,author,reviews,reviewRequests,comments,mergeStateStatus,mergeable,autoMergeRequest",
     ], token);
     if (raw === null) return false; // gh errored (auth / rate limit)
     let matched = false;
@@ -455,6 +482,11 @@ export class PrService {
           changesRequested: rc.changesRequested,
           reviewersPending: rc.pending,
           comments,
+          mergeState: mapMergeState(p.mergeStateStatus),
+          mergeConflict:
+            String(p.mergeable ?? "").toUpperCase() === "CONFLICTING" ||
+            mapMergeState(p.mergeStateStatus) === "dirty",
+          autoMerge: !!p.autoMergeRequest,
           author: p.author?.login,
           agentId,
         };

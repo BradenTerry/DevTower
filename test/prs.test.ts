@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { rollupChecks, checkCounts, reviewCounts, mapDecision, PR_CHASE_DELAYS_MS, MERGED_CELEBRATE_MS } from "../src/prs";
+import { rollupChecks, checkCounts, reviewCounts, mapDecision, mapMergeState, PR_CHASE_DELAYS_MS, MERGED_CELEBRATE_MS } from "../src/prs";
 
 // gh CLI JSON → display state. Pure mapping/aggregation; OS-independent but core
 // to what the PR board shows, so worth pinning down.
@@ -96,5 +96,22 @@ describe("mapDecision", () => {
     expect(mapDecision("REVIEW_REQUIRED")).toBe("required");
     expect(mapDecision(undefined)).toBe("none");
     expect(mapDecision("weird")).toBe("none");
+  });
+});
+
+describe("mapMergeState", () => {
+  it("maps gh mergeStateStatus, case-insensitively", () => {
+    expect(mapMergeState("BEHIND")).toBe("behind"); // out of date with base
+    expect(mapMergeState("dirty")).toBe("dirty"); // conflicts
+    expect(mapMergeState("CLEAN")).toBe("clean");
+    expect(mapMergeState("BLOCKED")).toBe("blocked");
+    expect(mapMergeState("UNSTABLE")).toBe("unstable");
+    expect(mapMergeState("HAS_HOOKS")).toBe("has_hooks");
+    expect(mapMergeState("DRAFT")).toBe("draft");
+  });
+  it("falls back to 'unknown' for GitHub's transient/unrecognised states", () => {
+    expect(mapMergeState("UNKNOWN")).toBe("unknown");
+    expect(mapMergeState(undefined)).toBe("unknown");
+    expect(mapMergeState("")).toBe("unknown");
   });
 });
