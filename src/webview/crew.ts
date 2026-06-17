@@ -35,6 +35,7 @@ interface CrewAgent {
   clearedSession?: string; // session id of the dev's latest /clear; a change sends it to the shredder
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
   reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
+  shirtColor?: string; // operator-chosen shirt colour (/color); overrides the persona shirt
 }
 
 interface ReservedRoom {
@@ -79,6 +80,19 @@ function ghostColor(c: string): string {
   const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
   const y = 0.3 * r + 0.59 * g + 0.11 * b;
   const hx = (v: number) => Math.round(Math.min(255, (v * 0.2 + y * 0.8) * 0.82)).toString(16).padStart(2, "0");
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+/** Darken one shirt color (hsl() or #hex) to produce its shaded counterpart, so a
+ *  `/color`-chosen shirt gets the same two-tone shading as a procedural one. */
+function darkenColor(c: string): string {
+  if (typeof c !== "string") return "#555555";
+  const m = /^hsl\((\d+)\s+(\d+)%\s+(\d+)%\)$/.exec(c);
+  if (m) return `hsl(${m[1]} ${m[2]}% ${Math.round(+m[3] * 0.73)}%)`;
+  const h = c.replace("#", "");
+  if (h.length < 6) return c;
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  const hx = (v: number) => Math.round(v * 0.73).toString(16).padStart(2, "0");
   return `#${hx(r)}${hx(g)}${hx(b)}`;
 }
 
@@ -389,6 +403,7 @@ const DEFAULT_BRANCHES = new Set(["main", "master", "head", "develop", "trunk"])
 interface Toon {
   agent: CrewAgent;
   p: ReturnType<typeof persona>;
+  shirtColor?: string; // last-applied /color override, so p is only recomputed on change
   x: number;
   targetX: number;
   base: number; // floor baseline (world y)
@@ -639,17 +654,22 @@ class PixelCrew {
   private visRooms = new Set<string>(); // room keys on screen this frame (reused; cleared per draw)
   private cullOn = true; // viewport culling; off => visibleWorld returns an infinite rect (A/B + diagnostics)
 
-  // ---- notification log: a persistent box in the bottom-left HUD that captures
-  // notable agent events (questions, errors, completions) so a toast you weren't
-  // looking at stays around to be acted on. Clicking a row jumps to its agent;
-  // the ✕ in the header clears the log. The perf HUD stacks above it. ----
+  // ---- notification log: a collapsible inbox in the bottom-left HUD that
+  // captures notable agent events (questions, errors, completions) so a toast you
+  // weren't looking at stays around to be acted on. Collapsed it's an inbox icon
+  // with an unread badge; clicking it opens the panel ("modal"). In the panel,
+  // clicking a row jumps to its agent and closes the panel, the per-row ✕
+  // dismisses one alert (panel stays open), and the header ✕ closes the panel.
+  // The perf HUD stacks above it. ----
   private notifs: { id: number; icon: string; name: string; verb: string; repo: string; color: string; agentId?: string }[] = [];
   private notifSeq = 0;
+  private notifOpen = false; // collapsed (inbox icon) vs open (modal)
+  private notifP = 0; // modal open/close animation progress (0 collapsed → 1 open)
   private readonly NOTIF_MAX = 50; // history kept; only the newest NOTIF_SHOWN render
   private readonly NOTIF_SHOWN = 6;
-  // screen-space rects of the rows + clear button drawn last frame, for hit-testing
-  private notifRects: { x: number; y: number; w: number; h: number; key: string; agentId?: string; clear?: boolean }[] = [];
-  private notifHoverKey: string | null = null; // "notif:<id>" or "notif:clear"
+  // screen-space rects of the inbox/rows/buttons drawn last frame, for hit-testing
+  private notifRects: { x: number; y: number; w: number; h: number; key: string; agentId?: string; clear?: boolean; dismiss?: number; toggle?: boolean; close?: boolean }[] = [];
+  private notifHoverKey: string | null = null; // "notif:inbox|close|clear", "notif:<id>" or "notifx:<id>"
 
   // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
   // viewport so rooms frame into the visible area and stay clickable.
@@ -773,7 +793,7 @@ class PixelCrew {
         // notification box (screen-space, drawn on top) wins the hover first
         const { mx, my } = canvasXY(e);
         const nh = this.notifHit(mx, my);
-        if (nh && (nh.clearAll || nh.agentId)) {
+        if (nh) {
           this.container.style.cursor = "pointer";
           if (this.notifHoverKey !== nh.key) { this.notifHoverKey = nh.key; this.invalidate(); }
           return;
@@ -1122,6 +1142,14 @@ class PixelCrew {
         tn.riding = false;
         tn.sitting = false;
         this.invalidate(); // wake the loop so the relocation plays now
+      }
+      // a /color override (or its removal): repaint the shirt, only on change so
+      // the per-frame draw isn't re-parsing the colour every tick.
+      if (a.shirtColor !== tn.shirtColor) {
+        tn.shirtColor = a.shirtColor;
+        const base = persona(a.id);
+        tn.p.shirt = a.shirtColor || base.shirt;
+        tn.p.shirtDark = a.shirtColor ? darkenColor(a.shirtColor) : base.shirtDark;
       }
       tn.agent = a;
       // accumulate newly-used skills; the tick walks the dev to the shelf to
@@ -1824,6 +1852,23 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** Remove a single notification (its per-row ✕). */
+  dismissNotification(id: number) {
+    const i = this.notifs.findIndex((n) => n.id === id);
+    if (i < 0) return;
+    this.notifs.splice(i, 1);
+    if (this.notifHoverKey === "notifx:" + id || this.notifHoverKey === "notif:" + id) this.notifHoverKey = null;
+    this.invalidate();
+  }
+
+  /** Open/close the notification panel (collapsed = inbox icon). */
+  setNotifOpen(open: boolean) {
+    if (this.notifOpen === open) return;
+    this.notifOpen = open;
+    this.notifHoverKey = null;
+    this.invalidate();
+  }
+
   /** Empty the notification log (the header ✕). */
   clearNotifications() {
     if (this.notifs.length === 0) return;
@@ -1924,83 +1969,222 @@ class PixelCrew {
     });
   }
 
-  /** Draw the notification log in screen space, anchored bottom-left. The box is
-   *  always present (so it's a visible affordance even before any alert lands);
-   *  empty it shows a hint, otherwise the newest alerts. Records the clickable
-   *  row/clear rects for hit-testing and returns the total height it consumed
-   *  (incl. its bottom margin) so the perf HUD can stack on top of it. Called
-   *  after draw() so its cost isn't measured. */
+  /** Draw the notification HUD in screen space, anchored bottom-left. Collapsed
+   *  it's an inbox icon (with an unread badge); clicking it opens the panel. Open
+   *  it shows the newest alerts. Records the clickable rects for hit-testing and
+   *  returns the total height it consumed (incl. its bottom margin) so the perf
+   *  HUD can stack on top of it. Called after draw() so its cost isn't measured. */
   private drawNotifications(): number {
     this.notifRects = [];
     const ctx = this.ctx;
     const dpr = this.dpr();
-    const ch = this.container.clientHeight;
+    const cw = this.container.clientWidth, ch = this.container.clientHeight;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
+    // ease the open/close pop; keep repainting until it settles
+    const target = this.notifOpen ? 1 : 0;
+    this.notifP += (target - this.notifP) * 0.28;
+    if (Math.abs(target - this.notifP) > 0.004) this.invalidate();
+    else this.notifP = target;
+    // the inbox icon is the persistent trigger; hide it once the modal has grown
+    // enough to cover the corner
+    let h = 38;
+    if (this.notifP < 0.5) h = this.drawInboxButton(ch);
+    // the modal pops out over a dimmed backdrop while open/animating
+    if (this.notifP > 0.004) this.drawNotifModal(cw, ch, this.notifP);
+    return h;
+  }
+
+  /** Trace a rounded-rect path (no fill/stroke). */
+  private roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  /** The notification modal: a centered dialog that scales + fades in over a
+   *  dimmed backdrop. `p` (0..1) drives the pop. Clickable rects are registered
+   *  only once it's essentially settled, so mid-animation clicks don't land on
+   *  shifting targets. Clicking the backdrop (or the ✕) closes it. */
+  private drawNotifModal(cw: number, ch: number, p: number): void {
+    const ctx = this.ctx;
+    const settled = p > 0.985;
+    // dimmed backdrop
+    ctx.fillStyle = `rgba(4,7,11,${(0.55 * p).toFixed(3)})`;
+    ctx.fillRect(0, 0, cw, ch);
+
     const empty = this.notifs.length === 0;
-    const shown = this.notifs.slice(-this.NOTIF_SHOWN); // newest at the bottom
-    const W = 256, rowH = 30, headH = 20, padX = 8;
-    const bodyRows = empty ? 1 : shown.length; // reserve one line for the empty hint
-    const H = headH + bodyRows * rowH + 6;
-    const x = 8, y = Math.max(8, ch - H - 8);
-    // panel
-    ctx.fillStyle = "rgba(8,12,18,0.9)";
-    ctx.fillRect(x, y, W, H);
-    ctx.fillStyle = "rgba(94,145,73,0.5)";
-    ctx.fillRect(x, y, W, 1); // top accent line
-    // header
+    const rows = empty ? [] : this.notifs.slice(-this.NOTIF_SHOWN).reverse(); // newest at top
+    const W = Math.min(440, cw - 48);
+    const padX = 16, titleH = 46, rowH = 52, footH = empty ? 0 : 44;
+    const bodyH = empty ? 64 : rows.length * rowH;
+    const H = titleH + bodyH + footH;
+    const dcx = cw / 2, dcy = ch / 2;
+    const ox = dcx - W / 2, oy = dcy - H / 2; // dialog top-left at full scale
+    const s = 0.9 + 0.1 * p;
+
+    ctx.save();
+    ctx.translate(dcx, dcy);
+    ctx.scale(s, s);
+    ctx.translate(-W / 2, -H / 2);
+    ctx.globalAlpha = p;
+
+    // card: drop shadow, fill, accent border
+    ctx.shadowColor = "rgba(0,0,0,0.5)";
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 8;
+    ctx.fillStyle = "#0e141c";
+    this.roundRectPath(ctx, 0, 0, W, H, 10);
+    ctx.fill();
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(94,145,73,0.55)";
+    this.roundRectPath(ctx, 0.5, 0.5, W - 1, H - 1, 10);
+    ctx.stroke();
+
+    // title bar
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
-    ctx.font = "9px 'IBM Plex Mono', monospace";
-    ctx.fillStyle = "#8a98a3";
-    ctx.fillText(`NOTIFICATIONS  ${this.notifs.length}`, x + padX, y + headH / 2 + 1);
-    // clear-all ✕ in the header (only when there's something to clear)
+    ctx.font = "13px 'IBM Plex Mono', monospace";
+    ctx.fillStyle = "#e3ecf1";
+    ctx.fillText("Notifications", padX, titleH / 2);
+    const titleW = ctx.measureText("Notifications").width; // measure at the title font
     if (!empty) {
-      const clrW = 16, clrX = x + W - clrW - 5, clrY = y + 2, clrH = headH - 4;
-      const clrHover = this.notifHoverKey === "notif:clear";
+      ctx.font = "11px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#6b7780";
+      ctx.fillText(`(${this.notifs.length})`, padX + titleW + 8, titleH / 2 + 1);
+    }
+    // close ✕
+    const clsHover = this.notifHoverKey === "notif:close";
+    ctx.textAlign = "center";
+    ctx.font = "15px 'IBM Plex Mono', monospace";
+    ctx.fillStyle = clsHover ? "#ff6055" : "#8a98a3";
+    ctx.fillText("✕", W - padX - 2, titleH / 2 + 1);
+    // divider under the title
+    ctx.fillStyle = "rgba(255,255,255,0.06)";
+    ctx.fillRect(padX, titleH - 1, W - padX * 2, 1);
+
+    if (empty) {
+      ctx.textAlign = "center";
+      ctx.font = "12px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#5e6a73";
+      ctx.fillText("No notifications", W / 2, titleH + 32);
+    } else {
+      let ry = titleH;
+      for (const n of rows) {
+        if (n.agentId && this.notifHoverKey === "notif:" + n.id) {
+          ctx.fillStyle = "rgba(255,255,255,0.05)";
+          ctx.fillRect(6, ry, W - 12, rowH);
+        }
+        ctx.textAlign = "left";
+        ctx.fillStyle = n.color;
+        ctx.font = "16px 'IBM Plex Mono', monospace";
+        ctx.fillText(n.icon, padX, ry + rowH / 2);
+        ctx.font = "13px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = "#e3ecf1";
+        ctx.fillText(this.clipText(ctx, n.name, W - 170), padX + 24, ry + rowH / 2 - 8);
+        ctx.font = "11px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = n.color;
+        ctx.fillText(n.verb, padX + 24, ry + rowH / 2 + 9);
+        if (n.repo) {
+          ctx.textAlign = "right";
+          ctx.fillStyle = "#6b7780";
+          ctx.font = "10px 'IBM Plex Mono', monospace";
+          ctx.fillText(this.clipText(ctx, n.repo, 110), W - padX - 20, ry + rowH / 2 + 9);
+        }
+        // per-row dismiss ✕
+        const dxHover = this.notifHoverKey === "notifx:" + n.id;
+        ctx.textAlign = "center";
+        ctx.font = "13px 'IBM Plex Mono', monospace";
+        ctx.fillStyle = dxHover ? "#ff6055" : "#56636c";
+        ctx.fillText("✕", W - padX - 2, ry + rowH / 2 - 7);
+        ry += rowH;
+      }
+      // footer: clear-all button
+      const fy = titleH + bodyH;
+      ctx.fillStyle = "rgba(255,255,255,0.06)";
+      ctx.fillRect(padX, fy, W - padX * 2, 1);
+      const caHover = this.notifHoverKey === "notif:clear";
       ctx.textAlign = "center";
       ctx.font = "11px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = clrHover ? "#ff6055" : "#6b7780";
-      ctx.fillText("✕", clrX + clrW / 2, y + headH / 2 + 1);
-      this.notifRects.push({ x: clrX, y: clrY, w: clrW, h: clrH, key: "notif:clear", clear: true });
+      ctx.fillStyle = caHover ? "#ff6055" : "#8a98a3";
+      ctx.fillText("Clear all", W / 2, fy + footH / 2);
     }
-    // empty state: a muted hint instead of rows
-    if (empty) {
-      ctx.textAlign = "left";
+    ctx.restore();
+    ctx.globalAlpha = 1;
+
+    if (!settled) return; // don't register targets mid-pop
+    // dialog rects first (win over the backdrop), backdrop last
+    this.notifRects.push({ x: ox + W - padX - 16, y: oy + 6, w: 30, h: 34, key: "notif:close", close: true });
+    if (!empty) {
+      let ry = titleH;
+      for (const n of rows) {
+        this.notifRects.push({ x: ox + W - padX - 16, y: oy + ry + 6, w: 30, h: 30, key: "notifx:" + n.id, dismiss: n.id });
+        if (n.agentId) this.notifRects.push({ x: ox + 6, y: oy + ry, w: W - 12, h: rowH, key: "notif:" + n.id, agentId: n.agentId });
+        ry += rowH;
+      }
+      const fy = titleH + bodyH, caW = 100;
+      this.notifRects.push({ x: ox + W / 2 - caW / 2, y: oy + fy, w: caW, h: footH, key: "notif:clear", clear: true });
+    }
+    this.notifRects.push({ x: 0, y: 0, w: cw, h: ch, key: "notif:backdrop", close: true });
+  }
+
+  /** Collapsed notification HUD: a small inbox icon anchored bottom-left with an
+   *  unread badge. Clicking it (the toggle rect) opens the panel. Returns the
+   *  height consumed so the perf HUD stacks above it. */
+  private drawInboxButton(ch: number): number {
+    const ctx = this.ctx;
+    const bw = 40, bh = 30;
+    const x = 8, y = Math.max(8, ch - bh - 8);
+    const hover = this.notifHoverKey === "notif:inbox";
+    // panel
+    ctx.fillStyle = hover ? "rgba(20,28,38,0.95)" : "rgba(8,12,18,0.9)";
+    ctx.fillRect(x, y, bw, bh);
+    ctx.fillStyle = "rgba(94,145,73,0.5)";
+    ctx.fillRect(x, y, bw, 1); // top accent line
+    // inbox glyph (a tray with a dipped slot), centered
+    const iw = 18, ih = 14;
+    const ix = x + (bw - iw) / 2, iy = y + (bh - ih) / 2;
+    ctx.strokeStyle = hover ? "#e3ecf1" : "#a6b4bd";
+    ctx.lineWidth = 1.4;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.strokeRect(ix, iy, iw, ih); // tray body
+    const ty = iy + 8; // slot baseline in the lower third
+    ctx.beginPath();
+    ctx.moveTo(ix, ty);
+    ctx.lineTo(ix + 5, ty);
+    ctx.lineTo(ix + 7, ty + 3);
+    ctx.lineTo(ix + 11, ty + 3);
+    ctx.lineTo(ix + 13, ty);
+    ctx.lineTo(ix + iw, ty);
+    ctx.stroke();
+    // unread badge
+    const n = this.notifs.length;
+    if (n > 0) {
+      const hasErr = this.notifs.some((m) => m.color === "#ff6055");
+      const hasQ = this.notifs.some((m) => m.color === "#ffb13d");
+      const badge = hasErr ? "#ff6055" : hasQ ? "#ffb13d" : "#56c7ff";
+      const r = 7, cx = x + bw - r - 1, cy = y + r + 1;
+      ctx.fillStyle = badge;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#0a0f14";
+      ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.font = "10px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = "#5e6a73";
-      ctx.fillText("Agent alerts will show here", x + padX, y + headH + rowH / 2);
-      return H + 8;
+      ctx.font = "8px 'IBM Plex Mono', monospace";
+      ctx.fillText(n > 9 ? "9+" : String(n), cx, cy + 1);
     }
-    // rows (newest at the bottom, nearest the corner)
-    let ry = y + headH;
-    for (const n of shown) {
-      const key = "notif:" + n.id;
-      if (n.agentId && this.notifHoverKey === key) {
-        ctx.fillStyle = "rgba(255,255,255,0.07)";
-        ctx.fillRect(x + 1, ry, W - 2, rowH);
-      }
-      ctx.textAlign = "left";
-      ctx.fillStyle = n.color;
-      ctx.font = "12px 'IBM Plex Mono', monospace";
-      ctx.fillText(n.icon, x + padX, ry + rowH / 2 + 1);
-      ctx.font = "11px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = "#e3ecf1";
-      ctx.fillText(this.clipText(ctx, n.name, 150), x + padX + 16, ry + 11);
-      ctx.font = "9px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = n.color;
-      ctx.fillText(n.verb, x + padX + 16, ry + 22);
-      if (n.repo) {
-        ctx.textAlign = "right";
-        ctx.fillStyle = "#6b7780";
-        ctx.font = "9px 'IBM Plex Mono', monospace";
-        ctx.fillText(this.clipText(ctx, n.repo, 84), x + W - padX, ry + 22);
-      }
-      if (n.agentId) this.notifRects.push({ x, y: ry, w: W, h: rowH, key, agentId: n.agentId });
-      ry += rowH;
-    }
-    return H + 8; // consumed height incl. the 8px bottom margin
+    this.notifRects.push({ x, y, w: bw, h: bh, key: "notif:inbox", toggle: true });
+    return bh + 8; // consumed height incl. the 8px bottom margin
   }
 
   /** Truncate `s` with a trailing ellipsis so it fits within `maxW` px at the
@@ -2017,10 +2201,14 @@ class PixelCrew {
   }
 
   /** Screen-space hit-test for the notification box rects drawn last frame. */
-  private notifHit(mx: number, my: number): { agentId?: string; clearAll?: boolean; key: string } | null {
+  private notifHit(mx: number, my: number): { agentId?: string; clearAll?: boolean; dismiss?: number; toggle?: boolean; close?: boolean; key: string } | null {
     for (const r of this.notifRects) {
       if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
-        return r.clear ? { clearAll: true, key: r.key } : { agentId: r.agentId, key: r.key };
+        if (r.toggle) return { toggle: true, key: r.key };
+        if (r.close) return { close: true, key: r.key };
+        if (r.clear) return { clearAll: true, key: r.key };
+        if (r.dismiss !== undefined) return { dismiss: r.dismiss, key: r.key };
+        return { agentId: r.agentId, key: r.key };
       }
     }
     return null;
@@ -2938,8 +3126,14 @@ class PixelCrew {
     const rect = this.canvas.getBoundingClientRect();
     const nh = this.notifHit(e.clientX - rect.left, e.clientY - rect.top);
     if (nh) {
-      if (nh.clearAll) this.clearNotifications();
+      if (nh.toggle) { this.notifOpen = !this.notifOpen; this.notifHoverKey = null; this.invalidate(); }
+      else if (nh.close) { this.notifOpen = false; this.notifHoverKey = null; this.invalidate(); }
+      else if (nh.clearAll) this.clearNotifications();
+      else if (nh.dismiss !== undefined) this.dismissNotification(nh.dismiss); // keep the panel open
       else if (nh.agentId) {
+        // jumping to an agent closes the panel ("modal")
+        this.notifOpen = false;
+        this.notifHoverKey = null;
         this.onSelectCb(nh.agentId);
         this.focusAgent(nh.agentId);
       }
@@ -5184,6 +5378,9 @@ class PixelCrew {
   },
   clearNotifications() {
     this._instance?.clearNotifications();
+  },
+  setNotifOpen(open: boolean) {
+    this._instance?.setNotifOpen(open);
   },
   setCull(on: boolean) {
     this._instance?.setCull(on);

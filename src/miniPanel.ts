@@ -73,7 +73,10 @@ export class MiniPanel {
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "media")],
       }
     );
-    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "media", "devtower.svg");
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(context.extensionUri, "media", "devtower-light.svg"),
+      dark: vscode.Uri.joinPath(context.extensionUri, "media", "devtower-dark.svg"),
+    };
     MiniPanel.current = new MiniPanel(panel, context, delegate);
     return MiniPanel.current;
   }

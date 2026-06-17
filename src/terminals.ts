@@ -99,7 +99,12 @@ export class TerminalManager {
       const cwd = resolveCwd(agent);
       term = vscode.window.createTerminal({
         name: agent.name,
-        iconPath: vscode.Uri.joinPath(this.extensionUri, "media", "devtower.svg"),
+        // theme-aware pair so the tower stays visible: file-URI SVGs don't get a
+        // currentColor context here, so a single svg renders black on dark themes.
+        iconPath: {
+          light: vscode.Uri.joinPath(this.extensionUri, "media", "devtower-light.svg"),
+          dark: vscode.Uri.joinPath(this.extensionUri, "media", "devtower-dark.svg"),
+        },
         cwd,
         message: `DevTower session — ${agent.repo} ⌥ ${agent.branch}`,
       });
@@ -167,6 +172,25 @@ export class TerminalManager {
     term.show(true);
     term.sendText(`\x1b[200~${text}\x1b[201~`, false); // bracketed paste, no newline
     term.sendText("", true); // Enter → submit
+  }
+
+  /** Retitle an agent's console to match its (renamed) agent name, WITHOUT
+   *  killing the live session. VS Code exposes no setter for a terminal's name,
+   *  so reveal the terminal (focused, so it becomes the active one) and rename it
+   *  in place via the built-in command. Only owned terminals exist here; an
+   *  external session runs in its own terminal we don't manage, so this no-ops. */
+  async rename(agentId: string, name: string): Promise<void> {
+    const term = this.terminals.get(agentId);
+    if (!term || !name.trim()) return;
+    term.show(false); // focus it → renameWithArg targets the active terminal
+    try {
+      await vscode.commands.executeCommand("workbench.action.terminal.renameWithArg", {
+        name: name.trim(),
+      });
+      dlog("terminal.rename", { agentId, name: name.trim() });
+    } catch (e) {
+      dlog("terminal.rename.fail", { agentId, err: String(e) });
+    }
   }
 
   /** Kill one agent's terminal (and the session process running in it). */
