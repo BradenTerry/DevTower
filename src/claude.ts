@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState, Agent, resolveShirtColor } from "./store";
 import { currentBranch, isRepo, canonicalDir } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, readCommandMarkers, clearCommandMarker, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SUCCESSION_DIR, RESUME_DIR, COMMAND_DIR } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, readSkillMarkers, readCommandMarkers, clearCommandMarker, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SKILL_DIR, SUCCESSION_DIR, RESUME_DIR, COMMAND_DIR } from "./hooks";
 import { dlog, elog, recordExec } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -186,6 +186,7 @@ export class ClaudeDiscovery {
       endedDir?: string;
       activeDir?: string;
       editedDir?: string;
+      skillDir?: string;
       commandDir?: string;
       persist?: LaunchPersist;
     } = {}
@@ -331,6 +332,7 @@ export class ClaudeDiscovery {
       this.deps.activeDir ?? ACTIVE_DIR,
       this.deps.endedDir ?? ENDED_DIR,
       this.deps.editedDir ?? EDITED_DIR,
+      this.deps.skillDir ?? SKILL_DIR,
       this.deps.successionDir ?? SUCCESSION_DIR,
       this.deps.resumeDir ?? RESUME_DIR,
       this.deps.commandDir ?? COMMAND_DIR,
@@ -1245,6 +1247,13 @@ export class ClaudeDiscovery {
     // the session that touched the working tree, so a git change beams from the
     // dev that made it rather than the first dev in the room.
     const edits = await readEditMarkers(this.deps.editedDir);
+    // hook-backed "this dev just loaded a skill": PreToolUse(Skill) drops a marker
+    // the instant the Skill tool runs. Its only job is to have woken this refresh
+    // (the Skill tool drops no other marker, so the borrow animation would
+    // otherwise wait for the next incidental marker); the skill NAME still comes
+    // from the transcript. Its ts folds into activity time below — a skill load is
+    // activity — and reading it here prunes the markers a Skill burst left behind.
+    const skillPings = await readSkillMarkers(this.deps.skillDir);
     // the Task tool's per-session store lives beside `projects/` under `tasks/`
     const tasksRoot = this.deps.tasksRoot ?? path.join(root, "..", "tasks");
 
@@ -1276,6 +1285,7 @@ export class ClaudeDiscovery {
           st.mtimeMs,
           await newestSubMtime(pdir, sessionId),
           active.get(sessionId)?.ts ?? 0,
+          skillPings.get(sessionId)?.ts ?? 0,
         );
         const age = now - activityMtime;
         // a fresh Notification marker overrides everything: the harness told us
