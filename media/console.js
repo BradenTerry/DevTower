@@ -232,6 +232,15 @@
     setTimeout(() => el.remove(), life + 800);
   }
 
+  // Mirror a notable agent event into the scene's persistent notification box
+  // (bottom-left of the canvas HUD). Unlike the toasts above, these don't fade —
+  // they accumulate so a question/error/finish you weren't watching is still
+  // there to act on. Clicking a row in the box flies to that agent.
+  function pushNotif(kind, a) {
+    if (window.DevTowerCrew && DevTowerCrew.pushNotification)
+      DevTowerCrew.pushNotification({ kind, name: a.name || a.id, repo: a.repo, agentId: a.id });
+  }
+
   function diffCrew(next) {
     if (firstState) {
       next.forEach((a) => prevStates.set(a.id, a.state));
@@ -251,9 +260,9 @@
       if (prev === undefined) {
         pushFeed(`<span class="fi">▸</span><b>${esc(a.name)}</b> joined<span class="repo">${esc(a.repo)}</span>`, "var(--active)");
       } else if (prev !== a.state) {
-        if (a.state === "waiting") pushFeed(`<span class="fi">?</span><b>${esc(a.name)}</b> has a question<span class="repo">${esc(a.repo)}</span>`, "var(--waiting)", { agentId: a.id });
-        else if (a.state === "error") pushFeed(`<span class="fi">✗</span><b>${esc(a.name)}</b> hit an error<span class="repo">${esc(a.repo)}</span>`, "var(--error)");
-        else if (a.state === "complete") pushFeed(`<span class="fi">✓</span><b>${esc(a.name)}</b> finished<span class="repo">${esc(a.repo)}</span>`, "var(--complete)");
+        if (a.state === "waiting") { pushFeed(`<span class="fi">?</span><b>${esc(a.name)}</b> has a question<span class="repo">${esc(a.repo)}</span>`, "var(--waiting)", { agentId: a.id }); pushNotif("question", a); }
+        else if (a.state === "error") { pushFeed(`<span class="fi">✗</span><b>${esc(a.name)}</b> hit an error<span class="repo">${esc(a.repo)}</span>`, "var(--error)"); pushNotif("error", a); }
+        else if (a.state === "complete") { pushFeed(`<span class="fi">✓</span><b>${esc(a.name)}</b> finished<span class="repo">${esc(a.repo)}</span>`, "var(--complete)"); pushNotif("done", a); }
       }
       prevStates.set(a.id, a.state);
     }

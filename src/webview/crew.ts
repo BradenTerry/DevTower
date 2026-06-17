@@ -638,6 +638,19 @@ class PixelCrew {
   private toonsDrawn = 0; // toons painted last frame
   private visRooms = new Set<string>(); // room keys on screen this frame (reused; cleared per draw)
   private cullOn = true; // viewport culling; off => visibleWorld returns an infinite rect (A/B + diagnostics)
+
+  // ---- notification log: a persistent box in the bottom-left HUD that captures
+  // notable agent events (questions, errors, completions) so a toast you weren't
+  // looking at stays around to be acted on. Clicking a row jumps to its agent;
+  // the ✕ in the header clears the log. The perf HUD stacks above it. ----
+  private notifs: { id: number; icon: string; name: string; verb: string; repo: string; color: string; agentId?: string }[] = [];
+  private notifSeq = 0;
+  private readonly NOTIF_MAX = 50; // history kept; only the newest NOTIF_SHOWN render
+  private readonly NOTIF_SHOWN = 6;
+  // screen-space rects of the rows + clear button drawn last frame, for hit-testing
+  private notifRects: { x: number; y: number; w: number; h: number; key: string; agentId?: string; clear?: boolean }[] = [];
+  private notifHoverKey: string | null = null; // "notif:<id>" or "notif:clear"
+
   // HUD overlays (agent panel / PR board) cover the canvas edges; inset the
   // viewport so rooms frame into the visible area and stay clickable.
   // insetL/insetR are the TARGETs; curInsetL/curInsetR are the animated values
@@ -712,12 +725,16 @@ class PixelCrew {
       // grabbing a toon begins a drag-to-relocate gesture, not a camera pan.
       // An active agent can't be relocated (its session is mid-task), so the
       // drag is blocked — a tap still selects it.
-      const hit = this.pick(e);
-      if (hit.agent) {
-        const { mx, my } = canvasXY(e);
-        const blocked = this.toons.get(hit.agent)?.agent.state === "active";
-        this.toonDrag = { id: hit.agent, active: false, mx, my, blocked };
-        return;
+      const { mx, my } = canvasXY(e);
+      // a press inside the notification box must not grab a toon behind it; fall
+      // through to a plain (no-move) drag so the tap routes to onClick.
+      if (!this.notifHit(mx, my)) {
+        const hit = this.pick(e);
+        if (hit.agent) {
+          const blocked = this.toons.get(hit.agent)?.agent.state === "active";
+          this.toonDrag = { id: hit.agent, active: false, mx, my, blocked };
+          return;
+        }
       }
       this.drag.active = true;
       this.drag.moved = false;
@@ -753,6 +770,15 @@ class PixelCrew {
         return;
       }
       if (!this.drag.active) {
+        // notification box (screen-space, drawn on top) wins the hover first
+        const { mx, my } = canvasXY(e);
+        const nh = this.notifHit(mx, my);
+        if (nh && (nh.clearAll || nh.agentId)) {
+          this.container.style.cursor = "pointer";
+          if (this.notifHoverKey !== nh.key) { this.notifHoverKey = nh.key; this.invalidate(); }
+          return;
+        }
+        if (this.notifHoverKey !== null) { this.notifHoverKey = null; this.invalidate(); }
         const hit = this.pick(e);
         const clickable = !!(hit.agent || hit.room || hit.ghost || hit.addDev || hit.useDir || hit.removeBtn ||
           hit.removeWtBtn || hit.openPrUrl);
@@ -814,6 +840,7 @@ class PixelCrew {
     });
     canvas.addEventListener("pointerleave", () => {
       if (this.hoverKey !== null) { this.hoverKey = null; this.invalidate(); } // clear button highlight
+      if (this.notifHoverKey !== null) { this.notifHoverKey = null; this.invalidate(); }
       this.container.style.cursor = "default";
     });
     canvas.addEventListener(
@@ -1773,6 +1800,38 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** Append a notification to the bottom-left log. `kind` picks the icon/color;
+   *  `agentId` (when set) makes the row clickable → selects & flies to that dev. */
+  pushNotification(n: { kind: string; name: string; repo?: string; agentId?: string }) {
+    const STYLE: Record<string, { icon: string; color: string; verb: string }> = {
+      question: { icon: "?", color: "#ffb13d", verb: "has a question" },
+      error: { icon: "✗", color: "#ff6055", verb: "hit an error" },
+      done: { icon: "✓", color: "#3ee089", verb: "finished" },
+      join: { icon: "▸", color: "#56c7ff", verb: "joined" },
+      leave: { icon: "◂", color: "#8a98a3", verb: "left" },
+    };
+    const s = STYLE[n.kind] ?? { icon: "•", color: "#a6b4bd", verb: n.kind };
+    this.notifs.push({
+      id: ++this.notifSeq,
+      icon: s.icon,
+      name: n.name || n.agentId || "agent",
+      verb: s.verb,
+      repo: n.repo || "",
+      color: s.color,
+      agentId: n.agentId,
+    });
+    if (this.notifs.length > this.NOTIF_MAX) this.notifs.splice(0, this.notifs.length - this.NOTIF_MAX);
+    this.invalidate();
+  }
+
+  /** Empty the notification log (the header ✕). */
+  clearNotifications() {
+    if (this.notifs.length === 0) return;
+    this.notifs = [];
+    this.notifHoverKey = null;
+    this.invalidate();
+  }
+
   /** Toggle viewport culling. Used by the benchmark/correctness harness to A/B the
    *  same scene with culling on vs off; off must be pixel-identical for what's on
    *  screen (it just also paints the off-screen rest). */
@@ -1835,7 +1894,7 @@ class PixelCrew {
   /** Draw the perf overlay in screen space, anchored bottom-left (clear of the
    *  telemetry header and the usage meters). Called after draw() so its own cost
    *  is excluded from the measured draw() self-time. */
-  private drawPerfHud() {
+  private drawPerfHud(bottomOffset = 0) {
     const ctx = this.ctx;
     const dpr = this.dpr();
     const ch = this.container.clientHeight;
@@ -1852,7 +1911,8 @@ class PixelCrew {
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
     const w = 188, h = lines.length * 13 + 9;
-    const x = 8, y = Math.max(8, ch - h - 8);
+    // stack above the notification box (bottomOffset) when one is showing
+    const x = 8, y = Math.max(8, ch - h - 8 - bottomOffset);
     ctx.fillStyle = "rgba(8,12,18,0.82)";
     ctx.fillRect(x, y, w, h);
     ctx.fillStyle = "rgba(94,145,73,0.5)";
@@ -1863,6 +1923,109 @@ class PixelCrew {
       ctx.fillText(ln, x + 6, y + 14 + i * 13);
     });
   }
+
+  /** Draw the notification log in screen space, anchored bottom-left. The box is
+   *  always present (so it's a visible affordance even before any alert lands);
+   *  empty it shows a hint, otherwise the newest alerts. Records the clickable
+   *  row/clear rects for hit-testing and returns the total height it consumed
+   *  (incl. its bottom margin) so the perf HUD can stack on top of it. Called
+   *  after draw() so its cost isn't measured. */
+  private drawNotifications(): number {
+    this.notifRects = [];
+    const ctx = this.ctx;
+    const dpr = this.dpr();
+    const ch = this.container.clientHeight;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    const empty = this.notifs.length === 0;
+    const shown = this.notifs.slice(-this.NOTIF_SHOWN); // newest at the bottom
+    const W = 256, rowH = 30, headH = 20, padX = 8;
+    const bodyRows = empty ? 1 : shown.length; // reserve one line for the empty hint
+    const H = headH + bodyRows * rowH + 6;
+    const x = 8, y = Math.max(8, ch - H - 8);
+    // panel
+    ctx.fillStyle = "rgba(8,12,18,0.9)";
+    ctx.fillRect(x, y, W, H);
+    ctx.fillStyle = "rgba(94,145,73,0.5)";
+    ctx.fillRect(x, y, W, 1); // top accent line
+    // header
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.font = "9px 'IBM Plex Mono', monospace";
+    ctx.fillStyle = "#8a98a3";
+    ctx.fillText(`NOTIFICATIONS  ${this.notifs.length}`, x + padX, y + headH / 2 + 1);
+    // clear-all ✕ in the header (only when there's something to clear)
+    if (!empty) {
+      const clrW = 16, clrX = x + W - clrW - 5, clrY = y + 2, clrH = headH - 4;
+      const clrHover = this.notifHoverKey === "notif:clear";
+      ctx.textAlign = "center";
+      ctx.font = "11px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = clrHover ? "#ff6055" : "#6b7780";
+      ctx.fillText("✕", clrX + clrW / 2, y + headH / 2 + 1);
+      this.notifRects.push({ x: clrX, y: clrY, w: clrW, h: clrH, key: "notif:clear", clear: true });
+    }
+    // empty state: a muted hint instead of rows
+    if (empty) {
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.font = "10px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#5e6a73";
+      ctx.fillText("Agent alerts will show here", x + padX, y + headH + rowH / 2);
+      return H + 8;
+    }
+    // rows (newest at the bottom, nearest the corner)
+    let ry = y + headH;
+    for (const n of shown) {
+      const key = "notif:" + n.id;
+      if (n.agentId && this.notifHoverKey === key) {
+        ctx.fillStyle = "rgba(255,255,255,0.07)";
+        ctx.fillRect(x + 1, ry, W - 2, rowH);
+      }
+      ctx.textAlign = "left";
+      ctx.fillStyle = n.color;
+      ctx.font = "12px 'IBM Plex Mono', monospace";
+      ctx.fillText(n.icon, x + padX, ry + rowH / 2 + 1);
+      ctx.font = "11px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#e3ecf1";
+      ctx.fillText(this.clipText(ctx, n.name, 150), x + padX + 16, ry + 11);
+      ctx.font = "9px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = n.color;
+      ctx.fillText(n.verb, x + padX + 16, ry + 22);
+      if (n.repo) {
+        ctx.textAlign = "right";
+        ctx.fillStyle = "#6b7780";
+        ctx.font = "9px 'IBM Plex Mono', monospace";
+        ctx.fillText(this.clipText(ctx, n.repo, 84), x + W - padX, ry + 22);
+      }
+      if (n.agentId) this.notifRects.push({ x, y: ry, w: W, h: rowH, key, agentId: n.agentId });
+      ry += rowH;
+    }
+    return H + 8; // consumed height incl. the 8px bottom margin
+  }
+
+  /** Truncate `s` with a trailing ellipsis so it fits within `maxW` px at the
+   *  ctx's current font. */
+  private clipText(ctx: CanvasRenderingContext2D, s: string, maxW: number): string {
+    if (ctx.measureText(s).width <= maxW) return s;
+    let lo = 0, hi = s.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (ctx.measureText(s.slice(0, mid) + "…").width <= maxW) lo = mid;
+      else hi = mid - 1;
+    }
+    return s.slice(0, lo) + "…";
+  }
+
+  /** Screen-space hit-test for the notification box rects drawn last frame. */
+  private notifHit(mx: number, my: number): { agentId?: string; clearAll?: boolean; key: string } | null {
+    for (const r of this.notifRects) {
+      if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+        return r.clear ? { clearAll: true, key: r.key } : { agentId: r.agentId, key: r.key };
+      }
+    }
+    return null;
+  }
+
   /** Book preference: "ebook" makes devs read skills on their phone at the desk
    *  (no shelf trip), with a tiny e-reader counter on the desk; "physical" (the
    *  default) keeps the walk to the bookshelf. */
@@ -2032,7 +2195,8 @@ class PixelCrew {
         const t0 = performance.now();
         this.draw();
         this.recordDraw(t0, performance.now());
-        if (this.perfHud) this.drawPerfHud();
+        const notifH = this.drawNotifications();
+        if (this.perfHud) this.drawPerfHud(notifH);
       }
       if (!moving && !this.dirty && this.sceneIdle()) {
         // nothing left to animate — park the loop until woken
@@ -2769,6 +2933,18 @@ class PixelCrew {
   }
 
   private onClick(e: PointerEvent) {
+    // the notification box sits on top of the scene in screen space; resolve its
+    // clicks before the world pick so a row over a building doesn't focus the room
+    const rect = this.canvas.getBoundingClientRect();
+    const nh = this.notifHit(e.clientX - rect.left, e.clientY - rect.top);
+    if (nh) {
+      if (nh.clearAll) this.clearNotifications();
+      else if (nh.agentId) {
+        this.onSelectCb(nh.agentId);
+        this.focusAgent(nh.agentId);
+      }
+      return;
+    }
     const hit = this.pick(e);
     this.dbg("cam.click", {
       kind: hit.addDev ? "addDev" : hit.room ? "room" : hit.agent ? "agent" : hit.ghost ? "ghost"
@@ -5002,6 +5178,12 @@ class PixelCrew {
   },
   setPerfHud(on: boolean) {
     this._instance?.setPerfHud(on);
+  },
+  pushNotification(n: { kind: string; name: string; repo?: string; agentId?: string }) {
+    this._instance?.pushNotification(n);
+  },
+  clearNotifications() {
+    this._instance?.clearNotifications();
   },
   setCull(on: boolean) {
     this._instance?.setCull(on);
