@@ -78,8 +78,18 @@
     });
   }
 
-  function selectAgent(id, open) {
+  // Resolve an agent's alerts when the user engages it (clicks the dev anywhere)
+  // or when the alert clears on its own. `kind` (e.g. "question") narrows it to the
+  // one alert that just resolved; omitted, every alert for the agent is cleared.
+  // Covers both surfaces: the fading toast feed AND the persistent canvas inbox.
+  function resolveAgentAlerts(id, kind) {
     dismissAgentFeed(id);
+    if (window.DevTowerCrew && DevTowerCrew.dismissAgentNotifications)
+      DevTowerCrew.dismissAgentNotifications(id, kind);
+  }
+
+  function selectAgent(id, open) {
+    resolveAgentAlerts(id);
     selectedId = id;
     vscode.postMessage({ type: "select", id }); // reveals the agent's terminal
     if (window.DevTowerCrew) {
@@ -260,6 +270,11 @@
       if (prev === undefined) {
         pushFeed(`<span class="fi">▸</span><b>${esc(a.name)}</b> joined<span class="repo">${esc(a.repo)}</span>`, "var(--active)");
       } else if (prev !== a.state) {
+        // the dev moved on from an actionable alert (answered the question, cleared
+        // the error) — drop that stale notification so the inbox doesn't keep a
+        // resolved alert the user can no longer act on.
+        if (prev === "waiting") resolveAgentAlerts(a.id, "question");
+        else if (prev === "error") resolveAgentAlerts(a.id, "error");
         if (a.state === "waiting") { pushFeed(`<span class="fi">?</span><b>${esc(a.name)}</b> has a question<span class="repo">${esc(a.repo)}</span>`, "var(--waiting)", { agentId: a.id }); pushNotif("question", a); }
         else if (a.state === "error") { pushFeed(`<span class="fi">✗</span><b>${esc(a.name)}</b> hit an error<span class="repo">${esc(a.repo)}</span>`, "var(--error)"); pushNotif("error", a); }
         else if (a.state === "complete") { pushFeed(`<span class="fi">✓</span><b>${esc(a.name)}</b> finished<span class="repo">${esc(a.repo)}</span>`, "var(--complete)"); pushNotif("done", a); }

@@ -131,6 +131,13 @@ export class ClaudeDiscovery {
   private launchPending = new Map<string, number>();
   // slack for clock skew / mtime granularity when comparing launch vs transcript
   private static readonly ADOPT_SLACK_MS = 10_000;
+  // how long a pinned launch may stay transcriptless before its placeholder is
+  // allowed to MERGE the lone live session in its worktree (the stranded-launch
+  // dedupe). A real launched session writes its first transcript within a second
+  // or two, so well past that window a still-missing transcript means the session
+  // /clear'd or resumed to a different uuid before its first prompt (no marker to
+  // link them). Long enough that a merely-slow spawn is never grabbed.
+  private static readonly STRANDED_MS = 15_000;
   // session uuid → placeholder agent id, when DevTower launched `claude` with an
   // explicit --session-id. This is the DETERMINISTIC binding: the launched
   // transcript filename IS that uuid, so its session binds to exactly the
@@ -844,6 +851,11 @@ export class ClaudeDiscovery {
     // launched session as a ghost. expecting is pruned each poll, so this holds
     // only genuinely-pending pins.
     const awaitingPinned = new Set(this.expecting.values());
+    // live sessions per worktree (cwd): the stranded-launch merge below only fires
+    // when a placeholder's worktree holds exactly ONE, so there is no ambiguity
+    // about which live session is its continuation.
+    const foundPerCwd = new Map<string, number>();
+    for (const f of found) foundPerCwd.set(f.cwd, (foundPerCwd.get(f.cwd) ?? 0) + 1);
     for (const f of found) {
       seenSessions.add(f.id);
       // which store agent this session drives: a prior adoption, a fresh adopt
@@ -884,6 +896,48 @@ export class ClaudeDiscovery {
             clearSuccessionMarker(f.sessionId, this.deps.successionDir);
           }
           dlog("discovery.bind.session", { sessionId: f.sessionId, placeholder: want, cwd: f.cwd, viaLaunch: viaLaunch ?? undefined });
+        }
+      }
+      // (1b) STRANDED-LAUNCH merge (the duplicate-toon dedupe): a placeholder
+      // pinned to a launch id whose PROCESS is still alive (argv pin) but which
+      // never wrote its transcript — /clear'd or resumed to a different uuid before
+      // its first prompt, with no succession/resume marker to link them — would
+      // wait forever as an empty placeholder while its real session surfaces as a
+      // separate external stranger in the SAME worktree. Two toons for one dev, and
+      // /color /rename (keyed by the live uuid) resolve to the stranger, not the
+      // placeholder. When the worktree holds exactly one live session and the launch
+      // has sat transcriptless past STRANDED_MS, that lone session IS this
+      // placeholder's continuation — merge it in so the dev stays a single toon.
+      // Tightly gated so a normal spawn whose real session is merely a beat late can
+      // never grab an ambient session: pinned process alive, no transcript for it,
+      // no known successor, a lone live session, the launch already aged out, and
+      // that session no older than the launch (not a pre-launch relic).
+      if (!targetId && !this.mine.has(f.id)) {
+        const cand = placeholderByWorktree.get(f.launchCwd) ?? placeholderByWorktree.get(f.cwd);
+        const ph = cand ? this.store.get(cand) : undefined;
+        const launchedAt = cand ? this.launchPending.get(cand) : undefined;
+        if (
+          cand && ph && !ph.transcriptPath &&
+          awaitingPinned.has(cand) && !claimedPlaceholders.has(cand) &&
+          (foundPerCwd.get(f.cwd) ?? 0) === 1 &&
+          launchedAt !== undefined &&
+          Date.now() - launchedAt > ClaudeDiscovery.STRANDED_MS &&
+          f.mtime >= launchedAt - ClaudeDiscovery.ADOPT_SLACK_MS
+        ) {
+          // the placeholder's pinned launch id: alive in argv, yet transcriptless
+          // and without a known successor (else case 1/3 already handled it).
+          const pin = [...this.expecting.entries()].find(([k, v]) => {
+            const lc = k.toLowerCase();
+            return v === cand && argvIds.has(lc) && !foundIdsLc.has(lc) && !newestSucc.has(lc) && !launchToCurrent.has(lc);
+          });
+          if (pin) {
+            targetId = cand;
+            this.adopted.set(f.id, cand);
+            this.expecting.delete(pin[0]);
+            this.launchPending.delete(cand);
+            bindReason.set(cand, "stranded-launch");
+            dlog("discovery.bind.stranded", { sessionId: f.sessionId, placeholder: cand, launch: pin[0], cwd: f.cwd });
+          }
         }
       }
       // (2) HEURISTIC bind (no pinned id — custom launchCommand, or a session
@@ -1244,12 +1298,32 @@ export class ClaudeDiscovery {
     const file = this.deps.historyFile ?? HISTORY_FILE;
     if (this.historyOffset < 0) {
       this.historyOffset = await historyFileSize(file);
+      dlog("command.history.seek", { file, offset: this.historyOffset });
       return;
     }
     const { commands, offset } = await readHistoryCommands(file, this.historyOffset);
     this.historyOffset = offset;
     for (const c of commands) {
       const agent = this.agentForSession(c.sessionId);
+      // trace every parsed command and whether its session resolved to a dev. When
+      // it does NOT (the usual "/color did nothing" report — often a resumed or
+      // just-/cleared session whose uuid isn't bound), dump the candidate devs so a
+      // repro shows exactly which key (transcript / launchId / clearedSession / id)
+      // failed to match. Slice the lists to keep the payload small.
+      dlog("command.history", {
+        sessionId: c.sessionId,
+        cmd: c.cmd,
+        arg: c.arg,
+        resolved: agent?.id,
+        candidates: agent
+          ? undefined
+          : this.store.list().map((a) => ({
+              id: a.id,
+              transcript: a.transcriptPath ? path.basename(a.transcriptPath, ".jsonl") : undefined,
+              launchId: a.launchId,
+              cleared: a.clearedSession,
+            })),
+      });
       if (agent) this.applyControl(agent, c.cmd, c.arg);
     }
   }

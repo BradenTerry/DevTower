@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -213,6 +213,89 @@ describe("ClaudeDiscovery binding", () => {
     expect(store.get("isle-a1")!.external).toBeFalsy();
     expect(store.get(sid(stranger))!.external).toBe(true);
     expect(store.list()).toHaveLength(2); // placeholder (now owned) + the stranger
+  });
+
+  it("merges a stranded resumed/cleared session into its empty placeholder once the launch ages out (duplicate-toon dedupe)", async () => {
+    // The reported bug: a dev spawned `claude --session-id <launch>` then resumed
+    // or /cleared to a DIFFERENT uuid before its first prompt, WITHOUT a succession
+    // or resume marker (the hook never fired). The pinned launch never wrote a
+    // transcript, so the placeholder waited forever as an empty toon while the live
+    // session surfaced as a separate external stranger in the same worktree — two
+    // toons for one dev, and /color /rename (keyed by the live uuid) landed on the
+    // stranger. Once the launch has sat transcriptless past STRANDED_MS and the
+    // worktree holds exactly one live session, that lone session is the placeholder's
+    // continuation: it must merge in place, leaving a single owned dev.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(1_700_000_000_000));
+      const store = newStore();
+      const launch = randomUUID(); // pinned --session-id; never writes a transcript
+      const succ = randomUUID(); // the resumed/cleared uuid (no marker links them)
+      const sid = (u: string) => "cc-" + u.slice(0, 8);
+      const liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 1]]), sessionIds: new Set([launch]) };
+      const disc = new ClaudeDiscovery(store, {
+        projectsRoot: root, waitingDir, successionDir: succDir, resumeDir, endedDir, activeDir,
+        liveCounts: async () => liveSnapshot,
+      });
+      placeholder(store, "isle-a1", wt);
+      disc.expectSession("isle-a1", launch); // launchPending = T0
+
+      // 20s later (> STRANDED_MS): the launch transcript still never appeared; the
+      // live session `succ` is the lone session in the worktree, no marker.
+      vi.setSystemTime(new Date(1_700_000_000_000 + 20_000));
+      writeSession(wt, 0, succ);
+      const sf = path.join(proj, `${succ}.jsonl`);
+      const t = Date.now() / 1000;
+      fs.utimesSync(sf, t, t); // fresh: mtime at "now", newer than the launch
+
+      await disc.refresh();
+
+      const a = store.get("isle-a1")!;
+      expect(a.transcriptPath).toBe(sf); // merged onto the live session
+      expect(a.external).toBeFalsy(); // stays the owned placeholder, not a stranger
+      expect(a.name).toBe("isle-a1"); // keeps its identity (so /rename targets it)
+      expect(store.get(sid(succ))).toBeUndefined(); // no external twin
+      expect(store.list()).toHaveLength(1); // one dev, not two
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does NOT merge a lone session before STRANDED_MS (a merely-slow spawn keeps waiting)", async () => {
+    // The merge must never fire during the spawn window, or it would re-introduce
+    // ghost-on-spawn: a freshly launched placeholder whose real session is just a
+    // beat late would grab an ambient session sharing the cwd. Within STRANDED_MS
+    // the placeholder stays unbound and the ambient session is its own external dev.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(1_700_000_000_000));
+      const store = newStore();
+      const launch = randomUUID();
+      const ambient = randomUUID();
+      const sid = (u: string) => "cc-" + u.slice(0, 8);
+      const liveSnapshot = { mode: "perCwd" as const, counts: new Map([[wt, 1]]), sessionIds: new Set([launch]) };
+      const disc = new ClaudeDiscovery(store, {
+        projectsRoot: root, waitingDir, successionDir: succDir, resumeDir, endedDir, activeDir,
+        liveCounts: async () => liveSnapshot,
+      });
+      placeholder(store, "isle-a1", wt);
+      disc.expectSession("isle-a1", launch);
+
+      // only 5s later (< STRANDED_MS): too soon to assume the launch is stranded.
+      vi.setSystemTime(new Date(1_700_000_000_000 + 5_000));
+      writeSession(wt, 0, ambient);
+      const af = path.join(proj, `${ambient}.jsonl`);
+      const t = Date.now() / 1000;
+      fs.utimesSync(af, t, t);
+
+      await disc.refresh();
+
+      expect(store.get("isle-a1")!.transcriptPath).toBeUndefined(); // still waiting
+      expect(store.get(sid(ambient))!.external).toBe(true); // a separate outside session
+      expect(store.list()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("after /clear, the stale launch transcript does not resurface as a ghost once its marker is consumed", async () => {
