@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readEditMarkers } from "../src/hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readEditMarkers, readCommandMarkers, clearCommandMarker } from "../src/hooks";
 
 /**
  * The Notification hook drops one marker per parked session; readWaitingMarkers
@@ -50,6 +50,51 @@ describe("waiting markers", () => {
   it("missing dir reads as empty", async () => {
     const markers = await readWaitingMarkers(path.join(dir, "nope"));
     expect(markers.size).toBe(0);
+  });
+});
+
+/**
+ * The UserPromptSubmit hook drops a command marker when the operator types a
+ * DevTower control command (/rename or /color). Covers the happy read, pruning a
+ * stale marker, rejecting an unknown command word, and clearCommandMarker.
+ */
+describe("command markers", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-cmd-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (id: string, m: object) => fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(m));
+
+  it("reads a rename and a color command keyed by session id", async () => {
+    write("sess-1", { cwd: "/repo", ts: Date.now(), cmd: "rename", arg: "Ada" });
+    write("sess-2", { cwd: "/repo", ts: Date.now(), cmd: "color", arg: "teal" });
+    const markers = await readCommandMarkers(dir);
+    expect(markers.get("sess-1")).toMatchObject({ cmd: "rename", arg: "Ada" });
+    expect(markers.get("sess-2")).toMatchObject({ cmd: "color", arg: "teal" });
+  });
+
+  it("prunes a stale marker off disk", async () => {
+    write("old", { cwd: "/repo", ts: Date.now() - 60 * 60_000, cmd: "rename", arg: "x" });
+    const markers = await readCommandMarkers(dir);
+    expect(markers.has("old")).toBe(false);
+    expect(fs.existsSync(path.join(dir, "old.json"))).toBe(false);
+  });
+
+  it("drops a marker with an unknown command word", async () => {
+    write("bad", { cwd: "/repo", ts: Date.now(), cmd: "explode", arg: "x" });
+    const markers = await readCommandMarkers(dir);
+    expect(markers.has("bad")).toBe(false);
+  });
+
+  it("clearCommandMarker removes the session's marker", async () => {
+    write("sess-3", { cwd: "/repo", ts: Date.now(), cmd: "color", arg: "blue" });
+    clearCommandMarker("sess-3", dir);
+    await new Promise((r) => setTimeout(r, 10)); // unlink is fire-and-forget
+    expect(fs.existsSync(path.join(dir, "sess-3.json"))).toBe(false);
   });
 });
 
