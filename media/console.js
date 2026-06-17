@@ -56,7 +56,7 @@
 
   function pushCrew() {
     if (!window.DevTowerCrew) return;
-    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, exploring: a.exploring, tasks: a.tasks, contextTokens: a.contextTokens, external: a.external, session: a.transcriptPath ? a.transcriptPath.replace(/\\/g, "/").split("/").pop().replace(/\.jsonl$/, "") : undefined, launchId: a.launchId, terminalPid: a.terminalPid, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict })));
+    window.DevTowerCrew.setAgents(agents.map((a) => ({ id: a.id, name: a.name, state: a.state, repo: a.repo, model: a.model, worktree: a.worktree, branch: a.branch, skills: a.skills, subagents: a.subagents, exploring: a.exploring, tasks: a.tasks, contextTokens: a.contextTokens, external: a.external, session: a.transcriptPath ? a.transcriptPath.replace(/\\/g, "/").split("/").pop().replace(/\.jsonl$/, "") : undefined, launchId: a.launchId, terminalPid: a.terminalPid, clearedSession: a.clearedSession, reviewOf: a.reviewOf, reviewVerdict: a.reviewVerdict, shirtColor: a.shirtColor })));
     window.DevTowerCrew.setSelected(selectedId);
   }
 
@@ -1043,13 +1043,23 @@
       applyQuality(m.quality || "balanced"); // saved graphics-quality preset
       projectScope = m.projectScope || "global"; // saved project-scope preference
       applyBookMode(m.books || "physical"); // saved physical/ebook book preference
-      debug = !!m.debug; // authoritative devtower.debugLog state from the host
       dbgLogExists = !!m.debugLogExists; // a captured log is on disk
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk
-      perfHud = !!m.perfHud; // saved devtower.perfHud (performance overlay) state
       execTrack = !!m.externalCallStats; // saved devtower.externalCallStats opt-in
-      if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug); // mirror into the scene
-      if (DevTowerCrew.setPerfHud) DevTowerCrew.setPerfHud(perfHud); // mirror overlay state
+      // Only push a toggle into the scene when ITS value actually changed. postConfig
+      // is a firehose — every setting change (e.g. debugLog) re-sends ALL of config —
+      // so re-asserting perfHud/debug on every message let an unrelated toggle (like
+      // disabling debug logging) redraw/flip the perf overlay. Apply on change only.
+      const nextDebug = !!m.debug; // authoritative devtower.debugLog state from the host
+      const nextPerfHud = !!m.perfHud; // saved devtower.perfHud (performance overlay) state
+      if (nextDebug !== debug) {
+        debug = nextDebug;
+        if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug); // mirror into the scene
+      }
+      if (nextPerfHud !== perfHud) {
+        perfHud = nextPerfHud;
+        if (DevTowerCrew.setPerfHud) DevTowerCrew.setPerfHud(perfHud); // mirror overlay state
+      }
       if (settingsOpen()) renderSettings(); // reflect an external toggle live
     } else if (m.type === "settings") {
       settings = { caps: m.caps, scopeHelp: m.scopeHelp };

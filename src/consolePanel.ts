@@ -11,7 +11,7 @@ import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./gi
 import { listHooks, setHookEnabled, setAllHooksEnabled, EDITED_DIR, readEditMarkers } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
 import { MiniPanel, MiniDelegate } from "./miniPanel";
-import { setWorkspaceFolder, clearWorkspaceFolder } from "./workspaceFolders";
+import { mountWorktree, unmountWorktree, homeRoot } from "./workspaceFolders";
 import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir, execStatsSnapshot, resetExecStats } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
@@ -939,7 +939,7 @@ export class ConsolePanel implements MiniDelegate {
     void this.saveSelectedDir(room); // remember it across restarts
     this.store.setSelectedDir(dir); // sticky cwd for the Source Control mirror
     this.store.setFocusedWorktree(dir);
-    setWorkspaceFolder(dir); // native Explorer / Cmd+P / search follow the worktree
+    mountWorktree(dir); // open the named DevTower workspace on this worktree
     this.postState(); // re-render so the room's button reads "SELECTED DIR"
   }
 
@@ -1082,11 +1082,14 @@ export class ConsolePanel implements MiniDelegate {
 
   /* ============ SELECTED DIRECTORY (persisted "USE DIR") ============ */
 
-  /** Key the persisted selection by the folder VS Code is opened at, so each
-   *  workspace reopens to its own last-used room. Falls back to a fixed key when
+  /** Key the persisted selection by the project ROOT, so each workspace reopens
+   *  to its own last-used room. Uses homeRoot() (not folder[0]) so the key stays
+   *  stable after USE DIR opens the DevTower workspace and the root folder is
+   *  hidden — otherwise the key would flip to the worktree path and lose the
+   *  selection, building tags and ownership scope. Falls back to a fixed key when
    *  no folder is open (a window started on a bare editor still gets one slot). */
   private workspaceKey(): string {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "__noworkspace__";
+    return homeRoot() ?? "__noworkspace__";
   }
 
   /** Remember (or clear) the room whose "USE DIR" was last pressed, globally but
@@ -1123,7 +1126,7 @@ export class ConsolePanel implements MiniDelegate {
     this.usedDirRoom = room;
     this.store.setSelectedDir(dir); // sticky mount for the directory view
     this.store.setFocusedWorktree(dir); // directory view lists it (no focus steal)
-    setWorkspaceFolder(dir); // re-mount as the native workspace folder for Cmd+P/search
+    mountWorktree(dir); // re-mount the named DevTower workspace for Cmd+P/search
     this.postState(); // scene marks the room "SELECTED DIR"
   }
 
@@ -1280,7 +1283,7 @@ export class ConsolePanel implements MiniDelegate {
       this.usedDirRoom = undefined;
       this.store.setSelectedDir(undefined);
       await this.saveSelectedDir(undefined);
-      clearWorkspaceFolder(); // unmount its native workspace folder
+      unmountWorktree(); // leave the DevTower workspace, reopen the project root
     }
     this.postState();
     void this.refreshState();
@@ -1343,7 +1346,7 @@ export class ConsolePanel implements MiniDelegate {
       this.usedDirRoom = undefined;
       this.store.setSelectedDir(undefined);
       await this.saveSelectedDir(undefined);
-      clearWorkspaceFolder(); // unmount its native workspace folder
+      unmountWorktree(); // leave the DevTower workspace, reopen the project root
     }
     this.postState();
     void this.refreshState();

@@ -8,25 +8,36 @@ import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
 import { syncHooks } from "./hooks";
 import { initGithubAuth } from "./github";
+import { initWorkspace, toggleRoot, homeRoot } from "./workspaceFolders";
 import { initDebugLog, dlog, elog, errorLogPath, showExecStats } from "./debugLog";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   initDebugLog(context);
   dlog("activate", {});
+  // seed the USE DIR workspace manager + its Explorer-toggle context keys before
+  // anything reads the home root (ownership persistence below depends on it)
+  initWorkspace(context);
   const store = new DevTowerStore(context);
   const terminals = new TerminalManager(store, context.extensionUri);
   const diffProvider = new DiffProvider(store);
   const prs = new PrService(store);
+  // Persist owned/retired launches in GLOBAL state keyed by the project root, NOT
+  // workspaceState: USE DIR opens a per-project DevTower.code-workspace, and a
+  // workspace-scoped store changes identity on that switch — wiping ownership and
+  // resurrecting every owned dev as a ghost. homeRoot() is stable across the
+  // switch (the hidden root is carried in the workspace setting), so this key
+  // survives it while still isolating one project's devs from another's.
+  const ownerKey = homeRoot() ?? "__noroot__";
   const discovery = new ClaudeDiscovery(store, {
-    // persist owned/retired launches in workspace state so a window reload
-    // re-adopts live devs as owned instead of resurrecting them as ghosts
     persist: {
-      get: (key, def) => context.workspaceState.get(key, def),
-      set: (key, val) => void context.workspaceState.update(key, val),
+      get: (key, def) => context.globalState.get(`${key}::${ownerKey}`, def),
+      set: (key, val) => void context.globalState.update(`${key}::${ownerKey}`, val),
     },
   });
   // an owned dev's terminal closing retires it (kills the orphan transcript)
   terminals.setOwnedCloseHandler((id) => discovery.retireOwned(id));
+  // a /rename command renames the dev in the store; retitle its console to match
+  context.subscriptions.push(discovery.onRenamed(({ id, name }) => void terminals.rename(id, name)));
   // DevTower authenticates to GitHub with a PAT the user adds in the settings
   // page (stored in SecretStorage); initialize the secret-backed auth + cache
   initGithubAuth(context);
@@ -101,6 +112,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ConsolePanel.createOrShow(context, store, terminals, prs, discovery).openSettings("hooks")
     ),
     vscode.commands.registerCommand("devtower.showExternalCalls", () => showExecStats()),
+    // Explorer title-bar toggle: flip the DevTower workspace between showing the
+    // worktree only and the project root + worktree (two commands so the icon can
+    // reflect the current state via `when` clauses; both just flip the mode).
+    vscode.commands.registerCommand("devtower.workspaceShowRoot", () => toggleRoot()),
+    vscode.commands.registerCommand("devtower.workspaceHideRoot", () => toggleRoot()),
     vscode.commands.registerCommand("devtower.openErrorLog", async () => {
       const p = errorLogPath();
       if (!p) {

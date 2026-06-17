@@ -85,6 +85,10 @@ export interface Agent {
    *  PR so the scene can render the diegetic review (desk + verdict stamp) and
    *  the verdict can be derived from the polled PR decision. */
   reviewOf?: ReviewTarget;
+  /** Operator-chosen shirt colour for this dev's toon (a CSS colour string), set
+   *  via the `/color` command. Overrides the id-derived persona shirt; absent ⇒
+   *  the procedural colour. */
+  shirtColor?: string;
 }
 
 /** The PR an agent was dispatched to review. */
@@ -131,6 +135,9 @@ export interface StateEvent {
   /** Session id of a /clear succession this poll rebound onto the agent. */
   clearedSession?: string;
   reviewOf?: ReviewTarget;
+  /** Operator-chosen shirt colour (CSS string), or `null` to clear it back to the
+   *  procedural persona colour. `undefined` leaves the last-known value. */
+  shirtColor?: string | null;
 }
 
 export const STATE_LABEL: Record<AgentState, string> = {
@@ -306,6 +313,8 @@ export class DevTowerStore {
       terminalPid: ev.terminalPid ?? existing?.terminalPid,
       clearedSession: ev.clearedSession ?? existing?.clearedSession,
       reviewOf: ev.reviewOf ?? existing?.reviewOf,
+      // `null` explicitly clears the override; `undefined` keeps the last value.
+      shirtColor: ev.shirtColor === null ? undefined : (ev.shirtColor ?? existing?.shirtColor),
     };
     this.agents.set(ev.id, merged);
     // log only meaningful transitions, not every poll's no-op re-apply
@@ -388,6 +397,43 @@ export class DevTowerStore {
     this._onChange.dispose();
     this._onSelect.dispose();
   }
+}
+
+/** A handful of common colour names → a toon-ish hex, so `/color teal` works
+ *  without a full CSS colour table. Saturations/lightnesses sit near the
+ *  procedural persona range so a chosen shirt reads on-model beside the others. */
+const NAMED_COLORS: Record<string, string> = {
+  red: "#d8524a", crimson: "#cf3b46", orange: "#e08a3c", amber: "#e0b13d",
+  gold: "#d8a73a", yellow: "#e6d44a", lime: "#9bd34a", green: "#4caf50",
+  emerald: "#2faf6a", teal: "#2bb3a3", cyan: "#38b6c9", sky: "#4aa8e0",
+  blue: "#4a86e0", navy: "#3a5ad0", indigo: "#5a5ad0", purple: "#9a5ad0",
+  violet: "#8a5ad8", magenta: "#d04a9a", pink: "#e08ab6", rose: "#e0728f",
+  brown: "#8d5a3c", tan: "#c79a6a", gray: "#8a9598", grey: "#8a9598",
+  slate: "#6b7a86", black: "#33373d", white: "#d8dde0",
+};
+
+/** Resolve a user-typed `/color` value into a CSS colour string for the toon's
+ *  shirt, accepting named colours, #hex (3 or 6), bare 6-digit hex, and a raw hue
+ *  number (0-360, rendered at the procedural shirt's saturation/lightness so it
+ *  matches the other toons). Returns undefined for anything unrecognised so the
+ *  caller can leave the colour untouched. */
+export function resolveShirtColor(input: string): string | undefined {
+  const s = (input ?? "").trim().toLowerCase();
+  if (!s) return undefined;
+  if (NAMED_COLORS[s]) return NAMED_COLORS[s];
+  if (s.startsWith("#")) {
+    const h = s.slice(1);
+    if (/^[0-9a-f]{6}$/.test(h)) return "#" + h;
+    if (/^[0-9a-f]{3}$/.test(h)) return "#" + h.split("").map((c) => c + c).join("");
+    return undefined;
+  }
+  // a bare integer is a hue (so "200" reads as a colour wheel angle, not #220000)
+  if (/^\d{1,3}$/.test(s)) {
+    const hue = Number(s);
+    if (hue >= 0 && hue <= 360) return `hsl(${hue} 45% 52%)`;
+  }
+  if (/^[0-9a-f]{6}$/.test(s)) return "#" + s;
+  return undefined;
 }
 
 /** Reconstruct old/new file text from a diff for the native diff editor. */
