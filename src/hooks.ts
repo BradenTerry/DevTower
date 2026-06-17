@@ -37,6 +37,17 @@ export const ACTIVE_DIR = path.join(os.homedir(), ".claude", "devtower", "active
 // cable beam can stream from the dev that actually made the change instead of the
 // first dev in the room.
 export const EDITED_DIR = path.join(os.homedir(), ".claude", "devtower", "edited");
+// Stable, version-independent home for the hook scripts. The command we write
+// into settings.json points HERE, not at the extension's versioned install dir
+// (`.../bradenterry.devtower-<ver>/media/...`), which VS Code deletes on every
+// update. A Claude session loads its hooks once and keeps invoking that exact
+// command; if it pointed at the old versioned path, an update would leave the
+// session running `node <deleted>/devtower-prompt.js` — a "Cannot find module"
+// failure on every prompt (UserPromptSubmit) and, worse, a SILENT one on exit
+// (SessionEnd), so /exit never drops its `ended` marker and the dev never leaves.
+// We copy the bundled scripts here on activation/install (overwriting in place),
+// so the command stays valid across updates while still tracking new builds.
+export const HOOKS_DIR = path.join(os.homedir(), ".claude", "devtower", "hooks");
 const SETTINGS_PATH = path.join(os.homedir(), ".claude", "settings.json");
 const MARKER_MAX_AGE = 24 * 3_600_000; // prune markers for sessions long gone
 // a /clear's successor session surfaces within a poll or two; if it never does
@@ -388,10 +399,29 @@ export function clearEndMarker(sessionId: string, dir = ENDED_DIR): Promise<void
 
 const declinedKey = (spec: HookSpec) => `devtower.hook.${spec.id}.declined`;
 
-/** The `node "<...>/media/<script>"` command this hook runs. Rebuilt each call
- *  so it tracks the extension's install path across updates. */
-function hookCommand(context: vscode.ExtensionContext, spec: HookSpec): string {
-  return `node "${path.join(context.extensionUri.fsPath, "media", spec.script)}"`;
+/** The `node "<HOOKS_DIR>/<script>"` command this hook runs. Points at the
+ *  stable copy (see HOOKS_DIR), never the versioned extension dir, so a running
+ *  session's cached command keeps resolving after the extension updates. */
+function hookCommand(spec: HookSpec): string {
+  return `node "${path.join(HOOKS_DIR, spec.script)}"`;
+}
+
+/** Copy the bundled hook scripts from the (versioned) extension dir into the
+ *  stable HOOKS_DIR, overwriting in place so updates ship new script bodies to
+ *  the same path the command already points at. Must run before any hook is
+ *  enabled or repaired so the command never resolves to a missing file. */
+async function ensureHookScripts(context: vscode.ExtensionContext): Promise<void> {
+  await fs.promises.mkdir(HOOKS_DIR, { recursive: true });
+  await Promise.all(
+    HOOKS.map(async (spec) => {
+      const src = path.join(context.extensionUri.fsPath, "media", spec.script);
+      try {
+        await fs.promises.copyFile(src, path.join(HOOKS_DIR, spec.script));
+      } catch (e) {
+        dlog("hooks.copy.error", { script: spec.script, err: String(e) });
+      }
+    })
+  );
 }
 
 /** Install state of every hook DevTower manages, for the Settings > Hooks tab. */
@@ -418,7 +448,8 @@ export async function setHookEnabled(
   const settings = await readSettings();
   const existing = findHook(settings, spec);
   if (enabled) {
-    const command = hookCommand(context, spec);
+    await ensureHookScripts(context);
+    const command = hookCommand(spec);
     if (existing) {
       if (existing.command === command) return true;
       existing.command = command; // repair a stale path
@@ -444,11 +475,12 @@ export async function setAllHooksEnabled(
   enabled: boolean
 ): Promise<void> {
   const settings = await readSettings();
+  if (enabled) await ensureHookScripts(context);
   let changed = false;
   for (const spec of HOOKS) {
     const existing = findHook(settings, spec);
     if (enabled) {
-      const command = hookCommand(context, spec);
+      const command = hookCommand(spec);
       if (!existing) {
         addHook(settings, spec, command);
         changed = true;
@@ -472,13 +504,18 @@ export async function setAllHooksEnabled(
  *  Never installs anything without the user choosing to. */
 export async function syncHooks(context: vscode.ExtensionContext): Promise<void> {
   try {
+    // refresh the stable copies first: even when no command needs rewriting, an
+    // update must ship its new script bodies to the path commands already point at.
+    await ensureHookScripts(context);
     const settings = await readSettings();
     let changed = false;
     for (const spec of HOOKS) {
       const existing = findHook(settings, spec);
       if (!existing) continue;
-      const command = hookCommand(context, spec);
+      const command = hookCommand(spec);
       if (existing.command !== command) {
+        // migrates pre-stable installs (versioned `.../media/<script>` path) to
+        // HOOKS_DIR, and repairs any other drift.
         existing.command = command;
         changed = true;
         dlog("hooks.path.updated", { id: spec.id });
