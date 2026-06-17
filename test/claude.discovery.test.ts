@@ -375,6 +375,7 @@ describe("ClaudeDiscovery binding", () => {
     expect(a.transcriptPath).toBe(path.join(proj, `${succ}.jsonl`));
     expect(a.external).toBeFalsy();
     expect(a.name).toBe("isle-a1");
+    expect(a.clearedSession).toBe(succ); // it WAS /clear'd → scene runs the shred trip, not a silent adopt
     expect(store.get(sid(succ))).toBeUndefined(); // C never surfaced as a stranger
     // marker consumed, expectation cleared
     await new Promise((r) => setTimeout(r, 10)); // unlink is fire-and-forget
