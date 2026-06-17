@@ -113,22 +113,32 @@ export function initDebugLog(context: vscode.ExtensionContext): void {
   }
 
   const apply = () => {
-    const on = vscode.workspace.getConfiguration("devtower").get<boolean>("debugLog", false);
-    if (on === enabled) return;
-    if (on) {
-      filePath = storageDir ? path.join(storageDir, "debug.log") : undefined;
-      enabled = true;
-      dlog("debuglog.start", { pid: process.pid, file: filePath, vscode: vscode.version });
-    } else {
-      dlog("debuglog.stop", {});
-      enabled = false;
+    const cfg = vscode.workspace.getConfiguration("devtower");
+    const on = cfg.get<boolean>("debugLog", false);
+    if (on !== enabled) {
+      if (on) {
+        filePath = storageDir ? path.join(storageDir, "debug.log") : undefined;
+        enabled = true;
+        dlog("debuglog.start", { pid: process.pid, file: filePath, vscode: vscode.version });
+      } else {
+        dlog("debuglog.stop", {});
+        enabled = false;
+      }
+    }
+    // External-call tracking is its own opt-in. Enabling restarts the window;
+    // disabling clears the now-frozen tally so a later re-enable starts clean.
+    const execOn = cfg.get<boolean>("externalCallStats", false);
+    if (execOn !== execEnabled) {
+      execEnabled = execOn;
+      if (execOn) execSince = Date.now();
+      else execStats.clear();
     }
   };
 
   apply();
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration("devtower.debugLog")) apply();
+      if (e.affectsConfiguration("devtower.debugLog") || e.affectsConfiguration("devtower.externalCallStats")) apply();
     })
   );
 }
@@ -197,8 +207,9 @@ export function clearDebugLog(): void {
 // Every child process the extension spawns (git, gh, ps/lsof/PowerShell) and every
 // agent launch command flows through recordExec, so the Settings > Debug tab can
 // show WHAT external calls are firing and HOW OFTEN — the data needed to see why
-// the extension host is busy. Counting is always on (a cheap Map update); the
-// per-call detail line is gated by debugLog like every other event.
+// the extension host is busy. Opt-in via `devtower.externalCallStats` (like the
+// debugLog / perfHud toggles): off, recordExec is a no-op so neither the tally nor
+// the exec.* detail lines are kept.
 
 export type ExecStat = {
   count: number;
@@ -210,6 +221,12 @@ export type ExecStat = {
 };
 const execStats = new Map<string, ExecStat>();
 let execSince = Date.now();
+let execEnabled = false; // devtower.externalCallStats (applied in initDebugLog)
+
+/** True when external-call tracking is opted in, so callers/UI can reflect it. */
+export function externalCallStatsEnabled(): boolean {
+  return execEnabled;
+}
 
 /** "git status", "gh api", … — git and gh take their subcommand as the first arg,
  *  so group by it. Other tools (ps/lsof/powershell/launch) group by family only:
@@ -222,6 +239,7 @@ function execKey(kind: string, args: string[]): string {
 /** Record one external call: updates the always-on tally and emits a gated detail
  *  line. `kind` is the program family (git/gh/ps/powershell/launch). */
 export function recordExec(kind: string, args: string[], cwd: string | undefined, durMs: number, ok: boolean): void {
+  if (!execEnabled) return; // tracking opted out — keep neither the tally nor the detail line
   const key = execKey(kind, args);
   const s = execStats.get(key) ?? { count: 0, totalMs: 0, maxMs: 0, errors: 0, lastMs: 0, lastTs: "" };
   s.count++;
@@ -291,7 +309,13 @@ export function showExecStats(): void {
   for (const r of s.rows) {
     channel.appendLine(`  ${r.cmd.padEnd(22)} ${pad(r.count, 7)} ${pad(r.avgMs, 7)} ${pad(r.maxMs, 7)} ${pad(r.totalMs, 9)} ${pad(r.errors, 5)}`);
   }
-  if (!s.rows.length) channel.appendLine("  (no external calls recorded yet)");
+  if (!s.rows.length) {
+    channel.appendLine(
+      execEnabled
+        ? "  (no external calls recorded yet)"
+        : "  (tracking is off — enable devtower.externalCallStats, or Settings > Debug > Track external calls)"
+    );
+  }
   channel.show(true);
 }
 

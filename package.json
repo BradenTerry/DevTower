@@ -366,11 +366,6 @@
           "default": true,
           "description": "Scan ~/.claude/projects for live Claude Code CLI sessions and show them in the tower."
         },
-        "devtower.pollIntervalMs": {
-          "type": "number",
-          "default": 8000,
-          "description": "How often (ms) to rescan for live Claude sessions. Lower = sessions leave the tower sooner after Claude exits, at the cost of more frequent ps/lsof checks."
-        },
         "devtower.sessionMaxAgeHours": {
           "type": "number",
           "default": 24,
@@ -390,6 +385,11 @@
           "type": "boolean",
           "default": false,
           "description": "Show a performance overlay in the tower (top-left): live FPS, per-frame draw cost in ms (p50/p95), and how many rooms/devs are drawn. Use it to gauge load and compare graphics-quality presets. Toggle from the tower's Settings > Debug tab."
+        },
+        "devtower.externalCallStats": {
+          "type": "boolean",
+          "default": false,
+          "description": "Tally every child process DevTower spawns (git, gh, ps/lsof/PowerShell) and each agent launch, shown in the tower's Settings > Debug > External calls table. Use it to see what is keeping the extension host busy. Off by default; toggle from the Debug tab."
         },
         "devtower.graphicsQuality": {
           "type": "string",

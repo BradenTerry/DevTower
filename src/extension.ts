@@ -48,7 +48,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // so a launched dev rebinds as owned instead of surfacing as an external ghost
     discovery.restore();
     await discovery.refresh().catch((e) => { elog("discovery.activate", { message: String(e), stack: (e as any)?.stack }); return 0; });
-    discovery.start(cfg.get<number>("pollIntervalMs", 8_000));
+    // event-driven: watch the hook marker dirs instead of polling on a timer
+    discovery.start();
   }
   store.watchStateFile();
   prs.start(4_000); // adaptive PR polling (fast while a build runs); off the startup path

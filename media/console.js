@@ -622,12 +622,21 @@
       : `<p class="s-note">No log captured yet. Turn logging on to start recording.</p>`}
 
       <h3 style="margin-top:20px">External calls</h3>
-      <p class="s-desc">Every child process DevTower spawns (git, gh, ps / PowerShell) and each agent launch, tallied live. Use it to see what is keeping the extension host busy. Updates while this tab is open.</p>
+      <p class="s-desc">Every child process DevTower spawns (git, gh, ps / PowerShell) and each agent launch, tallied live. Use it to see what is keeping the extension host busy. Off by default; turn it on to start recording.</p>
+      <div class="s-row">
+        <div class="s-row-t">
+          <div class="s-row-name">Track external calls</div>
+          <div class="s-row-sub">Tally git / gh / ps / PowerShell spawns and agent launches. Off by default.</div>
+        </div>
+        <button class="s-toggle ${execTrack ? "on" : ""}" id="s-exectrack" role="switch" aria-checked="${execTrack}"><span class="knob"></span></button>
+      </div>
+      ${execTrack ? `
       <div class="s-hookbar">
         <button class="s-actbtn" id="s-exec-refresh">Refresh</button>
         <button class="s-actbtn" id="s-exec-reset">Reset</button>
       </div>
-      <div id="s-exec">${execTableHTML()}</div>`;
+      <div id="s-exec">${execTableHTML()}</div>`
+      : `<p class="s-note">Tracking is off. Turn it on to record external calls.</p>`}`;
   }
 
   // Render the external-call tally as a compact table from the latest snapshot.
@@ -784,6 +793,16 @@
     const dbgClear = $("#s-debug-clear", s);
     if (dbgClear) dbgClear.onclick = () => vscode.postMessage({ type: "clearDebugLog" });
 
+    // External-call tracking opt-in: flip locally for instant feedback, persist to
+    // devtower.externalCallStats (the host echoes it back via config). When off the
+    // table/Refresh/Reset aren't rendered, so the poll below never starts.
+    const execTrackT = $("#s-exectrack", s);
+    if (execTrackT) execTrackT.onclick = () => {
+      execTrack = !execTrack;
+      vscode.postMessage({ type: "setExternalCallStats", on: execTrack });
+      renderSettings();
+    };
+
     // External-calls table: fetch on open, refresh/reset on demand, and keep it
     // live with a light self-gating poll while this Debug tab is on screen.
     const execRefresh = $("#s-exec-refresh", s);
@@ -937,6 +956,7 @@
   let dbgLogExists = false; // whether a captured log is on disk (config message)
   let dbgArchives = 0; // number of rotated archive files on disk (config message)
   let perfHud = false; // devtower.perfHud; on-canvas FPS/frame-cost overlay (config message)
+  let execTrack = false; // devtower.externalCallStats; opt-in for the External calls tally (config message)
   let execStats = null; // external-call tally for the Debug tab (arrives via the "execStats" message)
   function applyQuality(mode) {
     quality = QUALITY_MODES.some((p) => p.id === mode) ? mode : "balanced";
@@ -1018,6 +1038,7 @@
       dbgLogExists = !!m.debugLogExists; // a captured log is on disk
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk
       perfHud = !!m.perfHud; // saved devtower.perfHud (performance overlay) state
+      execTrack = !!m.externalCallStats; // saved devtower.externalCallStats opt-in
       if (DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug); // mirror into the scene
       if (DevTowerCrew.setPerfHud) DevTowerCrew.setPerfHud(perfHud); // mirror overlay state
       if (settingsOpen()) renderSettings(); // reflect an external toggle live
