@@ -1202,6 +1202,20 @@ export class ConsolePanel implements MiniDelegate {
    *  the island, optionally delete all its NON-root worktrees from disk, and drop
    *  the reservation. The project directory itself is never deleted. The delete
    *  option is withheld while any worktree has uncommitted/unpushed work. */
+  /** Best-effort resolution of the local branch checked out in `worktree`, so a
+   *  "delete worktree" also deletes its branch. Prefers a branch already known
+   *  (from a live agent), then the stored worktree room, then git's own worktree
+   *  list. Returns undefined (skip the branch delete) only if none resolve or it's
+   *  detached. `repoDir` is any checkout of the repo. */
+  private async resolveWorktreeBranch(repoDir: string, worktree: string, known?: string): Promise<string | undefined> {
+    if (known && known !== "—") return known;
+    const room = this.getWorktreeRooms().find((w) => w.path === worktree);
+    if (room?.branch && room.branch !== "—") return room.branch;
+    const wt = (await worktreeList(repoDir).catch(() => []))
+      .find((w) => canonicalDir(w.path) === canonicalDir(worktree));
+    return wt && wt.branch && wt.branch !== "detached" ? wt.branch : undefined;
+  }
+
   private async removeRoom(name: string): Promise<void> {
     const reserved = this.getRooms().find((r) => r.name === name);
     const agents = this.store.list().filter((a) => a.repo === name);
@@ -1249,7 +1263,10 @@ export class ConsolePanel implements MiniDelegate {
     if (pick === "Unregister + delete worktrees" && dir) {
       for (const [p, branch] of wtBranch) {
         try {
-          await worktreeRemove(dir, p, branch);
+          // resolve the branch from git when the room/agent didn't carry one, so
+          // the local branch is deleted alongside the worktree (not orphaned)
+          const delBranch = await this.resolveWorktreeBranch(dir, p, branch);
+          await worktreeRemove(dir, p, delBranch);
         } catch (e) {
           vscode.window.showWarningMessage(`DevTower: couldn't remove worktree ${path.basename(p)} — ${String(e).slice(0, 120)}`);
         }
@@ -1306,9 +1323,14 @@ export class ConsolePanel implements MiniDelegate {
       if (!dir || dir === worktree) {
         vscode.window.showWarningMessage(`DevTower: couldn't resolve the repo for "${island}" to remove the worktree.`);
       } else {
+        // The branch to delete may be unknown from a live agent (a worktree room
+        // with no running agent leaves `branch` undefined). Fall back to the
+        // stored room's branch, then to git's own worktree list, so deleting the
+        // worktree always also drops its local branch instead of orphaning it.
+        const delBranch = await this.resolveWorktreeBranch(dir, worktree, branch);
         try {
-          await worktreeRemove(dir, worktree, branch);
-          vscode.window.showInformationMessage(`DevTower: removed worktree ${label}.`);
+          await worktreeRemove(dir, worktree, delBranch);
+          vscode.window.showInformationMessage(`DevTower: removed worktree ${label}${delBranch ? ` and branch ${delBranch}` : ""}.`);
         } catch (e) {
           vscode.window.showErrorMessage(`DevTower: worktree remove failed — ${String(e).slice(0, 160)}`);
         }
