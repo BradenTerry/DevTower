@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import { DevTowerStore, AgentState, Agent, resolveShirtColor } from "./store";
 import { currentBranch, isRepo, canonicalDir } from "./git";
 import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, readSkillMarkers, readCommandMarkers, clearCommandMarker, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SKILL_DIR, SUCCESSION_DIR, RESUME_DIR, COMMAND_DIR } from "./hooks";
+import { readHistoryCommands, historyFileSize, HISTORY_FILE } from "./history";
 import { dlog, elog, recordExec } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -92,6 +93,10 @@ export class ClaudeDiscovery {
   // dropping/clearing a marker (session start/prompt/edit/exit) wakes a refresh,
   // instead of a timer scanning `ps`/`lsof`/WMI + the transcript tree on a cadence.
   private markerWatchers: fs.FSWatcher[] = [];
+  // byte offset into ~/.claude/history.jsonl already scanned for built-in
+  // /rename + /color. -1 = not yet seeked; the first scan jumps to EOF so
+  // pre-existing history is never replayed.
+  private historyOffset = -1;
   private markerDebounce?: ReturnType<typeof setTimeout>;
   // While an Explore subagent is in flight, re-poll on a short timer so its
   // completion is caught promptly instead of lingering until the next hook
@@ -188,6 +193,7 @@ export class ClaudeDiscovery {
       editedDir?: string;
       skillDir?: string;
       commandDir?: string;
+      historyFile?: string;
       persist?: LaunchPersist;
     } = {}
   ) {}
@@ -344,6 +350,16 @@ export class ClaudeDiscovery {
       } catch {
         dlog("discovery.markerWatch.fail", { dir });
       }
+    }
+    // The built-in /rename and /color are consumed by the host before any hook
+    // runs, so they only surface in ~/.claude/history.jsonl. Watch it directly
+    // for an instant mirror; any other refresh also picks them up via the
+    // offset, so a missed fs event (or a fresh install with no file yet) just
+    // delays the apply to the next scan.
+    try {
+      this.markerWatchers.push(fs.watch(this.deps.historyFile ?? HISTORY_FILE, () => this.onMarkerChange()));
+    } catch {
+      dlog("discovery.historyWatch.fail", {});
     }
   }
 
@@ -1088,6 +1104,7 @@ export class ClaudeDiscovery {
     // never binds). Done inside the batch so the rename + recolour ride this
     // refresh's single webview post.
     await this.applyCommands();
+    await this.applyHistoryCommands();
     });
     // A session that just ran `gh pr create` should surface its PR immediately,
     // not on the PR poller's lazy ~60s tick. Fire once per new create. A session
@@ -1209,22 +1226,50 @@ export class ClaudeDiscovery {
     for (const [sid, m] of commands) {
       const agent = this.agentForSession(sid);
       if (!agent) continue; // not bound yet — try again next poll
-      if (m.cmd === "rename") {
-        const name = m.arg.trim().slice(0, 60);
-        if (name && name !== agent.name) {
-          this.store.apply({ id: agent.id, name });
-          this._onRenamed.fire({ id: agent.id, name });
-          dlog("command.rename", { agent: agent.id, name });
-        }
-      } else if (m.cmd === "color") {
-        // empty arg clears the override back to the procedural colour
-        const color = m.arg.trim() ? resolveShirtColor(m.arg) : null;
-        if (color !== undefined) {
-          this.store.apply({ id: agent.id, shirtColor: color });
-          dlog("command.color", { agent: agent.id, color });
-        }
-      }
+      this.applyControl(agent, m.cmd, m.arg);
       await clearCommandMarker(sid, this.deps.commandDir);
+    }
+  }
+
+  /** Mirror one `/rename` or `/color` onto its bound dev. Shared by the hook
+   *  command-marker path (custom commands DevTower still owns) and the history
+   *  path (the built-ins the host consumes before the hook runs). */
+  private applyControl(agent: Agent, cmd: "rename" | "color", arg: string): void {
+    if (cmd === "rename") {
+      const name = arg.trim().slice(0, 60);
+      if (name && name !== agent.name) {
+        this.store.apply({ id: agent.id, name });
+        this._onRenamed.fire({ id: agent.id, name });
+        dlog("command.rename", { agent: agent.id, name });
+      }
+    } else {
+      // "default" (the built-in's reset) and an empty arg clear the override
+      // back to the procedural colour
+      const a = arg.trim().toLowerCase();
+      const color = !a || a === "default" ? null : resolveShirtColor(a);
+      if (color !== undefined) {
+        this.store.apply({ id: agent.id, shirtColor: color });
+        dlog("command.color", { agent: agent.id, color });
+      }
+    }
+  }
+
+  /** Apply the built-in `/rename` / `/color` recorded in ~/.claude/history.jsonl.
+   *  Those bypass the UserPromptSubmit hook (the host consumes them first), so
+   *  the marker path never sees them. The first scan only seeks to EOF — old
+   *  history is never replayed — and later scans read appended lines from the
+   *  saved offset. An unbound session resolves to no dev and is skipped. */
+  private async applyHistoryCommands(): Promise<void> {
+    const file = this.deps.historyFile ?? HISTORY_FILE;
+    if (this.historyOffset < 0) {
+      this.historyOffset = await historyFileSize(file);
+      return;
+    }
+    const { commands, offset } = await readHistoryCommands(file, this.historyOffset);
+    this.historyOffset = offset;
+    for (const c of commands) {
+      const agent = this.agentForSession(c.sessionId);
+      if (agent) this.applyControl(agent, c.cmd, c.arg);
     }
   }
 
@@ -1630,12 +1675,16 @@ export async function readMeta(
         /* partial line at chunk boundary */
       }
     }
-    // a real question = the final assistant text ends interrogatively;
-    // statements ("done, pushed, no CI impact") must NOT claim to need input
+    // a real question = the final paragraph poses one. It need not be the very
+    // last character: "Want me to do X? Here is what I'd change ..." trails the
+    // offer with detail but is still waiting on an answer, so an 80-char tail
+    // window misses it. A statement-only close ("done, pushed, no CI impact")
+    // has no "?" in its last paragraph and stays complete (green check).
     let question: string | undefined;
     if (lastRole === "assistant" && lastAssistantText) {
       const trimmed = lastAssistantText.trim();
-      if (/\?["'”)\]]*\s*$/.test(trimmed) || /\?\s*\n?[^?]{0,80}$/.test(trimmed.slice(-160))) {
+      const lastPara = trimmed.slice(trimmed.lastIndexOf("\n\n") + 1);
+      if (lastPara.includes("?")) {
         const qStart = trimmed.lastIndexOf("?");
         const windowText = trimmed.slice(Math.max(0, qStart - 200), qStart + 1);
         const sentenceStart = Math.max(
