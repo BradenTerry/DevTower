@@ -54,14 +54,19 @@ export class MiniPanel {
 
   static createOrShow(context: vscode.ExtensionContext, delegate: MiniDelegate): MiniPanel {
     if (MiniPanel.current) {
-      MiniPanel.current.panel.reveal(vscode.ViewColumn.Beside, true);
+      // Active (not Beside): bring it forward as a tab in the current editor
+      // group rather than yanking it into a split.
+      MiniPanel.current.panel.reveal(vscode.ViewColumn.Active, false);
       MiniPanel.current.push();
       return MiniPanel.current;
     }
     const panel = vscode.window.createWebviewPanel(
       MiniPanel.viewType,
       "DevTower — Mini",
-      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      // Active opens it as a tab NEXT TO the current one in the same editor group,
+      // so it shows instantly instead of starting a new tab section (split). Focus
+      // moves to it so it's foreground right away.
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
       {
         enableScripts: true,
         retainContextWhenHidden: true,

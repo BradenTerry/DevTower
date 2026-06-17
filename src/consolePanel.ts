@@ -11,6 +11,7 @@ import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./gi
 import { listHooks, setHookEnabled, setAllHooksEnabled, EDITED_DIR, readEditMarkers } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
 import { MiniPanel, MiniDelegate } from "./miniPanel";
+import { setWorkspaceFolder, clearWorkspaceFolder } from "./workspaceFolders";
 import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir, execStatsSnapshot, resetExecStats } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
@@ -924,18 +925,22 @@ export class ConsolePanel implements MiniDelegate {
     this.applyVisibility(); // a freshly opened mini view counts as on-screen
   }
 
-  /** Mount a worktree checkout in the Selected Directory view and reveal it. The
-   *  only action that changes the selected directory; shared by the tower's "USE
-   *  DIR" button and the mini view's switch-directory control. */
+  /** Mount a room's worktree as the active directory. The only action that
+   *  changes the selection; shared by the tower's "USE DIR" button and the mini
+   *  view's switch-directory control. Mounts the worktree as a real workspace
+   *  folder so VS Code's native Explorer, quick-open (Cmd+P) and search work on
+   *  it — USE DIR owns ONE folder at a time, swapping out the previous one.
+   *  Append-only so the root folder is never touched and agents keep running
+   *  (see workspaceFolders.ts). Also drives the Source Control mirror's cwd. */
   private mountSelectedDir(room: string): void {
     const dir = resolveDir(this.roomGitPaths.get(room) ?? room);
     if (!dir) return;
     this.usedDirRoom = room;
     void this.saveSelectedDir(room); // remember it across restarts
-    this.store.setSelectedDir(dir); // sticky mount for the directory view
+    this.store.setSelectedDir(dir); // sticky cwd for the Source Control mirror
     this.store.setFocusedWorktree(dir);
+    setWorkspaceFolder(dir); // native Explorer / Cmd+P / search follow the worktree
     this.postState(); // re-render so the room's button reads "SELECTED DIR"
-    void vscode.commands.executeCommand("devtower.directory.focus");
   }
 
   /* ---- MiniDelegate ---- */
@@ -1118,6 +1123,7 @@ export class ConsolePanel implements MiniDelegate {
     this.usedDirRoom = room;
     this.store.setSelectedDir(dir); // sticky mount for the directory view
     this.store.setFocusedWorktree(dir); // directory view lists it (no focus steal)
+    setWorkspaceFolder(dir); // re-mount as the native workspace folder for Cmd+P/search
     this.postState(); // scene marks the room "SELECTED DIR"
   }
 
@@ -1257,6 +1263,7 @@ export class ConsolePanel implements MiniDelegate {
       this.usedDirRoom = undefined;
       this.store.setSelectedDir(undefined);
       await this.saveSelectedDir(undefined);
+      clearWorkspaceFolder(); // unmount its native workspace folder
     }
     this.postState();
     void this.refreshState();
@@ -1314,6 +1321,7 @@ export class ConsolePanel implements MiniDelegate {
       this.usedDirRoom = undefined;
       this.store.setSelectedDir(undefined);
       await this.saveSelectedDir(undefined);
+      clearWorkspaceFolder(); // unmount its native workspace folder
     }
     this.postState();
     void this.refreshState();

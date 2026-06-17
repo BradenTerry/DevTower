@@ -37,15 +37,6 @@
     "onStartupFinished"
   ],
   "contributes": {
-    "views": {
-      "explorer": [
-        {
-          "id": "devtower.directory",
-          "name": "DevTower",
-          "type": "tree"
-        }
-      ]
-    },
     "commands": [
       {
         "command": "devtower.openConsole",
@@ -77,20 +68,6 @@
       {
         "command": "devtower.showExternalCalls",
         "title": "DevTower: Show External Call Stats"
-      },
-      {
-        "command": "devtower.refreshDirectory",
-        "title": "DevTower: Refresh Selected Directory",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "devtower.deleteFile",
-        "title": "Delete",
-        "icon": "$(trash)"
-      },
-      {
-        "command": "devtower.resetFilePrompts",
-        "title": "DevTower: Reset File Prompt Confirmations"
       },
       {
         "command": "devtower.scmCommit",
@@ -159,30 +136,6 @@
       }
     ],
     "menus": {
-      "view/title": [
-        {
-          "command": "devtower.openConsole",
-          "when": "view == devtower.directory",
-          "group": "navigation@0"
-        },
-        {
-          "command": "devtower.refreshDirectory",
-          "when": "view == devtower.directory",
-          "group": "navigation@2"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "devtower.deleteFile",
-          "when": "view == devtower.directory && viewItem == file",
-          "group": "9_delete@1"
-        },
-        {
-          "command": "devtower.deleteFile",
-          "when": "view == devtower.directory && viewItem == dir",
-          "group": "9_delete@1"
-        }
-      ],
       "scm/title": [
         {
           "command": "devtower.scmCommit",
@@ -345,10 +298,6 @@
         },
         {
           "command": "devtower.scmCommit",
-          "when": "false"
-        },
-        {
-          "command": "devtower.deleteFile",
           "when": "false"
         }
       ]
