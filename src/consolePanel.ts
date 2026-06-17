@@ -207,6 +207,12 @@ export class ConsolePanel implements MiniDelegate {
       if (e.affectsConfiguration("devtower.debugLog")) this.postConfig();
       // a live perf-overlay toggle (Settings UI or settings.json) mirrors into the scene
       if (e.affectsConfiguration("devtower.perfHud")) this.postConfig();
+      // an external-call-tracking toggle re-posts config + the tally (cleared when
+      // turned off) so the Debug tab's table reflects the new opt-in state
+      if (e.affectsConfiguration("devtower.externalCallStats")) {
+        this.postConfig();
+        this.postExecStats();
+      }
       // a live graphics-quality change (Settings UI or settings.json) re-applies in the scene
       if (e.affectsConfiguration("devtower.graphicsQuality")) this.postConfig();
       // an external edit to the project scope re-filters which buildings render
@@ -599,6 +605,12 @@ export class ConsolePanel implements MiniDelegate {
         // operator toggled the on-canvas performance overlay (Settings > Debug)
         await this.persistToggle("perfHud", !!m.on);
         break;
+      case "setExternalCallStats":
+        // operator opted external-call tracking in/out (Settings > Debug). The
+        // config listener flips the recorder and re-posts config + the (now
+        // cleared, if turned off) tally back to the table.
+        await this.persistToggle("externalCallStats", !!m.on);
+        break;
       case "setDebug": {
         // operator toggled debug logging from the Settings > Debug tab. Persisting
         // it fires the devtower.debugLog config listener, which re-posts config so
@@ -851,6 +863,7 @@ export class ConsolePanel implements MiniDelegate {
       debugLogExists: debugLogExists(),
       debugLogArchives: debugLogArchiveCount(),
       perfHud: cfg.get<boolean>("perfHud", false),
+      externalCallStats: cfg.get<boolean>("externalCallStats", false),
     });
   }
 
