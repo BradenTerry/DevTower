@@ -3063,7 +3063,9 @@ class PixelCrew {
     // into this room's worktree). The main (root) building's ✕ nukes the whole
     // directory; a worktree building's ✕ removes just that worktree.
     for (const r of this.rooms.values()) {
-      if (r.built < 0.95) continue;
+      // a room queued for demolition (✕ pressed) is fading out — its controls
+      // must go dead immediately, even while it's still mid-collapse
+      if (r.dying || r.built < 0.95) continue;
       const tr = this.topRects(r);
       if (this.hit(mx, my, tr.close)) {
         return r.isMain ? { removeBtn: r.island } : { removeWtBtn: r.name, island: r.island };
