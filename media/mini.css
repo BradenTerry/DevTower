@@ -182,9 +182,19 @@ body{
 .chk-fail{ background:var(--error); box-shadow:0 0 6px var(--error); }
 .chk-pending{ background:var(--waiting); box-shadow:0 0 6px var(--waiting); }
 .chk-none{ background:var(--idle); }
+/* GitHub merged-purple, matching the tower's "✓ MERGED" badge */
+.chk-merged{ background:#c9a6ff; box-shadow:0 0 6px #a371f7; }
 .rev-approved{ color:var(--active); }
 .rev-changes{ color:var(--error); }
 .rev-required{ color:var(--waiting); }
+.rev-merged{ color:#c9a6ff; font-weight:600; }
+/* merged tag: purple chip, shown wherever draft is shown for open PRs */
+.merged{
+  font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase;
+  color:#c9a6ff; margin-left:6px; padding:1px 6px; border-radius:6px;
+  background:color-mix(in srgb,#a371f7 22%,transparent);
+  border:1px solid color-mix(in srgb,#a371f7 40%,transparent);
+}
 
 /* row actions (+ Dev, Use dir) */
 .actions{ display:inline-flex; align-items:center; gap:8px; justify-content:flex-end; flex-wrap:wrap; }

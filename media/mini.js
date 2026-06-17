@@ -12,7 +12,10 @@
   const REVIEW_LABEL = { approved: "Approved", changes: "Changes requested", required: "Review required", none: "No review" };
   // overall CI/check status → the same colors as the check dots (chk-*)
   const CHECK_COLOR = { pass: "var(--active)", fail: "var(--error)", pending: "var(--waiting)", none: "var(--idle)" };
-  const checkColor = (checks) => CHECK_COLOR[checks] || "var(--idle)";
+  // GitHub merged-purple, matching the tower's "✓ MERGED" badge in crew.ts
+  const MERGED_COLOR = "#c9a6ff";
+  const checkColor = (pr) => (pr && pr.merged ? MERGED_COLOR : CHECK_COLOR[pr && pr.checks] || "var(--idle)");
+  const mergedTag = (pr) => (pr && pr.merged ? `<span class="merged">✓ merged</span>` : "");
 
   /* ---------- live state from the host ---------- */
   let agents = [], rooms = [], boards = {}, usedDir = null, selectedId = null;
@@ -166,10 +169,10 @@
     if (!b.prReady) return `<span class="git muted">…</span>`;
     if (!b.pr) return `<span class="git muted">—</span>`;
     const pr = b.pr;
-    const chk = `chk-${pr.checks || "none"}`;
+    const chk = pr.merged ? "chk-merged" : `chk-${pr.checks || "none"}`;
     return `<span class="prbadge" data-pr="${esc(b.__path)}">` +
       `<i class="dot ${chk}"></i><span class="num">#${pr.number}</span>` +
-      (pr.draft ? `<span class="draft">draft</span>` : "") +
+      (pr.merged ? mergedTag(pr) : pr.draft ? `<span class="draft">draft</span>` : "") +
       `</span>`;
   }
 
@@ -302,16 +305,22 @@
     if (!b.prReady) return `<div class="pr-bar muted"><span class="pr-bar-note">Checking for a pull request…</span></div>`;
     if (!b.pr) return `<div class="pr-bar muted"><span class="pr-bar-note">No pull request on this worktree.</span></div>`;
     const pr = b.pr;
-    const chk = `chk-${pr.checks || "none"}`;
+    const chk = pr.merged ? "chk-merged" : `chk-${pr.checks || "none"}`;
     const review = pr.review || "none";
     const comments = pr.comments || 0;
+    const sub = pr.merged
+      ? `<span class="rev-merged">Merged</span>`
+      : `<span class="rev-${review}">${esc(REVIEW_LABEL[review] || review)}</span> · ${comments} comment${comments === 1 ? "" : "s"}`;
+    const badge = pr.merged
+      ? `<span class="prbadge static"><i class="dot chk-merged"></i><span class="num">merged</span></span>`
+      : `<span class="prbadge static"><i class="dot ${chk}"></i><span class="num">${pr.checksPass || 0}/${pr.checksTotal || 0}</span></span>`;
     return `<div class="pr-bar" data-pr="${esc(b.__path)}" title="Open PR #${pr.number} detail">
-      <span class="chip" style="--ac:${checkColor(pr.checks)}"></span>
+      <span class="chip" style="--ac:${checkColor(pr)}"></span>
       <div class="pr-bar-main">
-        <div class="nm"><span class="pnum">#${pr.number}</span> ${esc(pr.title)}${pr.draft ? ` <span class="draft">draft</span>` : ""}</div>
-        <div class="sub"><span class="rev-${review}">${esc(REVIEW_LABEL[review] || review)}</span> · ${comments} comment${comments === 1 ? "" : "s"}</div>
+        <div class="nm"><span class="pnum">#${pr.number}</span> ${esc(pr.title)}${pr.merged ? ` ${mergedTag(pr)}` : pr.draft ? ` <span class="draft">draft</span>` : ""}</div>
+        <div class="sub">${sub}</div>
       </div>
-      <span class="prbadge static"><i class="dot ${chk}"></i><span class="num">${pr.checksPass || 0}/${pr.checksTotal || 0}</span></span>
+      ${badge}
       <span class="pr-bar-link">View PR →</span>
     </div>`;
   }
@@ -385,12 +394,16 @@
     rows.sort((a, b) => (b.b.pr.number || 0) - (a.b.pr.number || 0));
     const rowsHtml = rows.map(({ p, wt, b }) => {
       const pr = b.pr;
-      const chk = `chk-${pr.checks || "none"}`;
+      const chk = pr.merged ? "chk-merged" : `chk-${pr.checks || "none"}`;
       const review = pr.review || "none";
+      const checksCell = pr.merged
+        ? `<span class="prbadge static"><i class="dot chk-merged"></i><span class="num">merged</span></span>`
+        : `<span class="prbadge static"><i class="dot ${chk}"></i><span class="num">${pr.checksPass || 0}/${pr.checksTotal || 0}</span></span>`;
+      const reviewCell = pr.merged ? `<span class="rev-merged">Merged</span>` : `<span class="rev-${review}">${esc(REVIEW_LABEL[review] || review)}</span>`;
       return `<tr class="row" data-pr="${esc(wt.path)}" data-project="${esc(p.name)}">
-        <td class="col-name"><div class="namecell"><span class="chip" style="--ac:${checkColor(pr.checks)}" title="CI ${esc(pr.checks || "none")}"></span><div style="min-width:0"><div class="nm"><span class="pnum">#${pr.number}</span> ${esc(pr.title)}${pr.draft ? ` <span class="draft">draft</span>` : ""}</div><div class="sub">${esc(p.name)} · ${esc(wtLabel(wt))}</div></div></div></td>
-        <td><span class="prbadge static"><i class="dot ${chk}"></i><span class="num">${pr.checksPass || 0}/${pr.checksTotal || 0}</span></span></td>
-        <td><span class="rev-${review}">${esc(REVIEW_LABEL[review] || review)}</span></td>
+        <td class="col-name"><div class="namecell"><span class="chip" style="--ac:${checkColor(pr)}" title="${pr.merged ? "Merged" : "CI " + esc(pr.checks || "none")}"></span><div style="min-width:0"><div class="nm"><span class="pnum">#${pr.number}</span> ${esc(pr.title)}${pr.merged ? ` ${mergedTag(pr)}` : pr.draft ? ` <span class="draft">draft</span>` : ""}</div><div class="sub">${esc(p.name)} · ${esc(wtLabel(wt))}</div></div></div></td>
+        <td>${checksCell}</td>
+        <td>${reviewCell}</td>
         <td class="num">${pr.comments || 0}</td>
       </tr>`;
     }).join("");
@@ -412,8 +425,8 @@
     const review = pr.review || "none";
     const reviewLabel = REVIEW_LABEL[review] || review;
     view.innerHTML = `<div class="pr-detail"><div class="pr-card">
-      <h2><span class="pnum">#${pr.number}</span> <span>${esc(pr.title)}</span></h2>
-      <div class="pr-sub">${esc(wtLabel({ path: nav.pr, branch: b.branch }))}${pr.draft ? " · draft" : ""}</div>
+      <h2><span class="pnum">#${pr.number}</span> <span>${esc(pr.title)}</span>${pr.merged ? ` ${mergedTag(pr)}` : ""}</h2>
+      <div class="pr-sub">${esc(wtLabel({ path: nav.pr, branch: b.branch }))}${pr.merged ? " · merged" : pr.draft ? " · draft" : ""}</div>
       <div class="pr-grid">
         <div class="pr-stat"><div class="k">Checks</div><div class="v"><i class="dot chk-${checks}" style="width:9px;height:9px;border-radius:50%"></i>${checks === "none" ? "None" : checks[0].toUpperCase() + checks.slice(1)}</div></div>
         <div class="pr-stat"><div class="k">Check runs</div><div class="v">${pr.checksPass || 0}<small>/ ${pr.checksTotal || 0} passing</small></div><div class="subline"><b>${pr.checksFailed || 0}</b> failed · <b>${pr.checksRunning || 0}</b> running</div></div>
