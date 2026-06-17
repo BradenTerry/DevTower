@@ -99,7 +99,12 @@ export class TerminalManager {
       const cwd = resolveCwd(agent);
       term = vscode.window.createTerminal({
         name: agent.name,
-        iconPath: vscode.Uri.joinPath(this.extensionUri, "media", "devtower.svg"),
+        // theme-aware pair so the tower stays visible: file-URI SVGs don't get a
+        // currentColor context here, so a single svg renders black on dark themes.
+        iconPath: {
+          light: vscode.Uri.joinPath(this.extensionUri, "media", "devtower-light.svg"),
+          dark: vscode.Uri.joinPath(this.extensionUri, "media", "devtower-dark.svg"),
+        },
         cwd,
         message: `DevTower session — ${agent.repo} ⌥ ${agent.branch}`,
       });
