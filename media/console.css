@@ -581,14 +581,14 @@ button{ font-family:inherit; }
 .stat-ctx .tk{ color:#ffffff; font-weight:400; font-size:10px; }
 .sl{
   font-family:var(--label); font-size:7.5px; letter-spacing:.16em; text-transform:uppercase;
-  color:var(--text-faint); min-width:58px; display:inline-block;
+  color:#ffffff; min-width:58px; display:inline-block;
 }
 .srow{ display:flex; align-items:baseline; gap:10px; margin-bottom:6px; font-size:11.5px; }
 .srow:last-child{ margin-bottom:0; }
 .srow b{ font-weight:500; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .srow .a{ color:var(--add); } .srow .d{ color:var(--del); }
 .ai-title-row{ align-items:flex-start; }
-.ai-title{ color:var(--text-dim); font-size:11px; line-height:1.4; }
+.ai-title{ color:#ffffff; font-size:11px; line-height:1.4; }
 .skills-row{ align-items:flex-start; }
 .skills{ display:flex; flex-wrap:wrap; gap:5px; }
 .skill{

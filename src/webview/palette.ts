@@ -18,7 +18,7 @@ export const TEXT = {
   /** Primary readout (counts, values) - very light. */
   primary: "#e3ecf1",
   /** Cell/section headings: UNSTAGED / STAGED / COMMITS, "PR". */
-  heading: "#c4d0d8",
+  heading: "#ffffff",
   /** Secondary text: "no open PR", repo name, "nothing awaiting you", "+N more". */
   muted: "#a6b4bd",
 } as const;
