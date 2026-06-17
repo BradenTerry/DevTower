@@ -1457,6 +1457,9 @@ export class ConsolePanel implements MiniDelegate {
    *  polling. */
   async refreshAll(): Promise<void> {
     await this.discovery?.refresh().catch(() => 0);
+    // rebind any revived terminals to their agents (manual resync) so chat reveals
+    // the live terminal instead of forking a duplicate session
+    await this.terminals.reconcile().catch(() => {});
     await this.refreshState();
     void this.prs.refresh(true);
   }

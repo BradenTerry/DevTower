@@ -15,7 +15,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   initDebugLog(context);
   dlog("activate", {});
   const store = new DevTowerStore(context);
-  const terminals = new TerminalManager(store);
+  const terminals = new TerminalManager(store, context.extensionUri);
   const diffProvider = new DiffProvider(store);
   const prs = new PrService(store);
   const discovery = new ClaudeDiscovery(store, {
@@ -50,6 +50,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await discovery.refresh().catch((e) => { elog("discovery.activate", { message: String(e), stack: (e as any)?.stack }); return 0; });
     // event-driven: watch the hook marker dirs instead of polling on a timer
     discovery.start();
+    // a window reload revives DevTower's terminals (claude still running) but the
+    // terminal manager starts empty — rebind them so revealing an agent reuses its
+    // live terminal instead of forking a second `claude --resume`
+    await terminals.reconcile().catch((e) => dlog("terminal.reconcile.fail", { err: String(e) }));
   }
   store.watchStateFile();
   prs.start(4_000); // adaptive PR polling (fast while a build runs); off the startup path
