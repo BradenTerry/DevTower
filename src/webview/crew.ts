@@ -4735,34 +4735,37 @@ class PixelCrew {
       ) {
         const tp = tn.p;
         const press = tn.tapAt !== undefined && this.frame - tn.tapAt < 6;
-        const kx = dx + 8.5; // keyboard left edge
         const ky = db - 11.2; // keyboard top surface
-        const yh = ky - 1.8; // hands rest just above the keys
-        // two hands on the keys, sitting on the visible (right) half of the
-        // keyboard. they stay level and each taps DOWN a fraction out of phase,
-        // so the pair reads as fingers typing rather than flapping apart.
-        // forearms stay within the keyboard's right edge so the arms don't poke
-        // out to the dev's right.
+        // two hands resting ON the keys, side by side on the visible (right)
+        // half of the keyboard. each taps DOWN a fraction out of phase so the
+        // pair reads as fingers typing. forearms are thin and recede up toward
+        // the dev's body — drawn BEHIND each hand so the wrist hides the join,
+        // not as standalone squares floating against the screen.
         const beat = this.frame % 4;
-        const farDown = beat < 2 ? 0.8 : 0;
-        const nearDown = beat < 2 ? 0 : 0.8;
+        const farDown = beat < 2 ? 0.5 : 0;
+        const nearDown = beat < 2 ? 0 : 0.5;
         ctx.save();
         // keep everything right of the monitor's front edge, hiding the near
         // hand's left side behind the screen as the monitor used to occlude it
         ctx.beginPath();
         ctx.rect(dx + 11, db - 16, 9, 8);
         ctx.clip();
+        // far hand (deeper into the scene): forearm first, then the hand on top.
+        // the forearm top stays anchored up at the body; only its lower end and
+        // the hand bob, so the arm flexes instead of sliding as a block.
+        const fx = dx + 12.8;
         ctx.fillStyle = tp.shirtDark;
-        ctx.fillRect(kx + 3.6, yh + 0.1, 1.8, 1.3); // far forearm angling to the dev
+        ctx.fillRect(fx + 0.7, ky - 4, 0.9, 2.7 + farDown); // forearm up to the body
         ctx.fillStyle = tp.skin;
-        ctx.fillRect(kx + 3.2, yh + farDown, 1.4, 1.4); // far hand on the keys
+        ctx.fillRect(fx, ky - 1.4 + farDown, 1.5, 1.4); // hand on the keys
         if (!press) {
           // near arm + hand; skipped mid-press, when it darts to the done button
           // (drawn in drawToon, left of the monitor)
+          const nx = dx + 11.3;
           ctx.fillStyle = tp.shirt;
-          ctx.fillRect(kx + 2.4, yh + 0.1, 2, 1.3); // near forearm
+          ctx.fillRect(nx + 0.7, ky - 3.8, 0.9, 2.4 + nearDown); // near forearm
           ctx.fillStyle = tp.skin;
-          ctx.fillRect(kx + 1.7, yh + nearDown, 1.5, 1.5); // near hand
+          ctx.fillRect(nx, ky - 1.5 + nearDown, 1.5, 1.5); // near hand
         }
         ctx.restore();
       }
