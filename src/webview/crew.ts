@@ -1866,6 +1866,18 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** Clear every notification tied to one agent. Called when the user engages
+   *  that agent (selects/focuses its dev, or taps its notification row) so the
+   *  inbox doesn't keep stale alerts for a session they're already looking at. */
+  dismissAgentNotifications(agentId: string) {
+    if (!agentId) return;
+    const before = this.notifs.length;
+    this.notifs = this.notifs.filter((n) => n.agentId !== agentId);
+    if (this.notifs.length === before) return;
+    this.notifHoverKey = null;
+    this.invalidate();
+  }
+
   /** Open/close the notification panel (collapsed = inbox icon). */
   setNotifOpen(open: boolean) {
     if (this.notifOpen === open) return;
@@ -1995,10 +2007,23 @@ class PixelCrew {
     // enough to cover the corner
     let h = 38;
     if (this.notifP < 0.5) h = this.drawInboxButton(ch);
+    // perf HUD stacks above the collapsed inbox but must sit BEHIND the open
+    // modal, so draw it here (before the modal) rather than after the whole box
+    if (this.perfHud) this.drawPerfHud(h);
+    // The modal is canvas-drawn, but the canvas (#crew-wrap) sits at z-index 0,
+    // BELOW the DOM HUD (top bar, agent panel, usage meters). Lift the whole
+    // scene above the HUD while the modal is open/animating so its dialog and
+    // dimmed backdrop cover those overlays, then drop back once it settles shut.
+    const raised = this.notifOpen || this.notifP > 0.004;
+    if (raised !== this.notifLayerRaised) {
+      this.notifLayerRaised = raised;
+      this.container.style.zIndex = raised ? "60" : "";
+    }
     // the modal pops out over a dimmed backdrop while open/animating
     if (this.notifP > 0.004) this.drawNotifModal(cw, ch, this.notifP);
     return h;
   }
+  private notifLayerRaised = false;
 
   /** Trace a rounded-rect path (no fill/stroke). */
   private roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -2104,12 +2129,19 @@ class PixelCrew {
           ctx.font = "10px 'IBM Plex Mono', monospace";
           ctx.fillText(this.clipText(ctx, n.repo, 110), W - padX - 20, ry + rowH / 2 + 9);
         }
-        // per-row dismiss ✕
+        // per-row dismiss ✕ — a tall, full-height hit target centered on the row,
+        // with a tinted pill on hover so the big click area reads as clickable
         const dxHover = this.notifHoverKey === "notifx:" + n.id;
+        const dxCx = W - padX - 6, dxCy = ry + rowH / 2;
+        if (dxHover) {
+          ctx.fillStyle = "rgba(255,96,85,0.14)";
+          this.roundRectPath(ctx, dxCx - 15, dxCy - rowH / 2 + 6, 30, rowH - 12, 6);
+          ctx.fill();
+        }
         ctx.textAlign = "center";
-        ctx.font = "13px 'IBM Plex Mono', monospace";
+        ctx.font = "18px 'IBM Plex Mono', monospace";
         ctx.fillStyle = dxHover ? "#ff6055" : "#56636c";
-        ctx.fillText("✕", W - padX - 2, ry + rowH / 2 - 7);
+        ctx.fillText("✕", dxCx, dxCy + 1);
         ry += rowH;
       }
       // footer: clear-all button
@@ -2131,7 +2163,7 @@ class PixelCrew {
     if (!empty) {
       let ry = titleH;
       for (const n of rows) {
-        this.notifRects.push({ x: ox + W - padX - 16, y: oy + ry + 6, w: 30, h: 30, key: "notifx:" + n.id, dismiss: n.id });
+        this.notifRects.push({ x: ox + W - padX - 22, y: oy + ry + 4, w: 36, h: rowH - 8, key: "notifx:" + n.id, dismiss: n.id });
         if (n.agentId) this.notifRects.push({ x: ox + 6, y: oy + ry, w: W - 12, h: rowH, key: "notif:" + n.id, agentId: n.agentId });
         ry += rowH;
       }
@@ -2388,8 +2420,7 @@ class PixelCrew {
         const t0 = performance.now();
         this.draw();
         this.recordDraw(t0, performance.now());
-        const notifH = this.drawNotifications();
-        if (this.perfHud) this.drawPerfHud(notifH);
+        this.drawNotifications();
       }
       if (!moving && !this.dirty && this.sceneIdle()) {
         // nothing left to animate — park the loop until woken
@@ -3138,9 +3169,11 @@ class PixelCrew {
       else if (nh.clearAll) this.clearNotifications();
       else if (nh.dismiss !== undefined) this.dismissNotification(nh.dismiss); // keep the panel open
       else if (nh.agentId) {
-        // jumping to an agent closes the panel ("modal")
+        // jumping to an agent closes the panel ("modal") and clears that agent's
+        // notifications — the user is now looking at the session they alerted on
         this.notifOpen = false;
         this.notifHoverKey = null;
+        this.dismissAgentNotifications(nh.agentId);
         this.onSelectCb(nh.agentId);
         this.focusAgent(nh.agentId);
       }
@@ -3162,6 +3195,7 @@ class PixelCrew {
       if (hit.ghost.kind === "island") this.onReserveCb(hit.ghost.floor, hit.ghost.col);
       else if (hit.ghost.island) this.onAddWorktreeCb(hit.ghost.island);
     } else if (hit.agent) {
+      this.dismissAgentNotifications(hit.agent); // engaging clears its alerts
       this.onSelectCb(hit.agent);
       this.focusAgent(hit.agent); // zoom onto the dev you clicked
     } else if (hit.room) {
