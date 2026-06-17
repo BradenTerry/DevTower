@@ -697,6 +697,13 @@
       ${rows}`;
   }
 
+  // Flip a `.s-toggle` switch's visual + a11y state without rebuilding the pane.
+  function setToggleBtn(btn, on) {
+    if (!btn) return;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-checked", String(on));
+  }
+
   function renderSettings() {
     const s = $("#settings");
     if (s.hidden) return;
@@ -707,6 +714,12 @@
       : settingsTab === "debug" ? debugPaneHTML()
       : githubPaneHTML();
 
+    // Rebuilding the pane via innerHTML resets the scroll position, jolting the
+    // operator back to the top whenever a toggle (or a host config echo) triggers
+    // a re-render. Capture the current scroll and restore it on the new pane.
+    const prevPane = $(".s-pane", s);
+    const prevScroll = prevPane ? prevPane.scrollTop : 0;
+
     s.innerHTML = `
       <div class="settings-card">
         <button class="s-close" id="s-close" title="Close (Esc)">✕</button>
@@ -716,6 +729,9 @@
           <div class="s-pane">${pane}</div>
         </div>
       </div>`;
+
+    const newPane = $(".s-pane", s);
+    if (newPane && prevScroll) newPane.scrollTop = prevScroll;
 
     // shared wiring
     $("#s-close", s).onclick = closeSettings;
@@ -776,22 +792,28 @@
     });
 
     // Debug-tab wiring: flip locally for an instant response, mirror into the
-    // scene, and persist to devtower.debugLog (the host echoes it back via config)
+    // scene, and persist to devtower.debugLog (the host echoes it back via config).
+    // Update the button in place rather than re-rendering the whole pane — a full
+    // rebuild here needlessly recreates the sibling perf-overlay toggle (and jolts
+    // the scroll). Nothing visible depends on `debug` until the host reports
+    // dbgLogExists, at which point the config echo re-renders.
     const dbgT = $("#s-debug", s);
     if (dbgT) dbgT.onclick = () => {
       debug = !debug;
+      setToggleBtn(dbgT, debug);
       if (window.DevTowerCrew && DevTowerCrew.setDebug) DevTowerCrew.setDebug(debug);
       vscode.postMessage({ type: "setDebug", on: debug });
-      renderSettings();
     };
     // Performance overlay: flip locally for instant feedback, mirror into the
     // scene, and persist to devtower.perfHud (the host echoes it back via config).
+    // Update in place — re-rendering the pane is unnecessary (nothing else depends
+    // on perfHud) and resets the scroll position.
     const perfHudT = $("#s-perfhud", s);
     if (perfHudT) perfHudT.onclick = () => {
       perfHud = !perfHud;
+      setToggleBtn(perfHudT, perfHud);
       if (window.DevTowerCrew && DevTowerCrew.setPerfHud) DevTowerCrew.setPerfHud(perfHud);
       vscode.postMessage({ type: "setPerfHud", on: perfHud });
-      renderSettings();
     };
     // View / Clear act on the host (the clear runs a native "are you sure" modal);
     // the host echoes the new on-disk state back via the config message.
