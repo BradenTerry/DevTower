@@ -1093,9 +1093,17 @@ export class ConsolePanel implements MiniDelegate {
    *  stable after USE DIR opens the DevTower workspace and the root folder is
    *  hidden — otherwise the key would flip to the worktree path and lose the
    *  selection, building tags and ownership scope. Falls back to a fixed key when
-   *  no folder is open (a window started on a bare editor still gets one slot). */
+   *  no folder is open (a window started on a bare editor still gets one slot).
+   *
+   *  Canonicalized (case-folded on Windows/macOS) so the key is identical no
+   *  matter the drive-letter/separator casing homeRoot() comes back with. Moving
+   *  the mini tab into a new window reloads the host, and on Windows the reloaded
+   *  homeRoot() can differ only in case (`C:\repo` vs `c:\repo`); a raw key would
+   *  miss the saved entry on restore and silently drop the mounted worktree —
+   *  i.e. reset the working directory. */
   private workspaceKey(): string {
-    return homeRoot() ?? "__noworkspace__";
+    const home = homeRoot();
+    return home ? canonicalDir(home) : "__noworkspace__";
   }
 
   /** Remember (or clear) the room whose "USE DIR" was last pressed, globally but
