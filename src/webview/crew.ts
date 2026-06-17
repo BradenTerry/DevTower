@@ -666,7 +666,7 @@ class PixelCrew {
   // clicking a row jumps to its agent and closes the panel, the per-row ✕
   // dismisses one alert (panel stays open), and the header ✕ closes the panel.
   // The perf HUD stacks above it. ----
-  private notifs: { id: number; icon: string; name: string; verb: string; repo: string; color: string; agentId?: string }[] = [];
+  private notifs: { id: number; kind: string; icon: string; name: string; verb: string; repo: string; color: string; agentId?: string }[] = [];
   private notifSeq = 0;
   private notifOpen = false; // collapsed (inbox icon) vs open (modal)
   private notifP = 0; // modal open/close animation progress (0 collapsed → 1 open)
@@ -1852,6 +1852,7 @@ class PixelCrew {
     const s = STYLE[n.kind] ?? { icon: "•", color: "#a6b4bd", verb: n.kind };
     this.notifs.push({
       id: ++this.notifSeq,
+      kind: n.kind,
       icon: s.icon,
       name: n.name || n.agentId || "agent",
       verb: s.verb,
@@ -1872,13 +1873,16 @@ class PixelCrew {
     this.invalidate();
   }
 
-  /** Clear every notification tied to one agent. Called when the user engages
-   *  that agent (selects/focuses its dev, or taps its notification row) so the
-   *  inbox doesn't keep stale alerts for a session they're already looking at. */
-  dismissAgentNotifications(agentId: string) {
+  /** Clear notifications tied to one agent. Called when the user engages that
+   *  agent (selects/focuses its dev, or taps its notification row) so the inbox
+   *  doesn't keep stale alerts for a session they're already looking at, and when
+   *  an alert RESOLVES on its own (a question answered, an error cleared) so it
+   *  disappears the moment the dev moves on. `kind` (e.g. "question") narrows it to
+   *  that one alert; omitted, every alert for the agent is cleared. */
+  dismissAgentNotifications(agentId: string, kind?: string) {
     if (!agentId) return;
     const before = this.notifs.length;
-    this.notifs = this.notifs.filter((n) => n.agentId !== agentId);
+    this.notifs = this.notifs.filter((n) => n.agentId !== agentId || (kind ? n.kind !== kind : false));
     if (this.notifs.length === before) return;
     this.notifHoverKey = null;
     this.invalidate();
@@ -5451,6 +5455,9 @@ class PixelCrew {
   },
   clearNotifications() {
     this._instance?.clearNotifications();
+  },
+  dismissAgentNotifications(id: string, kind?: string) {
+    this._instance?.dismissAgentNotifications(id, kind);
   },
   setNotifOpen(open: boolean) {
     this._instance?.setNotifOpen(open);
