@@ -44,6 +44,16 @@
         "icon": "$(screen-full)"
       },
       {
+        "command": "devtower.workspaceShowRoot",
+        "title": "DevTower: Show Project Root",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "devtower.workspaceHideRoot",
+        "title": "DevTower: Show Worktree Only",
+        "icon": "$(eye-closed)"
+      },
+      {
         "command": "devtower.openMini",
         "title": "DevTower: Open Mini View",
         "icon": "$(list-flat)"
@@ -279,6 +289,18 @@
           "group": "1_modification@1"
         }
       ],
+      "view/title": [
+        {
+          "command": "devtower.workspaceHideRoot",
+          "when": "view == workbench.explorer.fileView && devtower.inManagedWorkspace && devtower.workspaceShowingRoot",
+          "group": "navigation@99"
+        },
+        {
+          "command": "devtower.workspaceShowRoot",
+          "when": "view == workbench.explorer.fileView && devtower.inManagedWorkspace && !devtower.workspaceShowingRoot",
+          "group": "navigation@99"
+        }
+      ],
       "commandPalette": [
         {
           "command": "devtower.scmStage",
@@ -309,6 +331,12 @@
           "type": "string",
           "default": ".devtower/state.jsonl",
           "description": "Path (relative to the first workspace folder, or absolute) to the append-only JSONL file agents write state events to."
+        },
+        "devtower.homeRoot": {
+          "type": "string",
+          "default": "",
+          "scope": "window",
+          "description": "Internal — set by DevTower in the generated DevTower.code-workspace to remember the project root while USE DIR hides it from the Explorer. Not meant to be edited by hand."
         },
         "devtower.discoverClaudeSessions": {
           "type": "boolean",
