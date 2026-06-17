@@ -2094,7 +2094,7 @@ class PixelCrew {
     const titleW = ctx.measureText("Notifications").width; // measure at the title font
     if (!empty) {
       ctx.font = "11px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = "#6b7780";
+      ctx.fillStyle = "#e3ecf1";
       ctx.fillText(`(${this.notifs.length})`, padX + titleW + 8, titleH / 2 + 1);
     }
     // close ✕
@@ -2157,7 +2157,7 @@ class PixelCrew {
       const caHover = this.notifHoverKey === "notif:clear";
       ctx.textAlign = "center";
       ctx.font = "11px 'IBM Plex Mono', monospace";
-      ctx.fillStyle = caHover ? "#ff6055" : "#8a98a3";
+      ctx.fillStyle = caHover ? "#ff8078" : "#ff6055";
       ctx.fillText("Clear all", W / 2, fy + footH / 2);
     }
     ctx.restore();

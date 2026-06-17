@@ -105,7 +105,7 @@ body{
 .tbl{ width:100%; border-collapse:separate; border-spacing:0 6px; }
 .tbl thead th{
   text-align:left; font-family:var(--label); font-size:9px; letter-spacing:.13em; text-transform:uppercase;
-  color:var(--text-faint); font-weight:500; padding:0 12px 4px; white-space:nowrap;
+  color:var(--text); font-weight:500; padding:0 12px 4px; white-space:nowrap;
 }
 .tbl thead th.num{ text-align:right; }
 .tbl tbody tr{ background:var(--glass-2); }
@@ -122,13 +122,13 @@ body{
 .namecell{ display:flex; align-items:center; gap:10px; min-width:0; }
 .chip{ width:10px; height:18px; border-radius:3px; flex:0 0 auto; background:var(--ac,var(--idle)); box-shadow:0 0 0 1px rgba(0,0,0,.25) inset; }
 .nm{ font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.sub{ color:var(--text-faint); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sub{ color:var(--text); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .col-name{ min-width:160px; max-width:340px; }
 
 /* state dot + label */
 .statecell{ display:flex; align-items:center; gap:8px; }
 .statecell .pip{ flex:0 0 auto; }
-.statecell .slbl{ color:var(--text-dim); }
+.statecell .slbl{ color:var(--text); }
 
 /* per-status agent counts: run / wait / err / idle. Wraps to multiple lines as
    the window (and so the Agents column) narrows, instead of forcing it wide. */
@@ -138,7 +138,7 @@ body{
 .counts .seg{ display:inline-flex; align-items:center; gap:5px; flex:0 0 auto; }
 .counts .seg .pip{ width:8px; height:8px; }
 .counts .seg b{ color:var(--text); font-weight:600; font-size:13px; }
-.counts .seg em{ font-style:normal; font-family:var(--label); font-size:8px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-faint); }
+.counts .seg em{ font-style:normal; font-family:var(--label); font-size:8px; letter-spacing:.12em; text-transform:uppercase; color:var(--text); }
 .counts .seg.zero b{ color:var(--text-faint); }
 .counts .seg.zero .pip{ opacity:.32; box-shadow:none; }
 
@@ -146,26 +146,26 @@ body{
 .git{ display:inline-flex; align-items:center; gap:10px; flex-wrap:wrap; font-variant-numeric:tabular-nums; font-size:12px; }
 .git .add{ color:var(--add); }
 .git .del{ color:var(--del); }
-.git .tag{ display:inline-flex; align-items:center; gap:4px; color:var(--text-dim); }
-.git .muted{ color:var(--text-faint); }
+.git .tag{ display:inline-flex; align-items:center; gap:4px; color:var(--text); }
+.git .muted{ color:var(--text); }
 
 /* stacked git cell: Committed / Staged / Unstaged, two horizontal dividers */
 .gitstack{ display:flex; flex-direction:column; font-variant-numeric:tabular-nums; font-size:12px; min-width:0; }
 .gitstack .grow{ display:flex; align-items:center; gap:10px; padding:5px 0; border-top:1px solid var(--edge-soft); }
 .gitstack .grow:first-child{ border-top:none; padding-top:0; }
 .gitstack .grow:last-child{ padding-bottom:0; }
-.gitstack .glabel{ flex:0 0 auto; width:62px; font-family:var(--label); font-size:8px; letter-spacing:.12em; text-transform:uppercase; color:var(--text-faint); }
+.gitstack .glabel{ flex:0 0 auto; width:62px; font-family:var(--label); font-size:8px; letter-spacing:.12em; text-transform:uppercase; color:var(--text); }
 .gitstack .gvals{ display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .gitstack .add{ color:var(--add); }
 .gitstack .del{ color:var(--del); }
-.gitstack .tag{ display:inline-flex; align-items:center; gap:4px; color:var(--text-dim); }
-.gitstack .muted{ color:var(--text-faint); }
+.gitstack .tag{ display:inline-flex; align-items:center; gap:4px; color:var(--text); }
+.gitstack .muted{ color:var(--text); }
 
 /* PR badge */
 .prbadge{
   display:inline-flex; align-items:center; gap:7px; padding:5px 9px; border-radius:8px;
   border:1px solid var(--edge); background:var(--glass); cursor:pointer; transition:.14s;
-  font-variant-numeric:tabular-nums; font-size:12px; color:var(--text-dim);
+  font-variant-numeric:tabular-nums; font-size:12px; color:var(--text);
 }
 .prbadge:hover{ background:var(--raise); border-color:color-mix(in srgb,var(--amber) 40%,var(--edge)); transform:translateY(-1px); }
 /* static badge in the all-PRs table: the whole row is the click target, so the
@@ -174,10 +174,10 @@ body{
 .prbadge.static:hover{ background:var(--glass); border-color:var(--edge); transform:none; }
 /* PR number + draft tag when shown inline in a name cell (all-PRs table) */
 .nm .pnum{ color:var(--amber); font-weight:600; }
-.nm .draft{ font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint); margin-left:4px; }
+.nm .draft{ font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:var(--text); margin-left:4px; }
 .prbadge .num{ color:var(--text); font-weight:600; }
 .prbadge .dot{ width:8px; height:8px; border-radius:50%; }
-.prbadge .draft{ font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:var(--text-faint); }
+.prbadge .draft{ font-family:var(--label); font-size:8px; letter-spacing:.1em; text-transform:uppercase; color:var(--text); }
 .chk-pass{ background:var(--active); box-shadow:0 0 6px var(--active); }
 .chk-fail{ background:var(--error); box-shadow:0 0 6px var(--error); }
 .chk-pending{ background:var(--waiting); box-shadow:0 0 6px var(--waiting); }
@@ -216,6 +216,8 @@ body{
 }
 .iconbtn:hover{ background:var(--raise); color:var(--text); transform:translateY(-1px); }
 .iconbtn:active{ transform:translateY(0) scale(.94); }
+/* remove/✕ buttons read as destructive: red text + border at rest, not gray */
+.iconbtn.danger{ color:var(--error); border-color:color-mix(in srgb,var(--error) 32%,var(--edge)); }
 .iconbtn.danger:hover{
   color:var(--error); background:color-mix(in srgb,var(--error) 12%,transparent);
   border-color:color-mix(in srgb,var(--error) 55%,var(--edge));
@@ -289,17 +291,20 @@ body{
 /* add-dev: green accent so spawning reads distinct from switching dir */
 .usebtn.add{ color:var(--active); border-color:color-mix(in srgb,var(--active) 32%,var(--edge)); }
 .usebtn.add:hover{ color:var(--active); border-color:color-mix(in srgb,var(--active) 60%,var(--edge)); background:color-mix(in srgb,var(--active) 12%,transparent); }
+/* view: green accent — reveals/focuses this agent in the tower */
+.usebtn.view{ color:var(--active); border-color:color-mix(in srgb,var(--active) 32%,var(--edge)); }
+.usebtn.view:hover{ color:var(--active); border-color:color-mix(in srgb,var(--active) 60%,var(--edge)); background:color-mix(in srgb,var(--active) 12%,transparent); }
 /* chat: amber accent — opens this agent's Claude session (its terminal) */
 .usebtn.chat{ color:var(--amber); border-color:color-mix(in srgb,var(--amber) 32%,var(--edge)); }
 .usebtn.chat:hover{ color:var(--amber); border-color:color-mix(in srgb,var(--amber) 60%,var(--edge)); background:color-mix(in srgb,var(--amber) 12%,transparent); }
 
 /* external agents run outside DevTower — no chat button, just a muted note
    (mirrors the tower's "Runs in its own session") */
-.ext-cell{ color:var(--text-faint); font-family:var(--label); font-size:9px; letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; }
+.ext-cell{ color:var(--text); font-family:var(--label); font-size:9px; letter-spacing:.1em; text-transform:uppercase; white-space:nowrap; }
 
 .ctx{ font-variant-numeric:tabular-nums; font-weight:600; }
 /* current task — now a line under the agent name (its own column was removed) */
-.task{ color:var(--text-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; font-size:11px; margin-top:2px; }
+.task{ color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; font-size:11px; margin-top:2px; }
 [data-tip]{ cursor:help; }
 
 /* custom hover tooltip for the current-task cell: fades in after a 200ms delay
