@@ -37,7 +37,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // an owned dev's terminal closing retires it (kills the orphan transcript)
   terminals.setOwnedCloseHandler((id) => discovery.retireOwned(id));
   // a /rename command renames the dev in the store; retitle its console to match
-  context.subscriptions.push(discovery.onRenamed(({ id, name }) => void terminals.rename(id, name)));
+  // (the AI summary still wins when present — consoleTitle decides)
+  context.subscriptions.push(discovery.onRenamed(({ id }) => void terminals.syncTitle(id)));
   // DevTower authenticates to GitHub with a PAT the user adds in the settings
   // page (stored in SecretStorage); initialize the secret-backed auth + cache
   initGithubAuth(context);
