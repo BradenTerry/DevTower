@@ -35,6 +35,7 @@ interface CrewAgent {
   clearedSession?: string; // session id of the dev's latest /clear; a change sends it to the shredder
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
   reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
+  shirtColor?: string; // operator-chosen shirt colour (/color); overrides the persona shirt
 }
 
 interface ReservedRoom {
@@ -79,6 +80,19 @@ function ghostColor(c: string): string {
   const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
   const y = 0.3 * r + 0.59 * g + 0.11 * b;
   const hx = (v: number) => Math.round(Math.min(255, (v * 0.2 + y * 0.8) * 0.82)).toString(16).padStart(2, "0");
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+/** Darken one shirt color (hsl() or #hex) to produce its shaded counterpart, so a
+ *  `/color`-chosen shirt gets the same two-tone shading as a procedural one. */
+function darkenColor(c: string): string {
+  if (typeof c !== "string") return "#555555";
+  const m = /^hsl\((\d+)\s+(\d+)%\s+(\d+)%\)$/.exec(c);
+  if (m) return `hsl(${m[1]} ${m[2]}% ${Math.round(+m[3] * 0.73)}%)`;
+  const h = c.replace("#", "");
+  if (h.length < 6) return c;
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  const hx = (v: number) => Math.round(v * 0.73).toString(16).padStart(2, "0");
   return `#${hx(r)}${hx(g)}${hx(b)}`;
 }
 
@@ -389,6 +403,7 @@ const DEFAULT_BRANCHES = new Set(["main", "master", "head", "develop", "trunk"])
 interface Toon {
   agent: CrewAgent;
   p: ReturnType<typeof persona>;
+  shirtColor?: string; // last-applied /color override, so p is only recomputed on change
   x: number;
   targetX: number;
   base: number; // floor baseline (world y)
@@ -1122,6 +1137,14 @@ class PixelCrew {
         tn.riding = false;
         tn.sitting = false;
         this.invalidate(); // wake the loop so the relocation plays now
+      }
+      // a /color override (or its removal): repaint the shirt, only on change so
+      // the per-frame draw isn't re-parsing the colour every tick.
+      if (a.shirtColor !== tn.shirtColor) {
+        tn.shirtColor = a.shirtColor;
+        const base = persona(a.id);
+        tn.p.shirt = a.shirtColor || base.shirt;
+        tn.p.shirtDark = a.shirtColor ? darkenColor(a.shirtColor) : base.shirtDark;
       }
       tn.agent = a;
       // accumulate newly-used skills; the tick walks the dev to the shelf to

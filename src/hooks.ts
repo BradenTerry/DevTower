@@ -37,6 +37,12 @@ export const ACTIVE_DIR = path.join(os.homedir(), ".claude", "devtower", "active
 // cable beam can stream from the dev that actually made the change instead of the
 // first dev in the room.
 export const EDITED_DIR = path.join(os.homedir(), ".claude", "devtower", "edited");
+// UserPromptSubmit drops one of these when the operator types a DevTower control
+// command (`/rename <name>` or `/color <value>`) into a session (see
+// media/devtower-prompt.js): the command + its argument, keyed by the session's
+// uuid. Discovery applies it to the bound dev (renames it / recolours its shirt)
+// and the hook blocks the prompt so the command never reaches the model.
+export const COMMAND_DIR = path.join(os.homedir(), ".claude", "devtower", "command");
 // Stable, version-independent home for the hook scripts. The command we write
 // into settings.json points HERE, not at the extension's versioned install dir
 // (`.../bradenterry.devtower-<ver>/media/...`), which VS Code deletes on every
@@ -69,6 +75,10 @@ const ACTIVE_MAX_AGE = 3 * 60_000;
 // an edit marker is only interesting while it is fresh enough to attribute a
 // just-detected git change to it; after that the dev's own activity carries on.
 const EDITED_MAX_AGE = 60_000;
+// a control command is consumed on the next poll that finds its dev; the age cap
+// only guards a marker whose poll never ran (a command typed in a session
+// DevTower isn't watching, or while the extension was asleep).
+const COMMAND_MAX_AGE = 10 * 60_000;
 
 export interface WaitMarker {
   message: string;
@@ -150,7 +160,7 @@ const HOOKS: HookSpec[] = [
     script: "devtower-prompt.js",
     label: "UserPromptSubmit",
     description:
-      "Fires the instant you submit a prompt. DevTower marks the dev active right away instead of waiting for its first transcript line, so the run/idle counts react immediately.",
+      "Fires the instant you submit a prompt. DevTower marks the dev active right away instead of waiting for its first transcript line, so the run/idle counts react immediately. Also lets you type /rename <name> or /color <value> to rename a dev (and its console) or recolour its shirt.",
   },
   {
     id: "edit",
@@ -344,6 +354,49 @@ export async function readEditMarkers(dir = EDITED_DIR): Promise<Map<string, Edi
     }
   }
   return out;
+}
+
+/** A DevTower control command typed into a session: `/rename <name>` or
+ *  `/color <value>` (see media/devtower-prompt.js), keyed by the session uuid. */
+export interface CommandMarker {
+  cwd: string;
+  ts: number;
+  /** which control command was typed */
+  cmd: "rename" | "color";
+  /** the raw argument after the command word (a name, or a colour value) */
+  arg: string;
+}
+
+/** Read the control-command markers, keyed by session id, pruning stale ones (a
+ *  command whose session DevTower never bound before it aged out). */
+export async function readCommandMarkers(dir = COMMAND_DIR): Promise<Map<string, CommandMarker>> {
+  const out = new Map<string, CommandMarker>();
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const now = Date.now();
+  for (const fn of files) {
+    if (!fn.endsWith(".json")) continue;
+    const id = fn.slice(0, -5);
+    const full = path.join(dir, fn);
+    try {
+      const raw = await fs.promises.readFile(full, "utf8");
+      const m = JSON.parse(raw) as CommandMarker;
+      const cmd = m?.cmd === "rename" || m?.cmd === "color" ? m.cmd : undefined;
+      if (typeof m?.ts !== "number" || now - m.ts > COMMAND_MAX_AGE || !cmd) {
+        await fs.promises.unlink(full).catch(() => {});
+        continue;
+      }
+      out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts, cmd, arg: String(m.arg ?? "") });
+    } catch {
+      /* partial write or garbage — ignore this poll */
+    }
+  }
+  return out;
+}
+
+/** Drop a control-command marker once it has been applied to its dev. */
+export function clearCommandMarker(sessionId: string, dir = COMMAND_DIR): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return;
+  fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
 }
 
 /** A genuine session exit (not /clear or resume) drops one of these keyed by the

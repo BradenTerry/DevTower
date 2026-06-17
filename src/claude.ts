@@ -3,9 +3,9 @@ import * as os from "os";
 import * as path from "path";
 import { execFile } from "child_process";
 import * as vscode from "vscode";
-import { DevTowerStore, AgentState } from "./store";
+import { DevTowerStore, AgentState, Agent, resolveShirtColor } from "./store";
 import { currentBranch, isRepo, canonicalDir } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SUCCESSION_DIR, RESUME_DIR } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, readCommandMarkers, clearCommandMarker, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SUCCESSION_DIR, RESUME_DIR, COMMAND_DIR } from "./hooks";
 import { dlog, elog, recordExec } from "./debugLog";
 
 function execP(cmd: string, args: string[]): Promise<string> {
@@ -163,6 +163,11 @@ export class ClaudeDiscovery {
   // never fires on startup.
   private _onPrClosed = new vscode.EventEmitter<void>();
   readonly onPrClosed = this._onPrClosed.event;
+  // Fires when a `/rename` command renames a bound dev, so the terminal manager
+  // can retitle that dev's console (the store name alone doesn't move a live
+  // terminal's tab — see TerminalManager.rename).
+  private _onRenamed = new vscode.EventEmitter<{ id: string; name: string }>();
+  readonly onRenamed = this._onRenamed.event;
   private knownSessions = new Set<string>();
   private prCreatedSeen = new Map<string, number>();
   private prClosedSeen = new Map<string, number>();
@@ -181,6 +186,7 @@ export class ClaudeDiscovery {
       endedDir?: string;
       activeDir?: string;
       editedDir?: string;
+      commandDir?: string;
       persist?: LaunchPersist;
     } = {}
   ) {}
@@ -327,6 +333,7 @@ export class ClaudeDiscovery {
       this.deps.editedDir ?? EDITED_DIR,
       this.deps.successionDir ?? SUCCESSION_DIR,
       this.deps.resumeDir ?? RESUME_DIR,
+      this.deps.commandDir ?? COMMAND_DIR,
     ];
     for (const dir of dirs) {
       try { fs.mkdirSync(dir, { recursive: true }); } catch { /* */ }
@@ -374,6 +381,7 @@ export class ClaudeDiscovery {
     this.markerWatchers = [];
     this._onPrCreated.dispose();
     this._onPrClosed.dispose();
+    this._onRenamed.dispose();
   }
 
   /**
@@ -1072,6 +1080,12 @@ export class ClaudeDiscovery {
         this.store.remove(id);
       }
     }
+    // Apply DevTower control commands (`/rename`, `/color`) AFTER binding, so each
+    // command's session resolves to its now-current agent. A command whose session
+    // isn't bound yet is left for a later poll (the marker prunes itself if it
+    // never binds). Done inside the batch so the rename + recolour ride this
+    // refresh's single webview post.
+    await this.applyCommands();
     });
     // A session that just ran `gh pr create` should surface its PR immediately,
     // not on the PR poller's lazy ~60s tick. Fire once per new create. A session
@@ -1168,6 +1182,48 @@ export class ClaudeDiscovery {
       exploring: found.filter((f) => f.exploring).map((f) => f.sessionId),
     });
     return found.length;
+  }
+
+  /** Resolve a session uuid to the agent currently driving it: its live
+   *  transcript, its stable launch id, the session it last /cleared from, or the
+   *  `cc-<8>` id discovery derives from the transcript filename. */
+  private agentForSession(sid: string): Agent | undefined {
+    const lc = sid.toLowerCase();
+    const ccId = "cc-" + lc.slice(0, 8);
+    return this.store.list().find(
+      (a) =>
+        (a.transcriptPath && path.basename(a.transcriptPath, ".jsonl").toLowerCase() === lc) ||
+        a.launchId?.toLowerCase() === lc ||
+        a.clearedSession?.toLowerCase() === lc ||
+        a.id.toLowerCase() === ccId
+    );
+  }
+
+  /** Apply any pending `/rename` / `/color` control-command markers to their
+   *  bound devs, clearing each once applied. Unbound commands are kept for a later
+   *  poll (they self-prune on age). */
+  private async applyCommands(): Promise<void> {
+    const commands = await readCommandMarkers(this.deps.commandDir);
+    for (const [sid, m] of commands) {
+      const agent = this.agentForSession(sid);
+      if (!agent) continue; // not bound yet — try again next poll
+      if (m.cmd === "rename") {
+        const name = m.arg.trim().slice(0, 60);
+        if (name && name !== agent.name) {
+          this.store.apply({ id: agent.id, name });
+          this._onRenamed.fire({ id: agent.id, name });
+          dlog("command.rename", { agent: agent.id, name });
+        }
+      } else if (m.cmd === "color") {
+        // empty arg clears the override back to the procedural colour
+        const color = m.arg.trim() ? resolveShirtColor(m.arg) : null;
+        if (color !== undefined) {
+          this.store.apply({ id: agent.id, shirtColor: color });
+          dlog("command.color", { agent: agent.id, color });
+        }
+      }
+      clearCommandMarker(sid, this.deps.commandDir);
+    }
   }
 
   private async scan(root: string): Promise<Found[]> {

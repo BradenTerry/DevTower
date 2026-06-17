@@ -24,6 +24,7 @@ describe("ClaudeDiscovery binding", () => {
   let resumeDir: string; // fake ~/.claude/devtower/resume
   let endedDir: string; // fake ~/.claude/devtower/ended
   let activeDir: string; // fake ~/.claude/devtower/active
+  let cmdDir: string; // fake ~/.claude/devtower/command
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-disc-"));
@@ -35,6 +36,7 @@ describe("ClaudeDiscovery binding", () => {
     resumeDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-resume-"));
     endedDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-ended-"));
     activeDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-active-"));
+    cmdDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-cmd-"));
   });
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
@@ -44,6 +46,7 @@ describe("ClaudeDiscovery binding", () => {
     fs.rmSync(resumeDir, { recursive: true, force: true });
     fs.rmSync(endedDir, { recursive: true, force: true });
     fs.rmSync(activeDir, { recursive: true, force: true });
+    fs.rmSync(cmdDir, { recursive: true, force: true });
   });
 
   /** Drop a SessionStart(clear) succession marker for the new session uuid,
@@ -118,7 +121,15 @@ describe("ClaudeDiscovery binding", () => {
       resumeDir,
       endedDir,
       activeDir,
+      commandDir: cmdDir,
     });
+
+  /** Drop a UserPromptSubmit control-command marker for a session. */
+  const writeCommand = (uuid: string, cmd: "rename" | "color", arg: string) =>
+    fs.writeFileSync(
+      path.join(cmdDir, `${uuid}.json`),
+      JSON.stringify({ cwd: wt, ts: Date.now(), cmd, arg })
+    );
 
   /** Create a panel placeholder exactly as addDev does (no transcript yet). */
   const placeholder = (store: DevTowerStore, id: string, worktree: string) =>
@@ -975,6 +986,60 @@ describe("ClaudeDiscovery binding", () => {
     disc2.restore();
     await disc2.refresh();
     expect(store2.list()).toHaveLength(0);
+  });
+
+  it("/rename applies the new name to the bound dev, fires onRenamed, and clears the marker", async () => {
+    const store = newStore();
+    const disc = discovery(store, { [wt]: 1 });
+    placeholder(store, "isle-a1", wt);
+    const uuid = randomUUID();
+    disc.expectSession("isle-a1", uuid);
+    writeSession(wt, 0, uuid);
+    await disc.refresh(); // bind the placeholder to its session
+
+    const renamed: { id: string; name: string }[] = [];
+    disc.onRenamed((e) => renamed.push(e));
+    writeCommand(uuid, "rename", "Ada Lovelace");
+    await disc.refresh();
+
+    expect(store.get("isle-a1")!.name).toBe("Ada Lovelace");
+    expect(renamed).toEqual([{ id: "isle-a1", name: "Ada Lovelace" }]);
+    expect(fs.existsSync(path.join(cmdDir, `${uuid}.json`))).toBe(false); // consumed
+  });
+
+  it("/color sets a shirt colour on the bound dev; an empty arg clears it", async () => {
+    const store = newStore();
+    const disc = discovery(store, { [wt]: 1 });
+    placeholder(store, "isle-a1", wt);
+    const uuid = randomUUID();
+    disc.expectSession("isle-a1", uuid);
+    writeSession(wt, 0, uuid);
+    await disc.refresh();
+
+    writeCommand(uuid, "color", "teal");
+    await disc.refresh();
+    expect(store.get("isle-a1")!.shirtColor).toBe("#2bb3a3");
+
+    writeCommand(uuid, "color", ""); // empty → clear back to procedural
+    await disc.refresh();
+    expect(store.get("isle-a1")!.shirtColor).toBeUndefined();
+  });
+
+  it("keeps a command marker until its session binds, then applies it", async () => {
+    const store = newStore();
+    const disc = discovery(store, { [wt]: 1 });
+    const uuid = randomUUID();
+
+    // command lands before the session is on disk → no agent to apply to yet
+    writeCommand(uuid, "rename", "Grace");
+    await disc.refresh();
+    expect(fs.existsSync(path.join(cmdDir, `${uuid}.json`))).toBe(true); // kept
+
+    // the session surfaces (external discovery) → next poll applies + clears it
+    writeSession(wt, 0, uuid);
+    await disc.refresh();
+    expect(store.get("cc-" + uuid.slice(0, 8))!.name).toBe("Grace");
+    expect(fs.existsSync(path.join(cmdDir, `${uuid}.json`))).toBe(false);
   });
 });
 
