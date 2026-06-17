@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DevTowerStore, reconstruct, ChangedFile } from "../src/store";
+import { DevTowerStore, reconstruct, ChangedFile, resolveShirtColor } from "../src/store";
 
 const newStore = () => new DevTowerStore({ subscriptions: [] } as any);
 
@@ -43,6 +43,18 @@ describe("DevTowerStore.apply", () => {
     expect(a.name).toBe("streamer"); // preserved
     expect(a.repo).toBe("api"); // preserved
     expect(a.state).toBe("waiting"); // updated
+  });
+
+  it("sets a shirt colour, keeps it on undefined, and clears it on null", () => {
+    const s = newStore();
+    s.apply({ id: "a1", shirtColor: "#4a86e0" });
+    expect(s.get("a1")!.shirtColor).toBe("#4a86e0");
+    // an unrelated poll (undefined) leaves the override in place
+    s.apply({ id: "a1", state: "active" });
+    expect(s.get("a1")!.shirtColor).toBe("#4a86e0");
+    // an explicit null clears it back to the procedural colour
+    s.apply({ id: "a1", shirtColor: null });
+    expect(s.get("a1")!.shirtColor).toBeUndefined();
   });
 
   it("unions skills in first-seen order across polls", () => {
@@ -157,6 +169,32 @@ describe("DevTowerStore selection + removal", () => {
     s.apply({ id: "a2", repo: "api" });
     s.apply({ id: "a3", repo: "web" });
     expect(s.repos().sort()).toEqual(["api", "web"]);
+  });
+});
+
+describe("resolveShirtColor", () => {
+  it("maps named colours to a hex", () => {
+    expect(resolveShirtColor("blue")).toBe("#4a86e0");
+    expect(resolveShirtColor("TEAL")).toBe("#2bb3a3"); // case-insensitive
+    expect(resolveShirtColor("  pink ")).toBe("#e08ab6"); // trimmed
+  });
+
+  it("accepts #hex (3 and 6) and bare 6-digit hex", () => {
+    expect(resolveShirtColor("#3ee089")).toBe("#3ee089");
+    expect(resolveShirtColor("#abc")).toBe("#aabbcc"); // shorthand expanded
+    expect(resolveShirtColor("3ee089")).toBe("#3ee089"); // bare hex
+  });
+
+  it("treats a bare integer as a hue, not 3-digit hex", () => {
+    expect(resolveShirtColor("200")).toBe("hsl(200 45% 52%)");
+    expect(resolveShirtColor("0")).toBe("hsl(0 45% 52%)");
+    expect(resolveShirtColor("360")).toBe("hsl(360 45% 52%)");
+  });
+
+  it("rejects out-of-range hues and unrecognised values", () => {
+    expect(resolveShirtColor("999")).toBeUndefined(); // > 360, not 6-hex
+    expect(resolveShirtColor("notacolor")).toBeUndefined();
+    expect(resolveShirtColor("")).toBeUndefined();
   });
 });
 
