@@ -53,8 +53,14 @@ export interface WsHost {
 let host: WsHost | undefined;
 let selectedWorktree: string | undefined;
 
+/** Fold a path for IDENTITY comparison only (never for a value written to disk):
+ *  normalize separators, strip the trailing one, and lower-case on case-insensitive
+ *  platforms. Mirrors git.ts `canonicalDir` so `C:\repo\wt` and `c:\repo\wt` compare
+ *  equal — otherwise `applyWorkspace`'s no-op guard would miss on Windows and force a
+ *  redundant folder swap (a window reload) every time the worktree is re-mounted. */
 function norm(p: string): string {
-  return path.normalize(p).replace(/[\\/]+$/, "");
+  const n = path.normalize(p).replace(/[\\/]+$/, "");
+  return process.platform === "win32" || process.platform === "darwin" ? n.toLowerCase() : n;
 }
 function sameDir(a: string, b: string): boolean {
   return norm(a) === norm(b);
