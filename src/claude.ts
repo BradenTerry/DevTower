@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState, Agent, resolveShirtColor } from "./store";
 import { currentBranch, isRepo, canonicalDir } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, readSkillMarkers, readCommandMarkers, clearCommandMarker, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SKILL_DIR, SUCCESSION_DIR, RESUME_DIR, COMMAND_DIR } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, readSkillMarkers, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SKILL_DIR, SUCCESSION_DIR, RESUME_DIR } from "./hooks";
 import { readHistoryCommands, historyFileSize, HISTORY_FILE } from "./history";
 import { dlog, elog, recordExec } from "./debugLog";
 
@@ -192,7 +192,6 @@ export class ClaudeDiscovery {
       activeDir?: string;
       editedDir?: string;
       skillDir?: string;
-      commandDir?: string;
       historyFile?: string;
       persist?: LaunchPersist;
     } = {}
@@ -341,7 +340,6 @@ export class ClaudeDiscovery {
       this.deps.skillDir ?? SKILL_DIR,
       this.deps.successionDir ?? SUCCESSION_DIR,
       this.deps.resumeDir ?? RESUME_DIR,
-      this.deps.commandDir ?? COMMAND_DIR,
     ];
     for (const dir of dirs) {
       try { fs.mkdirSync(dir, { recursive: true }); } catch { /* */ }
@@ -1098,12 +1096,9 @@ export class ClaudeDiscovery {
         this.store.remove(id);
       }
     }
-    // Apply DevTower control commands (`/rename`, `/color`) AFTER binding, so each
-    // command's session resolves to its now-current agent. A command whose session
-    // isn't bound yet is left for a later poll (the marker prunes itself if it
-    // never binds). Done inside the batch so the rename + recolour ride this
-    // refresh's single webview post.
-    await this.applyCommands();
+    // Apply the built-in /rename and /color from history.jsonl AFTER binding, so
+    // each command's session resolves to its now-current agent. Done inside the
+    // batch so the rename + recolour ride this refresh's single webview post.
     await this.applyHistoryCommands();
     });
     // A session that just ran `gh pr create` should surface its PR immediately,
@@ -1218,22 +1213,8 @@ export class ClaudeDiscovery {
     );
   }
 
-  /** Apply any pending `/rename` / `/color` control-command markers to their
-   *  bound devs, clearing each once applied. Unbound commands are kept for a later
-   *  poll (they self-prune on age). */
-  private async applyCommands(): Promise<void> {
-    const commands = await readCommandMarkers(this.deps.commandDir);
-    for (const [sid, m] of commands) {
-      const agent = this.agentForSession(sid);
-      if (!agent) continue; // not bound yet — try again next poll
-      this.applyControl(agent, m.cmd, m.arg);
-      await clearCommandMarker(sid, this.deps.commandDir);
-    }
-  }
-
-  /** Mirror one `/rename` or `/color` onto its bound dev. Shared by the hook
-   *  command-marker path (custom commands DevTower still owns) and the history
-   *  path (the built-ins the host consumes before the hook runs). */
+  /** Mirror one `/rename` or `/color` onto its bound dev. Driven by the history
+   *  path (the built-ins the host consumes before any hook runs). */
   private applyControl(agent: Agent, cmd: "rename" | "color", arg: string): void {
     if (cmd === "rename") {
       const name = arg.trim().slice(0, 60);
@@ -1255,10 +1236,10 @@ export class ClaudeDiscovery {
   }
 
   /** Apply the built-in `/rename` / `/color` recorded in ~/.claude/history.jsonl.
-   *  Those bypass the UserPromptSubmit hook (the host consumes them first), so
-   *  the marker path never sees them. The first scan only seeks to EOF — old
-   *  history is never replayed — and later scans read appended lines from the
-   *  saved offset. An unbound session resolves to no dev and is skipped. */
+   *  The host consumes those before any hook runs, so history is the only place
+   *  they surface. The first scan only seeks to EOF — old history is never
+   *  replayed — and later scans read appended lines from the saved offset. An
+   *  unbound session resolves to no dev and is skipped. */
   private async applyHistoryCommands(): Promise<void> {
     const file = this.deps.historyFile ?? HISTORY_FILE;
     if (this.historyOffset < 0) {

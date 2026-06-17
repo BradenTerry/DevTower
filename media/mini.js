@@ -271,7 +271,7 @@
       <td class="num c-ctx"><span class="ctx" style="color:${ctxColor(pct)}">${pct === null ? "—" : pct + "%"}</span></td>
       <td class="num c-tasks">${tasks ? `<span class="tag">${tasks}</span>` : `<span class="git muted">—</span>`}</td>
       <td class="c-act"><div class="actions col">
-        <button class="usebtn" data-view="${esc(a.id)}"${towerOpen ? "" : " disabled"} title="${towerOpen
+        <button class="usebtn view" data-view="${esc(a.id)}"${towerOpen ? "" : " disabled"} title="${towerOpen
           ? "View this agent in the tower (selects + focuses it)"
           : "Open the tower (DevTower: Open Tower) to view this agent there"}">View</button>
         ${a.external ? "" : `<button class="usebtn chat" data-chat="${esc(a.id)}" title="Open this agent's chat (its Claude session) without moving the tower">Chat</button>
