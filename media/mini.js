@@ -334,11 +334,12 @@
     const board = boardFor(nav.worktree);
     if (board) board.__path = nav.worktree;
 
-    // toolbar above the table: the worktree's run/wait/err plus the two actions
-    // for this checkout — add a dev here, or mount it as the selected directory
-    const toolbar = `<div class="wt-toolbar">
-      <div class="wt-meta"><span class="wt-label">${esc(wtLabel(wt))}</span>${countsCell(list)}</div>
-      ${wtActions(p, wt)}
+    // toolbar above the table: the worktree label on its own line, then the
+    // run/wait/err counts and the two actions (add a dev here, or mount it as
+    // the selected directory) sharing the row below it
+    const toolbar = `<div class="wt-toolbar stacked">
+      <span class="wt-label">${esc(wtLabel(wt))}</span>
+      <div class="wt-row">${countsCell(list)}${wtActions(p, wt)}</div>
     </div>`;
 
     const body = list.length
