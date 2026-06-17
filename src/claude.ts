@@ -1,54 +1,25 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { execFile } from "child_process";
 import * as vscode from "vscode";
 import { DevTowerStore, AgentState, Agent, resolveShirtColor } from "./store";
 import { currentBranch, isRepo, canonicalDir } from "./git";
-import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, readSkillMarkers, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SKILL_DIR, SUCCESSION_DIR, RESUME_DIR } from "./hooks";
+import { readWaitingMarkers, clearMarker, readSuccessionMarkers, clearSuccessionMarker, readResumeMarkers, clearResumeMarker, readEndMarkers, clearEndMarker, readActiveMarkers, readEditMarkers, readSkillMarkers, readStartMarkers, clearStartMarker, WAITING_DIR, ACTIVE_DIR, ENDED_DIR, EDITED_DIR, SKILL_DIR, SUCCESSION_DIR, RESUME_DIR, STARTED_DIR } from "./hooks";
 import { readHistoryCommands, historyFileSize, HISTORY_FILE } from "./history";
-import { dlog, elog, recordExec } from "./debugLog";
+import { dlog, elog } from "./debugLog";
 
-function execP(cmd: string, args: string[]): Promise<string> {
-  const kind = cmd.replace(/\.exe$/i, "").replace(/.*[\\/]/, ""); // ps / lsof / powershell
-  return new Promise((resolve, reject) => {
-    const t0 = Date.now();
-    execFile(cmd, args, { timeout: 8000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      recordExec(kind, args, undefined, Date.now() - t0, !err);
-      err ? reject(err) : resolve(stdout);
-    });
-  });
-}
-
-/** Pull the session uuids a live `claude` process is bound to out of its argv.
- *  Both a fresh launch (`--session-id <uuid>`) and a RESUMED session
- *  (`--resume <uuid>` / `-r <uuid>`) name their transcript explicitly, and the
- *  transcript file is `<uuid>.jsonl`, so this maps a running process to its exact
- *  transcript — far stronger than the per-cwd freshness fallback. Missing the
- *  resume forms is the phantom-ghost bug: a resumed session's live process is
- *  counted in the cwd total but, unpinned, its slot gets spent on a stale sibling
- *  transcript by mtime, and the SessionEnd guard fails to recognize it as live so
- *  it stays retired. A bare `claude` (or `--continue`) names no uuid and is left
- *  to the count budget. */
-export function parseLiveSessionIds(argv: string): Set<string> {
-  const ids = new Set<string>();
-  const re = /(?:--session-id|--resume|-r)[= ]([0-9a-fA-F-]{36})/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(argv))) ids.add(m[1].toLowerCase());
-  return ids;
-}
-
-/** Liveness of running `claude` processes, used to filter out phantom sessions.
- *  - perCwd: exact count per working directory (Unix, via ps + lsof). `sessionIds`
- *    are the live processes' bound uuids (`--session-id` or `--resume`/`-r` argv
- *    values), when present — these let
- *    the caller keep transcripts by EXACT session identity instead of guessing by
- *    mtime (which mis-fires when a session exits: its final write makes it the
- *    freshest, so the newest-first heuristic would evict an older but still-live
- *    sibling in the same cwd).
- *  - total:  tower-wide count only (Windows — no cwd is available; the caller
- *    caps kept sessions to this many, newest-first).
- *  - null:   process info unavailable → caller falls back to mtime freshness. */
+/** Liveness of the sessions DevTower believes are running, derived from the
+ *  SessionStart/SessionEnd hook markers (NOT from scanning running processes —
+ *  DevTower never spawns `ps`/`lsof`/WMI). `hookLiveCounts()` builds it from the
+ *  `started`/`ended` marker dirs; tests inject it directly.
+ *  - perCwd: count of live sessions per working directory. `sessionIds` are the
+ *    live sessions' exact transcript uuids, so the caller keeps transcripts by
+ *    EXACT session identity instead of guessing by mtime (which mis-fires when a
+ *    session exits: its final write makes it the freshest, so a newest-first
+ *    heuristic would evict an older but still-live sibling in the same cwd).
+ *  - total:  a tower-wide count only (kept for the dependency-injection contract;
+ *    the caller caps kept sessions to this many, newest-first).
+ *  - null:   liveness unavailable → caller falls back to mtime freshness. */
 type LiveCounts =
   | { mode: "perCwd"; counts: Map<string, number>; sessionIds?: Set<string> }
   | { mode: "total"; total: number }
@@ -91,7 +62,8 @@ interface LaunchPersist {
 export class ClaudeDiscovery {
   // fs.watch handles on the hook marker dirs. Discovery is event-driven: a hook
   // dropping/clearing a marker (session start/prompt/edit/exit) wakes a refresh,
-  // instead of a timer scanning `ps`/`lsof`/WMI + the transcript tree on a cadence.
+  // instead of a timer walking the transcript tree on a cadence. Liveness comes
+  // from the SessionStart/SessionEnd markers too — there is no process scan.
   private markerWatchers: fs.FSWatcher[] = [];
   // byte offset into ~/.claude/history.jsonl already scanned for built-in
   // /rename + /color. -1 = not yet seeked; the first scan jumps to EOF so
@@ -162,6 +134,18 @@ export class ClaudeDiscovery {
   // until it ages out (or its process genuinely returns as a live argv id).
   private retiredSessions = new Map<string, number>();
   private static readonly RETIRED_MAX_AGE_MS = 60 * 60_000;
+  // session uuid (lc) → cwd of a session DISCOVERED by an active-agent search
+  // (the HUD ⟳ button / startup), as opposed to one announced by a SessionStart
+  // hook. The hook markers only know about sessions that started while DevTower
+  // was watching; a search sweeps `~/.claude/projects` for transcripts written
+  // recently and seeds the still-live ones here so they surface (and persist
+  // across later hook-driven refreshes) without any process scan. Mirrored to
+  // persistence so a reload keeps them until they exit or go idle past the window.
+  private scanLive = new Map<string, { cwd: string }>();
+  // a transcript written within this window is treated as a live ("active")
+  // session by the search. Long enough to catch a session paused between turns,
+  // short enough that a finished one drops out on the next search.
+  private static readonly ACTIVE_SEARCH_WINDOW_MS = 15 * 60_000;
   // Fires when a watched session just ran `gh pr create` (seen in its transcript)
   // so the PR poller can fetch right away. `knownSessions` gates first-sight
   // seeding (a PR that predates discovery must NOT trigger on startup);
@@ -186,8 +170,8 @@ export class ClaudeDiscovery {
 
   constructor(
     private store: DevTowerStore,
-    // tests inject a fake transcripts root and process-liveness source; in the
-    // extension both default to the real home dir + `ps`/`lsof`.
+    // tests inject a fake transcripts root and liveness source; in the extension
+    // both default to the real home dir + the hook-driven `started`/`ended` markers.
     private deps: {
       projectsRoot?: string;
       tasksRoot?: string;
@@ -196,6 +180,7 @@ export class ClaudeDiscovery {
       successionDir?: string;
       resumeDir?: string;
       endedDir?: string;
+      startedDir?: string;
       activeDir?: string;
       editedDir?: string;
       skillDir?: string;
@@ -206,6 +191,19 @@ export class ClaudeDiscovery {
 
   private static readonly OWNED_KEY = "devtower.ownedLaunches";
   private static readonly RETIRED_KEY = "devtower.retiredLaunches";
+  private static readonly SCANLIVE_KEY = "devtower.scanLive";
+
+  /** session uuid (lc) → cwd of a search-discovered live session, mirrored to
+   *  persistence so a reload keeps showing it until it exits or ages out. */
+  private loadScanLive(): void {
+    const raw = this.deps.persist?.get<Record<string, { cwd: string }>>(ClaudeDiscovery.SCANLIVE_KEY, {}) ?? {};
+    for (const [u, v] of Object.entries(raw)) {
+      if (!this.retiredSessions.has(u) && v && typeof v.cwd === "string") this.scanLive.set(u, { cwd: v.cwd });
+    }
+  }
+  private saveScanLive(): void {
+    void this.deps.persist?.set(ClaudeDiscovery.SCANLIVE_KEY, Object.fromEntries(this.scanLive));
+  }
 
   /** session uuid (lc) → identity of a dev DevTower launched, mirrored to
    *  persistence so it survives a reload. */
@@ -231,6 +229,7 @@ export class ClaudeDiscovery {
     for (const [lc, ts] of Object.entries(retired)) {
       if (Date.now() - ts <= ClaudeDiscovery.RETIRED_MAX_AGE_MS) this.retiredSessions.set(lc, ts);
     }
+    this.loadScanLive(); // re-seed search-discovered sessions (after retired, so culled ones stay out)
     const owned = this.loadOwned();
     let restored = 0;
     for (const [uuid, o] of Object.entries(owned)) {
@@ -326,9 +325,10 @@ export class ClaudeDiscovery {
 
   /** Begin event-driven discovery: watch the hook marker dirs so a session
    *  starting, submitting a prompt, editing, /clearing, or exiting wakes a
-   *  refresh. No timer — at idle nothing spawns `ps`/`lsof`/WMI or walks
-   *  `~/.claude/projects`. The optional arg is accepted for backward
-   *  compatibility with the old poll-interval call site and ignored. */
+   *  refresh. No timer and no process scan — at idle nothing walks
+   *  `~/.claude/projects`; liveness is read from the SessionStart/SessionEnd
+   *  markers. The optional arg is accepted for backward compatibility with the
+   *  old poll-interval call site and ignored. */
   start(_intervalMs?: number): void {
     this.started = true;
     this.watchMarkers();
@@ -343,6 +343,7 @@ export class ClaudeDiscovery {
       this.deps.waitingDir ?? WAITING_DIR,
       this.deps.activeDir ?? ACTIVE_DIR,
       this.deps.endedDir ?? ENDED_DIR,
+      this.deps.startedDir ?? STARTED_DIR,
       this.deps.editedDir ?? EDITED_DIR,
       this.deps.skillDir ?? SKILL_DIR,
       this.deps.successionDir ?? SUCCESSION_DIR,
@@ -371,7 +372,7 @@ export class ClaudeDiscovery {
   /** A marker landed/cleared — coalesce a burst (a hook drop plus refresh's own
    *  marker unlink both fire the watcher) into a single refresh. Skipped while the
    *  tower is hidden so a busy agent's edit markers don't drive a background
-   *  `ps`/`lsof`/WMI storm; foregrounding runs a catch-up refresh via setVisible. */
+   *  transcript-scan storm; foregrounding runs a catch-up refresh via setVisible. */
   private onMarkerChange(): void {
     if (this.disposed || !this.visible) return;
     if (this.markerDebounce) clearTimeout(this.markerDebounce);
@@ -408,84 +409,99 @@ export class ClaudeDiscovery {
   }
 
   /**
-   * How many claude processes are actually running in each working directory
-   * right now. A transcript on disk is NOT a running session — without this
-   * check, every session touched in the last day shows up as a phantom agent.
+   * Which sessions are live right now, read PURELY from the SessionStart/SessionEnd
+   * hook markers — DevTower no longer scans running processes (`ps`/`lsof`/WMI) to
+   * learn who is running. The `started` marker dir IS the live registry: a
+   * SessionStart drops one per session (any source), a genuine SessionEnd removes
+   * it. So a transcript on disk only counts as a live session while its `started`
+   * marker is present.
    *
-   * We count per cwd rather than returning a plain live/not set because a
-   * single cwd can host several concurrent sessions (and the CLI exposes no
-   * session id via argv/env, nor does it keep the transcript file open, so the
-   * cwd is the only handle the OS gives us). The caller keeps the N newest
-   * transcripts per cwd, so closing one of several sessions there drops exactly
-   * one toon on the next poll instead of leaving a phantom behind.
+   * A /clear or resume-picker mints a new uuid but keeps the terminal's launch id;
+   * its predecessor's transcript is then dead. We keep only the NEWEST started
+   * marker per launch id and delete the superseded ones, so a stale launch
+   * transcript can't be counted live. (A bare `claude` carries no launch id and is
+   * left as-is — its /clear predecessor is dropped by the succession bind instead.)
    *
-   * Returns null when the check isn't possible (tools missing); a `total`-mode
-   * count on Windows (no per-cwd info there); else exact per-cwd counts.
+   * Sessions found by an active-agent search (`scanLive`, seeded by the HUD ⟳
+   * button / startup) are unioned in too, so a session that started before the
+   * hooks were watching still surfaces. A dead predecessor that lingers in
+   * `scanLive` does no harm: refresh() suppresses stale/cleared/ended transcripts
+   * from `found` before the keep passes regardless of the live set.
+   *
+   * `sessionIds` are the live sessions' exact uuids (so PASS 1 pins each running
+   * transcript by identity); `counts` is the per-cwd tally (the claim budget).
    */
-  private async liveCwdCounts(): Promise<LiveCounts> {
-    if (process.platform === "win32") return this.liveClaudeCountWindows();
-    try {
-      const ps = await execP("ps", ["-axo", "pid=,comm="]);
-      const pids: string[] = [];
-      for (const line of ps.split("\n")) {
-        const t = line.trim();
-        const sp = t.indexOf(" ");
-        if (sp < 0) continue;
-        const comm = t.slice(sp + 1).trim();
-        if (comm === "claude" || comm.endsWith("/claude")) pids.push(t.slice(0, sp));
-      }
-      if (!pids.length) return { mode: "perCwd", counts: new Map() };
-      // -a -d cwd → exactly one cwd record per pid; counting them per path
-      // yields the number of live claude processes rooted at that directory.
-      const out = await execP("lsof", ["-a", "-d", "cwd", "-p", pids.join(","), "-Fn"]);
-      const counts = new Map<string, number>();
-      for (const line of out.split("\n")) {
-        if (!line.startsWith("n")) continue;
-        const cwd = line.slice(1).trim();
-        counts.set(cwd, (counts.get(cwd) ?? 0) + 1);
-      }
-      // Pull each live process's bound session uuid (`--session-id` for a launch,
-      // `--resume`/`-r` for a resumed session) from argv. The transcript file is
-      // named <uuid>.jsonl, so this maps a running process to its exact transcript
-      // — far stronger than the per-cwd freshness fallback. Not every session names
-      // a uuid (a bare `claude` or `--continue` won't), so this is a best-effort
-      // overlay; processes without one fall back to the count budget.
-      let sessionIds = new Set<string>();
-      try {
-        const args = await execP("ps", ["-p", pids.join(","), "-o", "args="]);
-        sessionIds = parseLiveSessionIds(args);
-      } catch {
-        // argv unavailable — leave sessionIds empty, freshness fallback applies
-      }
-      return { mode: "perCwd", counts, sessionIds };
-    } catch {
-      return null;
+  private async hookLiveCounts(): Promise<LiveCounts> {
+    const started = await readStartMarkers(this.deps.startedDir);
+    // newest started marker per launch id wins; older same-launch markers are dead
+    // (/clear / resume-picker successors), so sweep them from the registry.
+    const newestByLaunch = new Map<string, { id: string; ts: number }>();
+    for (const [id, m] of started) {
+      if (!m.launchId) continue;
+      const c = newestByLaunch.get(m.launchId);
+      if (!c || m.ts > c.ts) newestByLaunch.set(m.launchId, { id, ts: m.ts });
     }
+    const live = new Map<string, { cwd: string }>(); // uuid (lc) → live session
+    for (const [id, m] of started) {
+      if (m.launchId && newestByLaunch.get(m.launchId)!.id !== id) {
+        clearStartMarker(id, this.deps.startedDir); // superseded predecessor
+        continue;
+      }
+      live.set(id.toLowerCase(), { cwd: m.cwd });
+    }
+    // A SessionEnd marker names a session that genuinely exited: drop it from the
+    // live set. The SessionEnd hook normally already unlinked the `started` marker;
+    // this covers the markers landing out of order or the unlink failing. refresh()
+    // reads + clears the `ended` markers to retire the bound dev, so we leave them.
+    const ended = await readEndMarkers(this.deps.endedDir);
+    for (const [id] of ended) {
+      const lc = id.toLowerCase();
+      live.delete(lc);
+      clearStartMarker(id, this.deps.startedDir);
+      this.scanLive.delete(lc); // an exited session is no longer search-live either
+    }
+    // union in the active-agent search results (drop any that since exited/retired)
+    let scanChanged = false;
+    for (const [lc, s] of [...this.scanLive]) {
+      if (this.retiredSessions.has(lc)) { this.scanLive.delete(lc); scanChanged = true; continue; }
+      if (!live.has(lc)) live.set(lc, { cwd: s.cwd });
+    }
+    if (scanChanged) this.saveScanLive();
+    const counts = new Map<string, number>();
+    for (const s of live.values()) counts.set(s.cwd, (counts.get(s.cwd) ?? 0) + 1);
+    return { mode: "perCwd", counts, sessionIds: new Set(live.keys()) };
   }
 
-  /**
-   * Windows has no lsof equivalent for a process's working directory, but we can
-   * still count how many `claude` processes are running tower-wide via WMI. That
-   * lets the caller cap kept sessions to exactly that many (newest-first) — a
-   * strict improvement on the pure mtime-freshness fallback: zero running → drop
-   * every phantom at once instead of waiting out the freshness window.
-   *
-   * Matches the native installer (`claude.exe`) and the npm CLI (a `node`
-   * process whose command line includes the `claude-code` package). Returns null
-   * if PowerShell/WMI is unavailable, so we degrade to freshness.
-   */
-  private async liveClaudeCountWindows(): Promise<LiveCounts> {
-    const script =
-      "@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { " +
-      "$_.Name -ieq 'claude.exe' -or ($_.CommandLine -and $_.CommandLine -match 'claude-code') " +
-      "}).Count";
+  /** Search `~/.claude/projects` for sessions that are LIVE right now (a transcript
+   *  written within ACTIVE_SEARCH_WINDOW_MS) and seed them into `scanLive` so they
+   *  surface even though no SessionStart hook announced them — the manual ⟳ button
+   *  and the startup scan. This is the only discovery path that finds sessions
+   *  started before DevTower was watching, and it uses NO process scan: a recently
+   *  written transcript is the liveness signal. Idle/finished sessions (mtime past
+   *  the window) are dropped so the search self-prunes. Then runs a refresh. */
+  async searchActive(): Promise<number> {
+    const root = this.deps.projectsRoot ?? path.join(os.homedir(), ".claude", "projects");
+    let found: Found[] = [];
     try {
-      const out = await execP("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
-      const total = parseInt(out.trim(), 10);
-      return Number.isFinite(total) ? { mode: "total", total } : null;
-    } catch {
-      return null;
+      found = await this.scan(root);
+    } catch (e) {
+      elog("discovery.searchActive.scan", { root, message: String(e), stack: (e as any)?.stack });
     }
+    const fresh = new Set<string>();
+    for (const f of found) {
+      if (Date.now() - f.mtime > ClaudeDiscovery.ACTIVE_SEARCH_WINDOW_MS) continue;
+      const lc = f.sessionId.toLowerCase();
+      if (this.retiredSessions.has(lc)) continue; // a closed dev must not be revived
+      fresh.add(lc);
+      this.scanLive.set(lc, { cwd: f.launchCwd });
+    }
+    // drop previously-discovered sessions that have gone quiet past the window, so
+    // the search reflects who is active NOW (a hook-announced one keeps its own
+    // `started` marker, so this only forgets search-only entries).
+    for (const lc of [...this.scanLive.keys()]) if (!fresh.has(lc)) this.scanLive.delete(lc);
+    this.saveScanLive();
+    dlog("discovery.searchActive", { found: found.length, live: [...this.scanLive.keys()].map((u) => u.slice(0, 8)) });
+    return this.refresh();
   }
 
   /** Scan + sync into the store. Returns how many sessions were found. */
@@ -519,17 +535,17 @@ export class ClaudeDiscovery {
     // live-process set is known, so a racing/stale marker can't cull a live dev.
     const endMarkers = await readEndMarkers(this.deps.endedDir);
 
-    // Keep one transcript per live claude process. `found` is newest-first, so
-    // we walk it and CLAIM a live process slot for each kept session — by its
-    // launch dir, or (if renamed/cd'd mid-run) its current dir, whichever still
-    // has an unclaimed running process. Claiming per slot (not per dir) is what
-    // stops a CLOSED session whose dir was later reused/renamed from borrowing a
-    // newer session's live process at the same path (the phantom-agent bug).
-    const liveCounts = await (this.deps.liveCounts ?? (() => this.liveCwdCounts()))();
-    // live processes' --session-id argv values: the terminals' LAUNCH IDs. A
-    // transcript whose uuid is one of these is an un-cleared launch session, so
-    // its uuid IS the launch id — stamped onto the agent (below) and kept across
-    // /clear.
+    // Keep one transcript per live session. `found` is newest-first, so we walk it
+    // and CLAIM a live slot for each kept session — by its launch dir, or (if
+    // renamed/cd'd mid-run) its current dir, whichever still has an unclaimed live
+    // session. Claiming per slot (not per dir) is what stops a CLOSED session whose
+    // dir was later reused/renamed from borrowing a newer session's slot at the
+    // same path (the phantom-agent bug). Liveness comes from the SessionStart/
+    // SessionEnd hooks (hookLiveCounts), not a running-process scan.
+    const liveCounts = await (this.deps.liveCounts ?? (() => this.hookLiveCounts()))();
+    // the live sessions' uuids. A transcript whose uuid is one of these is a live
+    // un-cleared launch session, so its uuid IS the launch id — stamped onto the
+    // agent (below) and kept across /clear.
     const argvIds = new Set<string>(
       (liveCounts && liveCounts.mode === "perCwd" ? [...(liveCounts.sessionIds ?? [])] : []).map((s) => s.toLowerCase())
     );

@@ -4,6 +4,45 @@ Goal: stop DevTower's background polling (the Windows CPU drain) and drive
 everything from events (Claude hooks + git file-watchers), with manual Refresh as
 the fallback.
 
+## Follow-up: process scan removed entirely (liveness is hook-only)
+
+The original cutover removed the *timer*, but `refresh()` still spawned
+`ps`/`lsof`/PowerShell-WMI via `liveCwdCounts()` on every event to learn which
+sessions were running. That is now gone. Liveness is read purely from the
+SessionStart/SessionEnd hooks:
+
+- **`SessionStart` now drops a `started/<uuid>.json` marker for EVERY source**
+  (startup/resume/clear/compact), not just clear/resume. The `started` dir is the
+  live-session registry that replaces the process scan (`media/devtower-session.js`).
+- **`SessionEnd` deletes the session's `started` marker** (and drops the `ended`
+  marker as before), so the registry reflects an exit immediately
+  (`media/devtower-session-end.js`).
+- **`ClaudeDiscovery.hookLiveCounts()`** (the default when no `liveCounts` is
+  injected) builds the `LiveCounts` from `readStartMarkers` + `readEndMarkers`,
+  superseding /clear & resume-picker predecessors by launch id. No `execFile`,
+  no `ps`/`lsof`/`powershell` — `parseLiveSessionIds`/`liveCwdCounts`/
+  `liveClaudeCountWindows` are deleted.
+
+**Tradeoff (intended):** a session whose `SessionEnd` never fires (a crash /
+`kill -9`, which the hook can't catch) lingers until its transcript drops out of
+the `sessionMaxAgeHours` scan window.
+
+**Active-agent search (the fallback for un-hooked / pre-existing sessions).**
+`ClaudeDiscovery.searchActive()` sweeps `~/.claude/projects` for transcripts
+written within `ACTIVE_SEARCH_WINDOW_MS` (15 min) and seeds the live ones into a
+persisted `scanLive` set that `hookLiveCounts()` unions in — **no process scan**,
+a recently-written transcript is the liveness signal. It runs:
+
+- **on startup** (`extension.ts` → `discovery.searchActive()`), so any
+  already-running session surfaces on load even if it started before the hooks
+  were watching; and
+- **on the HUD ⟳ button / `devtower.refresh`** (`ConsolePanel.refreshAll()`).
+
+A discovered session persists across later hook-driven refreshes and self-prunes
+once its transcript goes idle past the window. So a session started before the
+SessionStart hook was installed now appears on startup or a manual refresh,
+rather than never.
+
 ## Done (this branch: `devtower/event-driven-cutover`)
 
 All five steps are implemented; `npm run typecheck` + `npm test` (213) +

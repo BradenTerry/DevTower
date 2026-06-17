@@ -26,6 +26,15 @@ export const WAITING_DIR = path.join(os.homedir(), ".claude", "devtower", "waiti
 export const SUCCESSION_DIR = path.join(os.homedir(), ".claude", "devtower", "succession");
 export const RESUME_DIR = path.join(os.homedir(), ".claude", "devtower", "resume");
 export const ENDED_DIR = path.join(os.homedir(), ".claude", "devtower", "ended");
+// SessionStart drops one of these for EVERY session start — startup, resume,
+// clear, compact (see media/devtower-session.js). This dir is DevTower's registry
+// of live sessions: a session is live from its `started` marker until its
+// SessionEnd `ended` marker removes it (or a /clear successor under the same
+// launch id supersedes it). It replaces the old running-process scan
+// (`ps`/`lsof`/PowerShell-WMI) entirely — discovery never spawns a process to
+// learn who is live; it reads this dir. The SessionEnd hook deletes the marker on
+// a genuine exit, so the dir reflects departures immediately.
+export const STARTED_DIR = path.join(os.homedir(), ".claude", "devtower", "started");
 // SessionStart(resume) drops one of these for ANY resumed session (see
 // media/devtower-session.js). Resuming reopens an existing transcript and does
 // not write a line until the first prompt, so a just-resumed session keeps its
@@ -69,6 +78,14 @@ const RESUME_MAX_AGE = 10 * 60_000;
 // age cap only guards against a marker whose poll never ran (extension asleep) —
 // keep it short so a stale one can't retire a same-uuid session resumed later.
 const ENDED_MAX_AGE = 10 * 60_000;
+// a `started` marker stays for the WHOLE life of its session (it is the live
+// registry, not a one-shot signal), so the cap is generous: it only sweeps a
+// marker whose SessionEnd never fired (a crash / `kill -9`, which Claude Code's
+// SessionEnd hook can't catch). Well beyond any session age the transcript scan
+// keeps (`sessionMaxAgeHours`), so a genuinely live long/idle session is never
+// hidden by an over-eager prune — a frozen, truly-dead transcript drops out of the
+// scan window on its own first.
+const STARTED_MAX_AGE = 7 * 24 * 3_600_000;
 // how long a resume keeps a silent session reading "active": long enough to cover
 // reading the resumed context and composing the first prompt, short enough that a
 // resumed-then-abandoned session settles back to idle on its own.
@@ -146,7 +163,7 @@ const HOOKS: HookSpec[] = [
     script: "devtower-session.js",
     label: "SessionStart",
     description:
-      "Fires when a session starts, resumes, or is /cleared. DevTower keeps a dev in place across /clear (no stranger appears) and marks a resumed dev active right away.",
+      "Fires when a session starts, resumes, or is /cleared. DevTower tracks which sessions are live from this event (no process scanning), keeps a dev in place across /clear (no stranger appears), and marks a resumed dev active right away.",
   },
   {
     id: "sessionEnd",
@@ -154,7 +171,7 @@ const HOOKS: HookSpec[] = [
     script: "devtower-session-end.js",
     label: "SessionEnd",
     description:
-      "Fires when a session exits. DevTower sends that exact dev home immediately, instead of inferring the exit from running-process counts (which picks the wrong dev when several share a folder).",
+      "Fires when a session exits. DevTower sends that exact dev home immediately. Together with SessionStart this is how DevTower knows who is live — there is no running-process scan to fall back on, so this hook is required for a dev to leave when its session ends.",
   },
   {
     id: "prompt",
@@ -402,10 +419,63 @@ export async function readEditMarkers(dir = EDITED_DIR): Promise<Map<string, Edi
   return out;
 }
 
+/** A SessionStart drops one of these for every source (startup/resume/clear/
+ *  compact), keyed by the session uuid (see media/devtower-session.js). Its
+ *  presence means the session is LIVE — this is what replaces the running-process
+ *  scan. `launchId` (the terminal's stable `--session-id` argv) lets discovery
+ *  supersede a /clear or resume-picker predecessor: only the newest started marker
+ *  per launch id is live, the older ones are dead transcripts. */
+export interface StartMarker {
+  cwd: string;
+  source: string;
+  ts: number;
+  /** the terminal's launch id (`--session-id` argv), stable across /clear; absent
+   *  for a bare `claude` session that named no session id. */
+  launchId?: string;
+}
+
+/** Read the live-session markers, keyed by session id, pruning stale ones (a
+ *  session whose SessionEnd never fired — a crash). The presence of a marker is
+ *  the liveness signal; discovery treats this map as the set of live sessions. */
+export async function readStartMarkers(dir = STARTED_DIR): Promise<Map<string, StartMarker>> {
+  const out = new Map<string, StartMarker>();
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const now = Date.now();
+  for (const fn of files) {
+    if (!fn.endsWith(".json")) continue;
+    const id = fn.slice(0, -5);
+    const full = path.join(dir, fn);
+    try {
+      const raw = await fs.promises.readFile(full, "utf8");
+      const m = JSON.parse(raw) as StartMarker;
+      if (typeof m?.ts !== "number" || now - m.ts > STARTED_MAX_AGE) {
+        await fs.promises.unlink(full).catch(() => {});
+        continue;
+      }
+      out.set(id, {
+        cwd: String(m.cwd ?? ""),
+        source: String(m.source ?? ""),
+        ts: m.ts,
+        launchId: m.launchId ? String(m.launchId).toLowerCase() : undefined,
+      });
+    } catch {
+      /* partial write or garbage — ignore this poll */
+    }
+  }
+  return out;
+}
+
+/** Drop a started marker when its session exits or is superseded by a /clear
+ *  successor under the same launch id (the predecessor transcript is now dead). */
+export function clearStartMarker(sessionId: string, dir = STARTED_DIR): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return;
+  fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
+}
+
 /** A genuine session exit (not /clear or resume) drops one of these keyed by the
  *  exiting session's uuid (see media/devtower-session-end.js), so discovery can
- *  retire the dev bound to that exact transcript instead of inferring the exit
- *  from running-process counts. */
+ *  retire the dev bound to that exact transcript. The SessionEnd hook also deletes
+ *  the session's `started` marker, so the live registry reflects the exit at once. */
 export interface EndMarker {
   cwd: string;
   reason: string;

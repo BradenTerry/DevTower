@@ -1,8 +1,13 @@
 // DevTower SessionStart hook.
 //
 // Claude Code runs this on every `SessionStart` event, with a `source` telling
-// us WHY the session started: "startup", "resume", "clear", or "compact". Two
-// sources matter here:
+// us WHY the session started: "startup", "resume", "clear", or "compact".
+//
+// EVERY source drops a `started/<uuid>.json` marker — DevTower's registry of live
+// sessions, which is what replaces the old running-process scan: a session counts
+// as live from this marker until its SessionEnd marker removes it (or a /clear
+// successor under the same launch id supersedes it). Two sources need extra
+// markers on top:
 //
 // "clear" RETIRES the current session and mints a brand-new transcript with a
 // new uuid and no link back to its predecessor, so DevTower would otherwise cull
@@ -51,10 +56,6 @@ process.stdin.on("end", () => {
   try {
     const ev = JSON.parse(data || "{}");
     const source = String(ev.source || "");
-    // only /clear (mints a new uuid) and resume (reopens an existing session)
-    // need a marker; startup mints a fresh transcript (already reads active) and
-    // compact keeps writing, so neither needs one.
-    if (source !== "clear" && source !== "resume") return;
     const id = String(ev.session_id || "");
     // session ids are uuids; refuse anything that could escape the dir
     if (!/^[A-Za-z0-9._-]+$/.test(id)) return;
@@ -64,15 +65,22 @@ process.stdin.on("end", () => {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(body));
     };
-    // EVERY resume drops a liveness marker: reopening a session does not write to
-    // the transcript until the first prompt, so without this a just-resumed dev
+    const launch = launchId(process.ppid);
+    // EVERY SessionStart marks this session LIVE. DevTower's discovery treats the
+    // `started` dir as the registry of running sessions — this is what replaces the
+    // old `ps`/`lsof`/PowerShell running-process scan. The marker lives until the
+    // SessionEnd hook removes it (genuine exit) or a /clear successor under the same
+    // launch id supersedes it. `launchId` (the terminal's stable `--session-id`)
+    // ties a /clear or resume-picker successor back to its predecessor.
+    write("started", { cwd, source, ts: Date.now(), launchId: launch });
+    // EVERY resume also drops a liveness marker: reopening a session does not write
+    // to the transcript until the first prompt, so without this a just-resumed dev
     // keeps its stale mtime and reads idle even while you are reading/typing.
     if (source === "resume") write("active", { cwd, ts: Date.now() });
-    const launch = launchId(process.ppid);
     if (source === "clear") {
       // /clear retires this uuid and mints a successor; link them via launch id.
       write("succession", { cwd, source, ts: Date.now(), launchId: launch });
-    } else if (launch && launch !== id.toLowerCase()) {
+    } else if (source === "resume" && launch && launch !== id.toLowerCase()) {
       // narrow redirect: a DevTower-launched terminal reopened a DIFFERENT session
       // than the one we launched, so the placeholder waiting on `launch` needs to
       // be pointed at this resumed uuid. (Same-session / non-DevTower resumes are
