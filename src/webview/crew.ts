@@ -1521,7 +1521,13 @@ class PixelCrew {
     //    plus a "+island" reserve slot in the gap past the last tower.
     this.ghosts = [];
     for (const isl of this.islands.values()) {
-      const floor = isl.count; // stack the next worktree above the top building
+      let floor = isl.count; // stack the next worktree above the top building
+      // a just-removed worktree is still standing (dying, waiting for its dev to
+      // walk out and then collapse): treat it as present so the +worktree slot
+      // floats above it instead of appearing over a room that's still there.
+      for (const r of this.rooms.values()) {
+        if (r.dying && r.island === isl.name) floor = Math.max(floor, r.floor + 1);
+      }
       this.ghosts.push({
         col: isl.laneStart, floor, x0: cellX0(isl.laneStart), base: floorBase(floor),
         kind: "building", island: isl.name,
