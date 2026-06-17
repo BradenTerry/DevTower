@@ -1950,7 +1950,7 @@ export class ConsolePanel implements MiniDelegate {
       </div>
     </div>
     <div class="spacer"></div>
-    <button class="iconbtn" id="refreshbtn" title="Refresh sessions, git boards, and PRs now">⟳</button>
+    <button class="iconbtn" id="refreshbtn" title="Refresh sessions, git boards, and PRs now"><span class="ibicon">⟳</span></button>
     <button class="iconbtn" id="lbbtn" title="Token leaderboard">≣</button>
     <button class="iconbtn" id="popoutbtn" title="Mini view (compact popout)">⧉</button>
     <button class="iconbtn" id="settingsbtn" title="Settings">⚙</button>
