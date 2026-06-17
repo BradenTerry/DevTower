@@ -4,6 +4,31 @@ Goal: stop DevTower's background polling (the Windows CPU drain) and drive
 everything from events (Claude hooks + git file-watchers), with manual Refresh as
 the fallback.
 
+## Follow-up: process scan removed entirely (liveness is hook-only)
+
+The original cutover removed the *timer*, but `refresh()` still spawned
+`ps`/`lsof`/PowerShell-WMI via `liveCwdCounts()` on every event to learn which
+sessions were running. That is now gone. Liveness is read purely from the
+SessionStart/SessionEnd hooks:
+
+- **`SessionStart` now drops a `started/<uuid>.json` marker for EVERY source**
+  (startup/resume/clear/compact), not just clear/resume. The `started` dir is the
+  live-session registry that replaces the process scan (`media/devtower-session.js`).
+- **`SessionEnd` deletes the session's `started` marker** (and drops the `ended`
+  marker as before), so the registry reflects an exit immediately
+  (`media/devtower-session-end.js`).
+- **`ClaudeDiscovery.hookLiveCounts()`** (the default when no `liveCounts` is
+  injected) builds the `LiveCounts` from `readStartMarkers` + `readEndMarkers`,
+  superseding /clear & resume-picker predecessors by launch id. No `execFile`,
+  no `ps`/`lsof`/`powershell` — `parseLiveSessionIds`/`liveCwdCounts`/
+  `liveClaudeCountWindows` are deleted.
+
+**Tradeoff (intended):** a session whose `SessionEnd` never fires (a crash /
+`kill -9`, which the hook can't catch) lingers until its transcript drops out of
+the `sessionMaxAgeHours` scan window. And a session that started *before* the
+hooks were installed is not discovered (it left no `started` marker) — enabling
+the SessionStart hook is now required for a dev to appear.
+
 ## Done (this branch: `devtower/event-driven-cutover`)
 
 All five steps are implemented; `npm run typecheck` + `npm test` (213) +
