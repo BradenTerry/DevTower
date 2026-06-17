@@ -1,8 +1,15 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { DevTowerStore } from "./store";
+import { Agent, DevTowerStore } from "./store";
 import { resolveCwd } from "./git";
 import { dlog, recordExec } from "./debugLog";
+
+/** The console tab title for an agent: its AI session summary when one exists,
+ *  else the dev's name. The summary tracks what the session is actually doing,
+ *  so it makes a more useful tab label than the generated dev name. */
+export function consoleTitle(agent: Pick<Agent, "name" | "aiTitle">): string {
+  return agent.aiTitle?.trim() || agent.name;
+}
 
 /**
  * Binds one NATIVE integrated terminal per agent, rooted in the agent's real
@@ -13,12 +20,20 @@ import { dlog, recordExec } from "./debugLog";
  */
 export class TerminalManager {
   private terminals = new Map<string, vscode.Terminal>();
+  /** Last title applied to each agent's console tab, so a store poll only re-renames
+   *  when the computed title (its AI summary) actually changed — renaming focuses
+   *  the terminal, so a no-op rename every poll would steal focus repeatedly. */
+  private titles = new Map<string, string>();
   /** Called when an OWNED dev's terminal closes (its claude process dies with the
    *  PTY) so discovery can retire it now + suppress its transcript from
    *  rediscovery, rather than leaving an orphan to resurface as a ghost. */
   private onOwnedClose?: (agentId: string) => void;
 
   constructor(private store: DevTowerStore, private extensionUri: vscode.Uri) {
+    // The AI summary lands (and changes) as a session runs, after its terminal was
+    // already opened — re-title the tab whenever the store updates so the console
+    // name keeps tracking what the session is doing.
+    this.store.onChange(() => this.syncTitles());
     // A window reload revives DevTower's terminals (the pty host keeps the claude
     // process alive) but this manager starts with an empty map, so without
     // rebinding, revealing an agent would fork a SECOND `claude --resume`. VS Code
@@ -31,6 +46,7 @@ export class TerminalManager {
       for (const [id, term] of this.terminals) {
         if (term !== t) continue;
         this.terminals.delete(id);
+        this.titles.delete(id);
         // A panel-created placeholder (no live Claude transcript yet) has nothing
         // else tracking it, so stopping its terminal means the operator dropped
         // the agent — remove it from the tower. An OWNED dev with a live transcript
@@ -70,7 +86,7 @@ export class TerminalManager {
     for (const a of this.store.list()) {
       if (bound.has(a.id)) continue;
       if (pid !== undefined && a.terminalPid === pid) { match = { id: a.id, by: "pid" }; break; }
-      if (term.name === a.name && !match) match = { id: a.id, by: "name" };
+      if (term.name === consoleTitle(a) && !match) match = { id: a.id, by: "name" };
     }
     if (!match) return;
     this.terminals.set(match.id, term);
@@ -97,8 +113,9 @@ export class TerminalManager {
     let term = this.terminals.get(agentId);
     if (!term) {
       const cwd = resolveCwd(agent);
+      const title = consoleTitle(agent);
       term = vscode.window.createTerminal({
-        name: agent.name,
+        name: title,
         // theme-aware pair so the tower stays visible: file-URI SVGs don't get a
         // currentColor context here, so a single svg renders black on dark themes.
         iconPath: {
@@ -109,7 +126,8 @@ export class TerminalManager {
         message: `DevTower session — ${agent.repo} ⌥ ${agent.branch}`,
       });
       this.terminals.set(agentId, term);
-      dlog("terminal.create", { agentId, name: agent.name, cwd, external: !!agent.external, hasTranscript: !!agent.transcriptPath });
+      this.titles.set(agentId, title);
+      dlog("terminal.create", { agentId, name: title, cwd, external: !!agent.external, hasTranscript: !!agent.transcriptPath });
       // Record the shell PID for this owned dev's terminal. The claude process is
       // a child of this shell, and the shell PID survives /clear (only the
       // transcript uuid changes), so it is the most reliable agent↔session tie.
@@ -174,20 +192,31 @@ export class TerminalManager {
     term.sendText("", true); // Enter → submit
   }
 
-  /** Retitle an agent's console to match its (renamed) agent name, WITHOUT
-   *  killing the live session. VS Code exposes no setter for a terminal's name,
-   *  so reveal the terminal (focused, so it becomes the active one) and rename it
-   *  in place via the built-in command. Only owned terminals exist here; an
-   *  external session runs in its own terminal we don't manage, so this no-ops. */
-  async rename(agentId: string, name: string): Promise<void> {
+  /** Re-title every open console whose computed title changed (a fresh AI summary
+   *  or a `/rename`). Cheap when nothing moved — only a changed title triggers the
+   *  focus-stealing rename below. */
+  private syncTitles(): void {
+    for (const id of this.terminals.keys()) void this.syncTitle(id);
+  }
+
+  /** Retitle an agent's console to its current title (AI summary, else dev name),
+   *  WITHOUT killing the live session. VS Code exposes no setter for a terminal's
+   *  name, so reveal the terminal (focused, so it becomes the active one) and
+   *  rename it in place via the built-in command. No-ops when the title is
+   *  unchanged so a store poll doesn't repeatedly steal focus. */
+  async syncTitle(agentId: string): Promise<void> {
     const term = this.terminals.get(agentId);
-    if (!term || !name.trim()) return;
+    const agent = this.store.get(agentId);
+    if (!term || !agent) return;
+    const title = consoleTitle(agent);
+    if (!title.trim() || this.titles.get(agentId) === title) return;
+    this.titles.set(agentId, title);
     term.show(false); // focus it → renameWithArg targets the active terminal
     try {
       await vscode.commands.executeCommand("workbench.action.terminal.renameWithArg", {
-        name: name.trim(),
+        name: title,
       });
-      dlog("terminal.rename", { agentId, name: name.trim() });
+      dlog("terminal.rename", { agentId, name: title });
     } catch (e) {
       dlog("terminal.rename.fail", { agentId, err: String(e) });
     }
@@ -199,6 +228,7 @@ export class TerminalManager {
     if (term) {
       term.dispose();
       this.terminals.delete(agentId);
+      this.titles.delete(agentId);
     }
   }
 
