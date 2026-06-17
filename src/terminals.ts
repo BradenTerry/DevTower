@@ -18,7 +18,15 @@ export class TerminalManager {
    *  rediscovery, rather than leaving an orphan to resurface as a ghost. */
   private onOwnedClose?: (agentId: string) => void;
 
-  constructor(private store: DevTowerStore) {
+  constructor(private store: DevTowerStore, private extensionUri: vscode.Uri) {
+    // A window reload revives DevTower's terminals (the pty host keeps the claude
+    // process alive) but this manager starts with an empty map, so without
+    // rebinding, revealing an agent would fork a SECOND `claude --resume`. VS Code
+    // revives terminals asynchronously, so some appear after activation's
+    // reconcile() — bind those as they open.
+    vscode.window.onDidOpenTerminal((t) => {
+      void t.processId.then((pid) => this.tryBind(t, pid));
+    });
     vscode.window.onDidCloseTerminal((t) => {
       for (const [id, term] of this.terminals) {
         if (term !== t) continue;
@@ -47,6 +55,42 @@ export class TerminalManager {
     this.onOwnedClose = cb;
   }
 
+  /**
+   * Bind a (revived) terminal to the agent it belongs to, so revealing that agent
+   * reuses this terminal instead of forking a fresh `claude --resume`. Matches an
+   * agent that is NOT already bound by stored shell PID (primary — stable across a
+   * window reload) or the agent-name terminal title (fallback). Only adopts
+   * matching terminals: a name-mismatch with no PID match is left alone, so
+   * unrelated user terminals are never claimed.
+   */
+  private tryBind(term: vscode.Terminal, pid?: number): void {
+    const bound = new Set(this.terminals.keys());
+    for (const t of this.terminals.values()) if (t === term) return; // already mapped
+    let match: { id: string; by: "pid" | "name" } | undefined;
+    for (const a of this.store.list()) {
+      if (bound.has(a.id)) continue;
+      if (pid !== undefined && a.terminalPid === pid) { match = { id: a.id, by: "pid" }; break; }
+      if (term.name === a.name && !match) match = { id: a.id, by: "name" };
+    }
+    if (!match) return;
+    this.terminals.set(match.id, term);
+    dlog("terminal.reconcile", { agentId: match.id, terminalPid: pid, by: match.by });
+    if (pid !== undefined && this.store.get(match.id)?.terminalPid !== pid) {
+      this.store.apply({ id: match.id, terminalPid: pid });
+    }
+  }
+
+  /** Re-bind every revived terminal to its agent (activation + manual resync). */
+  async reconcile(): Promise<void> {
+    const open = await Promise.all(
+      vscode.window.terminals.map(async (t) => ({
+        t,
+        pid: await Promise.resolve(t.processId).catch(() => undefined),
+      }))
+    );
+    for (const { t, pid } of open) this.tryBind(t, pid);
+  }
+
   private ensure(agentId: string): vscode.Terminal | undefined {
     const agent = this.store.get(agentId);
     if (!agent) return undefined;
@@ -54,8 +98,8 @@ export class TerminalManager {
     if (!term) {
       const cwd = resolveCwd(agent);
       term = vscode.window.createTerminal({
-        name: `◆ ${agent.name}`,
-        iconPath: new vscode.ThemeIcon("pulse"),
+        name: agent.name,
+        iconPath: vscode.Uri.joinPath(this.extensionUri, "media", "devtower.svg"),
         cwd,
         message: `DevTower session — ${agent.repo} ⌥ ${agent.branch}`,
       });
