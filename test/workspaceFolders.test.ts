@@ -79,6 +79,16 @@ describe("workspaceFolders", () => {
     expect(s.opens).toHaveLength(0);
   });
 
+  it("re-mounting a path that differs only by a trailing separator is a no-op", () => {
+    // The no-op guard compares via norm(), which strips trailing separators (and
+    // case-folds on Windows/macOS). A worktree reached as "/repo/wt/a/" must match
+    // the live "/repo/wt/a" so a re-mount after a reload doesn't churn the folders.
+    const s = makeFake({ home: "/repo", folders: ["/repo/wt/a"], file: "/gs/workspaces/x/DevTower.code-workspace" });
+    mountWorktree("/repo/wt/a/");
+    expect(s.updates).toHaveLength(0);
+    expect(s.opens).toHaveLength(0);
+  });
+
   it("switching worktrees while managed swaps the folder set (one reload)", () => {
     const s = makeFake({ home: "/repo", folders: ["/repo/wt/a"], file: "/gs/workspaces/x/DevTower.code-workspace" });
     mountWorktree("/repo/wt/b");
