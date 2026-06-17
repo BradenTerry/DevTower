@@ -1,7 +1,7 @@
-// Before/after capture for the bottom-left notification box. "Before" shows the
-// debug/perf HUD anchored at the very bottom-left with no notification log.
-// "After" shows the persistent notification box pinned to the corner with the
-// debug HUD shoved above it. Bottom-left clips so the stacking is visible. Run:
+// Before/after capture for the bottom-left notification HUD. "Before" shows the
+// collapsed inbox icon (with an unread badge) pinned to the corner. "After"
+// shows the panel opened, with the alerts listed and the debug HUD shoved above
+// it. Bottom-left clips so the stacking is visible. Run:
 //   npm run screenshots -- -g notif
 import { test } from "@playwright/test";
 import * as fs from "fs";
@@ -47,19 +47,23 @@ test("capture: notif", async ({ page }) => {
   await page.evaluate(() => (window as any).DevTowerCrew?.setPerfHud(true));
   await page.waitForTimeout(400);
 
-  // BEFORE: the empty notification box (always present) with the debug HUD above
-  await page.screenshot({ path: path.join(OUT, "notif-before.png"), clip });
-  console.log("wrote notif-before.png");
-
-  // AFTER: push a few notifications; the box pins to the corner and the debug HUD
-  // stacks above it
+  // push a few notifications so the inbox shows an unread badge
   await page.evaluate(() => {
     const c = (window as any).DevTowerCrew;
     c?.pushNotification({ kind: "done", name: "DevTower-1", repo: "DevTower", agentId: "cc-aaaa1111" });
     c?.pushNotification({ kind: "error", name: "api-worker", repo: "billing", agentId: "cc-bbbb2222" });
     c?.pushNotification({ kind: "question", name: "ui-refactor", repo: "DevTower", agentId: "cc-cccc3333" });
   });
+  await page.waitForTimeout(400);
+
+  // BEFORE: the collapsed inbox icon with its unread badge (bottom-left clip)
+  await page.screenshot({ path: path.join(OUT, "notif-before.png"), clip });
+  console.log("wrote notif-before.png");
+
+  // AFTER: open the modal; it pops out centered over a dimmed backdrop, so
+  // capture the whole viewport rather than the bottom-left corner
+  await page.evaluate(() => (window as any).DevTowerCrew?.setNotifOpen(true));
   await page.waitForTimeout(600);
-  await page.screenshot({ path: path.join(OUT, "notif-after.png"), clip });
+  await page.screenshot({ path: path.join(OUT, "notif-after.png") });
   console.log("wrote notif-after.png");
 });
