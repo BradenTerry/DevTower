@@ -14,15 +14,26 @@ import { dlog } from "./debugLog";
  *  file. Because its path is constant per project, the window keeps one identity
  *  across worktree swaps, and the title reads "DevTower" instead of "Untitled".
  *
- *  The workspace shows the worktree, with the project root hidden by default —
- *  a title-bar toggle in the Explorer flips between "worktree only" and
- *  "root + worktree". Switching the visible folder set changes folder[0], which
- *  VS Code can only honor by reloading the window; that reload is safe because
- *  agent ownership now lives in `globalState` (see extension.ts), not in the
- *  per-workspace store. */
+ *  VS Code reloads the window whenever `folder[0]` (the first workspace folder)
+ *  is added, removed, or changed — and there is no API to swap a lone root folder
+ *  without that reload. So to let USE DIR switch worktrees WITHOUT a full window
+ *  reload every time, the managed workspace pins a fixed, EMPTY anchor directory
+ *  as `folder[0]` and carries the selected worktree as `folder[1]`. The anchor
+ *  path is constant, so swapping the worktree only mutates `folder[1]` — no
+ *  reload. The anchor holds no files, so Explorer/Cmd+P/search surface ONLY the
+ *  worktree's files (no duplicate hits). Its sole cost is a small empty folder at
+ *  the top of the Explorer.
+ *
+ *  The project root is hidden by default; a title-bar toggle in the Explorer
+ *  flips between "worktree only" (`[anchor, worktree]`) and "root + worktree"
+ *  (`[anchor, root, worktree]`). Because the anchor stays at `folder[0]`, that
+ *  toggle no longer reloads either. The one unavoidable reload is the FIRST USE
+ *  DIR, which opens the named workspace file; it is safe because agent ownership
+ *  now lives in `globalState` (see extension.ts), not the per-workspace store. */
 
 const WS_FILE_NAME = "DevTower.code-workspace";
 const MODE_KEY = "devtower.workspaceShowRoot"; // globalState: home -> showRoot bool
+const ANCHOR_NAME = "(DevTower)"; // Explorer label for the empty folder[0] anchor
 
 /** The home root persisted into the managed workspace so it survives the mode
  *  swaps that hide it from the Explorer. Mirrored into package.json config. */
@@ -44,8 +55,12 @@ export interface WsHost {
   getMode(home: string): boolean;
   setMode(home: string, showRoot: boolean): void;
   writeFile(file: string, content: string): void;
-  /** Replace the live folder set; VS Code reloads when folder[0] changes. */
-  updateFolders(deleteCount: number, folders: { uri: vscode.Uri; name: string }[]): void;
+  /** Ensure the empty anchor directory exists on disk before it is mounted. */
+  ensureDir(dir: string): void;
+  /** Splice the live folder set starting at `start`; VS Code only reloads when
+   *  the splice touches folder[0]. Keeping `start >= 1` swaps trailing folders
+   *  (the worktree, the root) with no reload. */
+  updateFolders(start: number, deleteCount: number, folders: { uri: vscode.Uri; name: string }[]): void;
   openWorkspace(file: vscode.Uri): void;
   setContext(key: string, value: boolean): void;
 }
@@ -78,15 +93,37 @@ function wsFilePath(home: string): string {
   return path.join(host!.globalStorageDir(), "workspaces", h, WS_FILE_NAME);
 }
 
+/** The fixed empty directory pinned at folder[0] so worktree swaps never reload.
+ *  One global dir (not per-project): every managed workspace shares it, and it
+ *  carries no files, so it never pollutes search or quick-open. */
+function anchorPath(): string {
+  return path.join(host!.globalStorageDir(), "anchor");
+}
+
+/** Explorer label for a folder: the anchor reads "(DevTower)"; everything else
+ *  shows its directory basename. */
+function folderName(p: string): string {
+  return sameDir(p, anchorPath()) ? ANCHOR_NAME : path.basename(p);
+}
+
 function wsFileContent(folders: string[], home: string): string {
   return JSON.stringify(
     {
-      folders: folders.map((p) => ({ name: path.basename(p), path: p })),
+      folders: folders.map((p) => ({ name: folderName(p), path: p })),
       settings: { [HOME_ROOT_SETTING]: home },
     },
     null,
     2
   );
+}
+
+/** Count of leading folders shared by `a` and `b` (by directory identity). A
+ *  prefix >= 1 means folder[0] is unchanged, so a folder splice past it won't
+ *  reload the window. */
+function commonPrefixLen(a: string[], b: string[]): number {
+  let i = 0;
+  while (i < a.length && i < b.length && sameDir(a[i], b[i])) i++;
+  return i;
 }
 
 /** True when the current window is a DevTower-managed workspace (its home root
@@ -164,8 +201,13 @@ function applyWorkspace(): void {
     dlog("workspace.apply.skip", { reason: "no-home" });
     return;
   }
+  const anchor = anchorPath();
+  host.ensureDir(anchor); // VS Code errors on a missing folder, so create it first
   const showRoot = host.getMode(home);
-  const desired = showRoot ? [home, selectedWorktree] : [selectedWorktree];
+  // Anchor pinned at folder[0] keeps the window's identity stable so swapping the
+  // worktree (folder[1]) never reloads; "show root" inserts the project root
+  // between them, again leaving folder[0] untouched.
+  const desired = showRoot ? [anchor, home, selectedWorktree] : [anchor, selectedWorktree];
   const file = vscode.Uri.file(wsFilePath(home));
   host.writeFile(file.fsPath, wsFileContent(desired, home));
 
@@ -176,14 +218,19 @@ function applyWorkspace(): void {
     return;
   }
   if (isManaged()) {
-    // Same workspace, different folders: replace the whole set. Changing
-    // folder[0] reloads the window; on reactivate this re-applies as a no-op.
+    // Same workspace, different folders: splice only the part that changed,
+    // preserving the shared prefix. As long as folder[0] (the anchor) matches,
+    // VS Code swaps the trailing folders WITHOUT a reload. A legacy workspace
+    // still on the old anchor-less set has prefix 0, so it reloads once to adopt
+    // the anchor, then every later swap is reload-free.
+    const prefix = commonPrefixLen(current, desired);
     host.updateFolders(
-      current.length,
-      desired.map((p) => ({ uri: vscode.Uri.file(p), name: path.basename(p) }))
+      prefix,
+      current.length - prefix,
+      desired.slice(prefix).map((p) => ({ uri: vscode.Uri.file(p), name: folderName(p) }))
     );
     syncContext(); // keep the toggle correct if VS Code applied folders without a reload
-    dlog("workspace.apply.swap", { home, showRoot, from: current, to: desired });
+    dlog("workspace.apply.swap", { home, showRoot, from: current, to: desired, prefix });
   } else {
     // Folder window (or some other workspace): open the named DevTower file.
     host.openWorkspace(file);
@@ -208,8 +255,9 @@ function makeHost(context: vscode.ExtensionContext): WsHost {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, content);
     },
-    updateFolders: (deleteCount, folders) => {
-      vscode.workspace.updateWorkspaceFolders(0, deleteCount, ...folders);
+    ensureDir: (dir) => fs.mkdirSync(dir, { recursive: true }),
+    updateFolders: (start, deleteCount, folders) => {
+      vscode.workspace.updateWorkspaceFolders(start, deleteCount, ...folders);
     },
     openWorkspace: (file) => {
       void vscode.commands.executeCommand("vscode.openFolder", file, { forceReuseWindow: true });
