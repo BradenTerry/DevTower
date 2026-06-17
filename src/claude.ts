@@ -1294,20 +1294,30 @@ export class ClaudeDiscovery {
         const marker = markers.get(sessionId);
         const waitingByHook = !!marker && marker.ts > activityMtime;
         if (marker && !waitingByHook) clearMarker(sessionId, this.deps.waitingDir);
+        // The Notification hook fires for TWO different things, and only one is a
+        // raised hand: a tool/permission prompt genuinely needs an answer, while
+        // the idle "waiting for your input" ping just means the turn ended with
+        // nothing pending — a finished task, not a question. Split them by the
+        // marker message so a completed run shows a green check, not a wave.
+        const hookIdlePing = waitingByHook && /waiting for (your )?input/i.test(marker!.message);
+        const hookNeedsAnswer = waitingByHook && !hookIdlePing;
+        // a question the assistant actually asked needs an answer even with no hook
+        const askedQuestion = meta.lastRole === "assistant" && !!meta.question;
         // otherwise: a session mid-turn (a tool in flight, or an owed reply) is
         // WORKING even if the transcript has been silent past the freshness window
-        // — a long build/test or a long model turn must not read as idle. Only a
-        // turn that ENDS in a statement is done → idle; one ending in a question is
-        // waiting on the human.
-        const state: AgentState = waitingByHook
-          ? "waiting"
-          : age < 120_000
-            ? "active"
-            : meta.working
-              ? "active"
-              : meta.lastRole === "assistant" && meta.question
-                ? "waiting"
-                : "idle";
+        // — a long build/test or a long model turn must not read as idle. A turn
+        // that ENDS in a statement with the idle ping is done → complete (green
+        // check); without the hook it falls back to idle (no bubble).
+        const state: AgentState =
+          hookNeedsAnswer || askedQuestion
+            ? "waiting"
+            : hookIdlePing
+              ? "complete"
+              : age < 120_000
+                ? "active"
+                : meta.working
+                  ? "active"
+                  : "idle";
         out.push({
           id: "cc-" + fn.slice(0, 8),
           sessionId,
@@ -1320,7 +1330,7 @@ export class ClaudeDiscovery {
           model: meta.model || "claude",
           aiTitle: meta.aiTitle,
           question:
-            state !== "waiting" ? undefined : waitingByHook ? marker!.message || meta.question : meta.question,
+            state !== "waiting" ? undefined : hookNeedsAnswer ? marker!.message || meta.question : meta.question,
           contextTokens: meta.contextTokens,
           skills: meta.skills,
           subagents: meta.subagents,

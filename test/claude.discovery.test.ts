@@ -466,6 +466,22 @@ describe("ClaudeDiscovery binding", () => {
     expect(a.question).toBe("Claude needs your permission to use Write");
   });
 
+  it("shows complete (a green check), not a raised hand, for the idle 'waiting for input' ping", async () => {
+    // The Notification hook fires for BOTH a permission prompt and the idle ping.
+    // The idle ping just means the turn ended with nothing pending — a finished
+    // task, not a question — so it must read complete, never waiting.
+    const store = newStore();
+    const disc = discovery(store, { [wt]: 1 });
+    const ext = writeSession(wt, 0);
+    writeMarker(ext, "Claude is waiting for your input"); // fresh, past the mtime
+
+    await disc.refresh();
+
+    const a = store.list()[0];
+    expect(a.state).toBe("complete");
+    expect(a.question).toBeUndefined(); // no question to answer
+  });
+
   it("a just-resumed session reads active even before it writes to its transcript", async () => {
     // A finished session: it last spoke a STATEMENT and went quiet for minutes, so
     // on its own it reads idle. Reopening it (SessionStart resume) writes nothing
