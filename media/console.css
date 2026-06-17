@@ -10,7 +10,7 @@
   --lb-track:rgba(255,255,255,0.13); --lb-track-edge:rgba(255,255,255,0.24);
   --text:#f0f5f7; --text-dim:#a8b3b7; --text-faint:#6f7a7f;
   --amber:#ffb13d; --on-amber:#0a0c0d;
-  --active:#3ee089; --waiting:#ffb13d; --complete:#56c7ff; --error:#ff6055; --idle:#5b666b;
+  --active:#3ee089; --waiting:#ffb13d; --complete:#2bd47a; --error:#ff6055; --idle:#5b666b;
   --add:#3ee089; --del:#ff6055;
   --shadow:0 24px 70px -24px rgba(0,0,0,.9), 0 4px 18px -6px rgba(0,0,0,.5);
   --blur:blur(18px) saturate(1.3);
@@ -24,7 +24,7 @@
   --lb-track:rgba(40,40,30,0.13); --lb-track-edge:rgba(40,40,30,0.30);
   --text:#12171a; --text-dim:#4c534f; --text-faint:#7a8079;
   --amber:#9c5f08; --on-amber:#fffaf0;
-  --active:#0f7340; --waiting:#9c5f08; --complete:#0e5d8f; --error:#b32d23; --idle:#8d938b;
+  --active:#0f7340; --waiting:#9c5f08; --complete:#0a6b39; --error:#b32d23; --idle:#8d938b;
   --add:#0f7340; --del:#b32d23;
   --shadow:0 24px 60px -26px rgba(60,50,30,.55), 0 4px 16px -8px rgba(60,50,30,.3);
   --blur:blur(18px) saturate(1.15);

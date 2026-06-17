@@ -51,7 +51,7 @@ interface ReservedRoom {
 const STATE_COLOR: Record<string, string> = {
   active: "#3ee089",
   waiting: "#ffb13d",
-  complete: "#56c7ff",
+  complete: "#2bd47a",
   error: "#ff6055",
   idle: "#8a9598",
 };
