@@ -105,7 +105,8 @@ button{ font-family:inherit; }
 }
 .iconbtn:hover{ background:var(--glass-2); transform:translateY(-1px); }
 .iconbtn:active{ transform:translateY(0) scale(.94); }
-.iconbtn.spin{ animation:iconspin .8s linear; }
+.iconbtn .ibicon{ display:inline-block; }
+.iconbtn.spin .ibicon{ animation:iconspin .8s linear; }
 @keyframes iconspin{ from{ transform:rotate(0); } to{ transform:rotate(360deg); } }
 /* active/toggled state (e.g. efficiency mode on) — clearly lit so the click registers */
 .iconbtn.on{
