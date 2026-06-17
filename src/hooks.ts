@@ -43,6 +43,13 @@ export const EDITED_DIR = path.join(os.homedir(), ".claude", "devtower", "edited
 // uuid. Discovery applies it to the bound dev (renames it / recolours its shirt)
 // and the hook blocks the prompt so the command never reaches the model.
 export const COMMAND_DIR = path.join(os.homedir(), ".claude", "devtower", "command");
+// PreToolUse(Skill) drops one of these the instant a session loads a skill via
+// the Skill tool (see media/devtower-skill.js). DevTower refreshes only when a
+// marker changes, and the Skill tool drops nothing else — so without this the
+// dev's "borrow a skill" trip (bookshelf walk, or ebook phone) waits for the
+// next incidental marker (usually the session going idle). This wakes the poll
+// at once; the skill name is still read from the transcript.
+export const SKILL_DIR = path.join(os.homedir(), ".claude", "devtower", "skill");
 // Stable, version-independent home for the hook scripts. The command we write
 // into settings.json points HERE, not at the extension's versioned install dir
 // (`.../bradenterry.devtower-<ver>/media/...`), which VS Code deletes on every
@@ -79,6 +86,11 @@ const EDITED_MAX_AGE = 60_000;
 // only guards a marker whose poll never ran (a command typed in a session
 // DevTower isn't watching, or while the extension was asleep).
 const COMMAND_MAX_AGE = 10 * 60_000;
+// a skill marker exists only to wake a refresh the instant a skill loads (the
+// Skill tool drops no marker of its own); the skill name itself comes from the
+// transcript. It folds into activity time like the resume marker, so keep it
+// short — just long enough to bridge to the poll it triggers.
+const SKILL_MAX_AGE = 60_000;
 
 export interface WaitMarker {
   message: string;
@@ -170,6 +182,15 @@ const HOOKS: HookSpec[] = [
     label: "PostToolUse",
     description:
       "Fires after a file-editing tool runs (Write, Edit, MultiEdit, NotebookEdit). DevTower attributes the change to the dev that made it, so the cable beam streams from the right desk when several devs share a room.",
+  },
+  {
+    id: "skill",
+    event: "PreToolUse",
+    script: "devtower-skill.js",
+    matcher: "Skill",
+    label: "PreToolUse",
+    description:
+      "Fires the instant a session loads a skill via the Skill tool. DevTower sends the dev to borrow the skill right away (walk to the bookshelf, or pull out the phone in ebook mode) instead of waiting for the session to go idle.",
   },
 ];
 
@@ -323,6 +344,41 @@ export async function readActiveMarkers(dir = ACTIVE_DIR): Promise<Map<string, A
         continue;
       }
       out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts });
+    } catch {
+      /* partial write or garbage — ignore this poll */
+    }
+  }
+  return out;
+}
+
+/** A PreToolUse(Skill) marker: a session just reached for a skill. Carries the
+ *  skill name for debugging, but its real job is to wake a refresh — the skill
+ *  the dev shows is still read from the transcript (the unified signal). */
+export interface SkillMarker {
+  cwd: string;
+  ts: number;
+  skill: string;
+}
+
+/** Read the skill markers, keyed by session id, returning the ts so a caller can
+ *  fold it into the session's activity time (a skill load IS activity). Stale
+ *  ones are pruned so the dir a Skill-tool burst writes to never grows unbounded. */
+export async function readSkillMarkers(dir = SKILL_DIR): Promise<Map<string, SkillMarker>> {
+  const out = new Map<string, SkillMarker>();
+  const files = await fs.promises.readdir(dir).catch(() => [] as string[]);
+  const now = Date.now();
+  for (const fn of files) {
+    if (!fn.endsWith(".json")) continue;
+    const id = fn.slice(0, -5);
+    const full = path.join(dir, fn);
+    try {
+      const raw = await fs.promises.readFile(full, "utf8");
+      const m = JSON.parse(raw) as SkillMarker;
+      if (typeof m?.ts !== "number" || now - m.ts > SKILL_MAX_AGE) {
+        await fs.promises.unlink(full).catch(() => {});
+        continue;
+      }
+      out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts, skill: String(m.skill ?? "") });
     } catch {
       /* partial write or garbage — ignore this poll */
     }
