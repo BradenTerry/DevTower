@@ -59,7 +59,9 @@ function makeFake(opts: { home?: string; folders?: string[]; file?: string }) {
 describe("workspaceFolders", () => {
   beforeEach(() => __setHost(undefined));
 
-  const ANCHOR = "/gs/anchor"; // path.join(globalStorageDir(), "anchor")
+  // Built the same way the source does (path.join), so the separator matches the
+  // host platform — a hardcoded "/gs/anchor" fails on Windows where join uses "\".
+  const ANCHOR = path.join("/gs", "anchor");
 
   it("first USE DIR from a folder window opens the named DevTower workspace, anchor + worktree", () => {
     const s = makeFake({ home: "/repo", folders: ["/repo"], file: undefined });
