@@ -366,6 +366,11 @@ interface BoardData {
     changesRequested: number;
     reviewersPending: number;
     comments: number;
+    // merge readiness: "behind" → out of date with base (can't merge until
+    // updated), mergeConflict → conflicts, autoMerge → will merge once green
+    mergeState?: "behind" | "blocked" | "clean" | "dirty" | "draft" | "has_hooks" | "unstable" | "unknown";
+    mergeConflict?: boolean;
+    autoMerge?: boolean;
     merged?: boolean; // PR was merged → board shows a MERGED badge, then clears
   };
 }
@@ -534,7 +539,7 @@ function pointOnPath(path: { x: number; y: number }[], t: number): { x: number; 
 function boardSig(b: BoardData | undefined): string {
   if (!b) return "none";
   const pr = b.pr
-    ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.merged ? 1 : 0}/${b.pr.title}`
+    ? `${b.pr.number}/${b.pr.checks}/${b.pr.checksPass}/${b.pr.checksFailed}/${b.pr.checksRunning}/${b.pr.checksTotal}/${b.pr.review}/${b.pr.approvals}/${b.pr.changesRequested}/${b.pr.reviewersPending}/${b.pr.draft ? 1 : 0}/${b.pr.merged ? 1 : 0}/${b.pr.mergeState ?? ""}/${b.pr.mergeConflict ? 1 : 0}/${b.pr.autoMerge ? 1 : 0}/${b.pr.title}`
     : "no";
   return [
     b.modified, b.staged, b.ahead, b.unstagedAdd, b.unstagedDel, b.stagedAdd, b.stagedDel,
@@ -4516,6 +4521,29 @@ class PixelCrew {
         seg("chg", pr.changesRequested, "#ff6055");
         seg("req", pr.reviewersPending, "#56c7ff");
         seg("cmt", pr.comments, "rgba(210,218,224,0.85)");
+      }
+      // ---- merge readiness: why a green PR still won't merge, or that it will ----
+      // Surfaces the cases that confuse "passing but not merging": a branch out of
+      // date with its base, merge conflicts, and whether auto-merge will land it.
+      // Stacked in the cell's open bottom-right corner, right-aligned, so they
+      // don't fight the checks/reviewers rows on the left.
+      const chips: { label: string; fg: string; bg: string }[] = []; // top → bottom
+      if (pr.autoMerge) chips.push({ label: "AUTO-MERGE", fg: "#7ee0b0", bg: "rgba(62,224,137,0.20)" });
+      if (pr.mergeConflict) chips.push({ label: "CONFLICTS", fg: "#ff9a8f", bg: "rgba(255,96,85,0.22)" });
+      else if (pr.mergeState === "behind") chips.push({ label: "UPDATE BASE", fg: "#ff9a8f", bg: "rgba(255,96,85,0.22)" });
+      if (chips.length) {
+        ctx.font = "bold 3px 'Martian Mono', monospace";
+        const chipH = 4.5, gap = 1.3, prR = px + prW;
+        // anchor the stack to the cell's bottom edge and climb upward
+        let cy = bodyBot - 0.6;
+        for (let i = chips.length - 1; i >= 0; i--) {
+          const c = chips[i];
+          const w = ctx.measureText(c.label).width + 3;
+          const cx = prR - w; // right-align each chip to the cell's right edge
+          ctx.fillStyle = c.bg; ctx.fillRect(cx, cy - chipH + 0.9, w, chipH);
+          ctx.fillStyle = c.fg; ctx.fillText(c.label, cx + 1.5, cy);
+          cy -= chipH + gap;
+        }
       }
     }
     ctx.restore();

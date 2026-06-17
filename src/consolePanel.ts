@@ -80,6 +80,11 @@ interface BoardData {
     changesRequested: number;
     reviewersPending: number;
     comments: number;
+    /** Merge readiness surfaced on the board: "behind" = out of date with base
+     *  (needs an update before it can merge), plus conflict / auto-merge flags. */
+    mergeState?: "behind" | "blocked" | "clean" | "dirty" | "draft" | "has_hooks" | "unstable" | "unknown";
+    mergeConflict?: boolean;
+    autoMerge?: boolean;
     /** PR was merged: the board shows a brief MERGED badge before it clears. */
     merged?: boolean;
   };
@@ -559,7 +564,8 @@ export class ConsolePanel implements MiniDelegate {
             checksRunning: pr.checksRunning, checksTotal: pr.checksTotal,
             review: pr.review, approvals: pr.approvals,
             changesRequested: pr.changesRequested, reviewersPending: pr.reviewersPending,
-            comments: pr.comments, merged: pr.merged,
+            comments: pr.comments, mergeState: pr.mergeState,
+            mergeConflict: pr.mergeConflict, autoMerge: pr.autoMerge, merged: pr.merged,
           }
         : undefined,
     };
