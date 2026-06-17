@@ -393,10 +393,13 @@ export async function readCommandMarkers(dir = COMMAND_DIR): Promise<Map<string,
   return out;
 }
 
-/** Drop a control-command marker once it has been applied to its dev. */
-export function clearCommandMarker(sessionId: string, dir = COMMAND_DIR): void {
-  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return;
-  fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
+/** Drop a control-command marker once it has been applied to its dev. Awaitable
+ *  (like clearEndMarker) so a poll can guarantee the marker is gone before it
+ *  resolves — otherwise a fire-and-forget unlink can land AFTER the next command
+ *  for the same session is written, deleting it before it is ever read. */
+export function clearCommandMarker(sessionId: string, dir = COMMAND_DIR): Promise<void> {
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return Promise.resolve();
+  return fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
 }
 
 /** A genuine session exit (not /clear or resume) drops one of these keyed by the

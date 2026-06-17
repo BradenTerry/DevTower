@@ -1222,7 +1222,7 @@ export class ClaudeDiscovery {
           dlog("command.color", { agent: agent.id, color });
         }
       }
-      clearCommandMarker(sid, this.deps.commandDir);
+      await clearCommandMarker(sid, this.deps.commandDir);
     }
   }
 
