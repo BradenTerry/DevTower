@@ -224,8 +224,15 @@ export class PrService {
   private visible = true; // is the DevTower tab visible? (gates the poll)
   private started = false; // has start() run?
   /** Per-branch ETag cache: a settled PR's last fetch + its PR-resource ETag, so
-   *  the next poll can short-circuit with a free 304 when nothing changed. */
-  private prCache = new Map<string, { etag: string; info: PrInfo }>();
+   *  the next poll can short-circuit with a free 304 when nothing changed. We also
+   *  keep the PR's base branch so the fast path can notice the base advancing — a
+   *  move that turns the PR "behind" WITHOUT bumping the pull resource's ETag. */
+  private prCache = new Map<string, { etag: string; info: PrInfo; baseRef?: string }>();
+  /** Per-(repo+baseBranch) ETag of the base branch tip. A PR goes "behind" when its
+   *  base moves, but GitHub does not bump the pull resource's ETag for that, so the
+   *  pulls 304 alone would serve stale merge-readiness forever. This lets a cheap
+   *  conditional GET on the base tip (free on 304) catch the move. */
+  private baseEtags = new Map<string, string>();
   /** Branch query-keys that had an OPEN PR in the last crew fetch. When one drops
    *  out of the open set we look up whether it was merged (rather than closed), so
    *  the TV can show a brief MERGED state instead of the PR silently vanishing. */
@@ -384,7 +391,10 @@ export class PrService {
   private signature(): string {
     const key = (p: PrInfo) =>
       [p.id, p.title, p.isDraft, p.merged ? 1 : 0, p.checks, p.checksPass, p.checksFailed, p.checksRunning,
-        p.checksTotal, p.review, p.approvals, p.changesRequested, p.reviewersPending, p.comments].join("¦");
+        p.checksTotal, p.review, p.approvals, p.changesRequested, p.reviewersPending, p.comments,
+        // merge-readiness drives the AUTO-MERGE / UPDATE BASE / CONFLICTS chips — a
+        // change here (e.g. the base moving so the PR goes "behind") must repaint
+        p.mergeState ?? "", p.mergeConflict ? 1 : 0, p.autoMerge ? 1 : 0].join("¦");
     // include `connected` so a disconnected↔connected flip repaints even when the
     // PR lists are identical (e.g. adding a token while you have zero open PRs)
     return JSON.stringify([this.connected, this.crew.map(key).sort(), this.review.map(key).sort()]);
@@ -395,18 +405,19 @@ export class PrService {
     const seen = new Set<string>();
     const queried = new Set<string>(); // repo+branch already asked, skip duplicate gh calls
     const openNow = new Set<string>(); // query-keys with an open PR this fetch (→ prevOpenBranches)
+    const baseChecked = new Map<string, boolean>(); // repo+base → moved? (one check per base/fetch)
     let ok = true;
     // agents' branches (run in each agent's worktree) ...
     for (const agent of this.store.list()) {
       const cwd = resolveCwd(agent);
       if (!cwd) continue;
-      if (!(await this.queryHead(cwd, agent.repo, agent.branch, out, seen, queried, openNow, token, agent.id))) ok = false;
+      if (!(await this.queryHead(cwd, agent.repo, agent.branch, out, seen, queried, openNow, baseChecked, token, agent.id))) ok = false;
     }
     // ... plus the room checkouts (main building + worktree rooms) so a PR opened
     // outside any DevTower agent still shows on that building's board
     for (const t of this.extraTargets) {
       if (!t.branch) continue;
-      if (!(await this.queryHead(t.cwd, t.repo, t.branch, out, seen, queried, openNow, token))) ok = false;
+      if (!(await this.queryHead(t.cwd, t.repo, t.branch, out, seen, queried, openNow, baseChecked, token))) ok = false;
     }
     // record which branches are open so the NEXT fetch can tell an open→merged
     // transition (PR vanished from the open set) from a branch that never had one
@@ -420,7 +431,7 @@ export class PrService {
   private async queryHead(
     cwd: string, repo: string, branch: string,
     out: PrInfo[], seen: Set<string>, queried: Set<string>, openNow: Set<string>,
-    token: string, agentId?: string
+    baseChecked: Map<string, boolean>, token: string, agentId?: string
   ): Promise<boolean> {
     const qkey = `${repo} ${branch}`;
     if (queried.has(qkey)) return true;
@@ -439,9 +450,19 @@ export class PrService {
       if (resp !== null) {
         const status = httpStatus(resp);
         if (status === 304) {
-          // cache only ever holds OPEN PRs, so an unchanged hit is still open
-          if (!seen.has(cached.info.id)) { seen.add(cached.info.id); out.push({ ...cached.info, agentId }); openNow.add(qkey); }
-          return true; // unchanged — served for free
+          // The pull resource is unchanged — but a PR goes "behind" when its BASE
+          // branch advances, and GitHub does NOT bump the pull's ETag for that. So
+          // a 304 alone can hide a freshly-stale "UPDATE BASE". Confirm the base
+          // hasn't moved (free on its own 304) before trusting the cache.
+          const moved = cached.baseRef
+            ? await this.baseMoved(cwd, repo, cached.baseRef, token, baseChecked)
+            : false;
+          if (!moved) {
+            // cache only ever holds OPEN PRs, so an unchanged hit is still open
+            if (!seen.has(cached.info.id)) { seen.add(cached.info.id); out.push({ ...cached.info, agentId }); openNow.add(qkey); }
+            return true; // unchanged — served for free
+          }
+          // base moved → fall through to a full fetch so mergeState recomputes
         }
         if (status === 200) freshEtag = etagOf(resp); // changed; reuse this ETag below
       }
@@ -449,7 +470,7 @@ export class PrService {
 
     const raw = await runGh(cwd, [
       "pr", "list", "--head", branch, "--state", "open", "--limit", "1",
-      "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,author,reviews,reviewRequests,comments,mergeStateStatus,mergeable,autoMergeRequest",
+      "--json", "number,title,url,isDraft,reviewDecision,statusCheckRollup,headRefName,baseRefName,author,reviews,reviewRequests,comments,mergeStateStatus,mergeable,autoMergeRequest",
     ], token);
     if (raw === null) return false; // gh errored (auth / rate limit)
     let matched = false;
@@ -491,6 +512,7 @@ export class PrService {
           agentId,
         };
         out.push(info);
+        const baseRef: string | undefined = p.baseRefName ?? undefined;
         // cache a SETTLED PR with its current ETag so the next poll 304s for free.
         // Reuse the ETag from the conditional 200 above when it's the same PR;
         // otherwise one extra cheap REST call fetches it (paid once per change).
@@ -498,8 +520,12 @@ export class PrService {
           const etag = freshEtag && info.number === cached?.info.number
             ? freshEtag
             : etagOf((await ghApiInclude(cwd, `repos/{owner}/{repo}/pulls/${info.number}`, token)) ?? "");
-          if (etag) this.prCache.set(qkey, { etag, info });
-          else this.prCache.delete(qkey);
+          if (etag) {
+            this.prCache.set(qkey, { etag, info, baseRef });
+            // snapshot the base tip alongside, so a later advance (PR → "behind") is
+            // detectable even though it won't bump the pull's ETag (see baseMoved)
+            if (baseRef) await this.baseMoved(cwd, repo, baseRef, token, baseChecked);
+          } else this.prCache.delete(qkey);
         } else {
           this.prCache.delete(qkey); // checks running → data moves every poll
         }
@@ -512,6 +538,34 @@ export class PrService {
       await this.surfaceMerge(cwd, repo, branch, qkey, out, seen, token, agentId);
     }
     return true;
+  }
+
+  /** Has the PR's base branch advanced since we last snapshotted it? A PR flips to
+   *  "behind" when its base moves, but GitHub leaves the PULL resource's ETag and
+   *  `updated_at` untouched for that — so the pulls 304 fast-path would otherwise
+   *  serve a stale "ready" merge state forever. A conditional GET on the base tip
+   *  (free on its own 304) catches the move cheaply; the result is memoized per
+   *  base for the whole fetch so N PRs on one base cost at most one check. A new
+   *  base (no prior ETag) just seeds the baseline and reports unmoved. */
+  private async baseMoved(
+    cwd: string, repo: string, baseRef: string, token: string, checked: Map<string, boolean>
+  ): Promise<boolean> {
+    const key = `${repo} ${baseRef}`;
+    const memo = checked.get(key);
+    if (memo !== undefined) return memo;
+    const prev = this.baseEtags.get(key);
+    let moved = false;
+    const resp = await ghApiInclude(cwd, `repos/{owner}/{repo}/commits/${baseRef}`, token, prev);
+    if (resp !== null) {
+      const status = httpStatus(resp);
+      if (status === 200) {
+        const etag = etagOf(resp);
+        if (etag) this.baseEtags.set(key, etag);
+        moved = prev !== undefined; // a fresh 200 over a known baseline = the tip moved
+      } // 304 → unchanged; transport error → assume unmoved (don't bust cache on a blip)
+    }
+    checked.set(key, moved);
+    return moved;
   }
 
   /** When a branch's open PR has just disappeared, find out whether it was MERGED
