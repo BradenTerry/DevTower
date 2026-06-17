@@ -3,7 +3,6 @@ import { DevTowerStore } from "./store";
 import { TerminalManager } from "./terminals";
 import { DiffProvider, GIT_SCHEME, MOCK_SCHEME } from "./diffProvider";
 import { registerScmView } from "./scmView";
-import { registerDirectory } from "./directoryView";
 import { ConsolePanel } from "./consolePanel";
 import { PrService } from "./prs";
 import { ClaudeDiscovery } from "./claude";
@@ -74,9 +73,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     syncHooks(context).catch((e) => dlog("hooks.sync.fail", { err: String(e) }));
   }
 
-  // A file browser for the selected room's worktree, shown as a "DevTower"
-  // section in the built-in Explorer (users can drag it to its own container).
-  registerDirectory(context, store);
+  // USE DIR mounts the selected room's worktree as a real workspace folder (see
+  // workspaceFolders.ts), so the built-in Explorer / quick-open / search cover it
+  // natively — no custom DevTower file tree.
   // Native Source Control mirror of the active worktree: a real commit message
   // box, branch-aware placeholder, and resource groups with native multi-select.
   // (Replaces the old custom Changes tree, which had its own activity-bar tab.)

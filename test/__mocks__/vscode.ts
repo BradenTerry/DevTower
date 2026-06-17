@@ -86,6 +86,15 @@ export const workspace = {
   get workspaceFolders() {
     return workspaceFolders;
   },
+  updateWorkspaceFolders(
+    start: number,
+    deleteCount: number | undefined | null,
+    ...added: { uri: { fsPath: string }; name?: string }[]
+  ): boolean {
+    if (!workspaceFolders) workspaceFolders = [];
+    workspaceFolders.splice(start, deleteCount ?? 0, ...added.map((a) => ({ uri: a.uri })));
+    return true;
+  },
   createFileSystemWatcher() {
     return {
       onDidChange: () => ({ dispose() {} }),
