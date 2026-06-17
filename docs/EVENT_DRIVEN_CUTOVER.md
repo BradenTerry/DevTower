@@ -6,18 +6,20 @@ the fallback.
 
 ## Done (this branch: `devtower/event-driven-cutover`)
 
-Steps 1-4 below are implemented; `npm run typecheck` + `npm test` (213) +
+All five steps are implemented; `npm run typecheck` + `npm test` (213) +
 `npm run build` are green. **Still needs a real-VS-Code pass** (the vitest env
-mocks `vscode`, so fs.watch + hook firing can't be exercised in tests) — run the
-"How to validate" checklist in a debug host (F5) or the prerelease before release.
+mocks `vscode`, so fs.watch, the git API, and hook firing can't be exercised in
+tests) — run the "How to validate" checklist in a debug host (F5) or the
+prerelease before release. There is now **no git/process poll left**: every board
+and discovery update is event-driven, with manual Refresh as the only fallback.
 
 - **Step 1 — edit-watcher (`consolePanel.ts`).** `watchEditMarkers()` watches
-  `EDITED_DIR`; `onEditMarker()` (debounced) → `refreshEditedWorktrees(cwds)`
-  recomputes only the rooms whose checkout matches an edited cwd, via the new
-  shared `buildBoard()` helper (also used by `refreshState`).
-- **Step 2 — 6s git poll removed.** `statsTimer` is gone. Boards now update from
-  the `.git` watchers (stage/commit/push), `onDidSaveTextDocument` (in-editor
-  saves), the Step 1 edit-watcher (agent edits), and manual Refresh.
+  `EDITED_DIR`; `onEditMarker()` (debounced) → `refreshWorktrees(cwds)` recomputes
+  only the rooms whose checkout matches an edited cwd, via the new shared
+  `buildBoard()` helper (also used by `refreshState`).
+- **Step 2 — 6s git poll removed.** `statsTimer` is gone. Boards update from the
+  repo change events (Step 5), the save handler (in-editor saves), the Step 1
+  edit-watcher (agent edits), and manual Refresh.
 - **Step 3 — discovery auto-poll removed (`claude.ts`).** `schedule()`/`nextDelay()`
   and the `setTimeout` loop are gone. `start()` now calls `watchMarkers()`, which
   watches `{waiting,active,ended,edited,succession,resume}` → debounced
@@ -27,6 +29,17 @@ mocks `vscode`, so fs.watch + hook firing can't be exercised in tests) — run t
 - **Step 4 — `devtower.pollIntervalMs` removed** from `package.json`;
   `extension.ts` calls `discovery.start()` with no interval. No Settings UI
   referenced it.
+- **Step 5 — `vscode.git` is the board change source (`consolePanel.ts`).**
+  `syncGitRepos()` subscribes to each tracked repo's `state.onDidChange` (resolved
+  via `ensureGitApi()`), replacing the raw `.git` fs-watcher + full fan-out.
+  `onRepoChange(dir)` → `scheduleRepoRefresh(dir)` coalesces and refreshes ONLY the
+  changed repo's room(s) (`refreshWorktrees`), not every worktree. A repo the API
+  won't open (the out-of-workspace-worktree open question) falls back to an
+  fs.watch on its `.git` (`watchGitDirFallback`) — still event-driven, still
+  scoped. The periodic 180s `git fetch` poll (`fetchTimer`) is removed; a one-shot
+  fetch on open + the per-room COMMITS `↻` button + VS Code's own `git.autofetch`
+  cover behind/ahead. `branchSummary` still supplies the board's +/- churn,
+  fork-point counts, base name, and commits (the git API can't).
 
 Requires the **SessionStart/SessionEnd/UserPromptSubmit/PostToolUse hooks
 installed** (Settings → Hooks) to be fully event-driven; without them, fall back
@@ -35,9 +48,11 @@ Refresh only — intended (a "scan external sessions" button is future work).
 
 ## Still open
 
-- **Step 5 (optional)** — `vscode.git` as an extra change source (below). Open
-  question: does `openRepository` fire events for out-of-workspace worktrees?
-- Real-VS-Code validation of Steps 1-4 (checklist below).
+- **Validate the out-of-workspace-worktree case in a real VS Code:** confirm the
+  git API's `openRepository` + `state.onDidChange` actually fire for a worktree
+  outside the workspace. If it doesn't, the `watchGitDirFallback` path covers it —
+  verify the fallback engages (a stage/commit in such a worktree updates its board).
+- Real-VS-Code validation of the whole event path (checklist below).
 
 ## Status (prerequisites, already shipped on `main`)
 
@@ -125,7 +140,7 @@ Stop `discovery.start()` auto-scheduling (`src/extension.ts` ~line 51, and
 remove or repurpose. Remove any poll controls from the Settings UI. (`efficiencyMode`/
 `performanceMode` are already deprecated in favor of `graphicsQuality`.)
 
-### Step 5 (optional) — vscode.git as an extra change source
+### Step 5 — vscode.git as the change source (DONE)
 `vscode.extensions.getExtension('vscode.git').exports.getAPI(1)` →
 `api.openRepository(worktree)` → `repo.state.onDidChange`. Catches working-tree +
 index changes efficiently. **Validate `openRepository` fires events for

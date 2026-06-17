@@ -15,6 +15,24 @@ import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPa
 import * as fs from "fs";
 import * as os from "os";
 
+/** The slice of VS Code's built-in `vscode.git` extension API we use as a change
+ *  SOURCE (full type: microsoft/vscode `git.d.ts`). We read no git data through
+ *  it — only each repository's `state.onDidChange`, so a stage/commit/working-tree
+ *  edit in a tracked repo wakes a SCOPED board refresh with no fs-watch on `.git`
+ *  and no poll. The board's actual numbers still come from `branchSummary`. */
+interface VscodeGitRepository {
+  readonly rootUri: vscode.Uri;
+  readonly state: { readonly onDidChange: vscode.Event<unknown> };
+}
+interface VscodeGitAPI {
+  readonly repositories: VscodeGitRepository[];
+  getRepository(uri: vscode.Uri): VscodeGitRepository | null;
+  openRepository(uri: vscode.Uri): Promise<VscodeGitRepository | null>;
+}
+interface VscodeGitExtension {
+  getAPI(version: 1): VscodeGitAPI;
+}
+
 /** One usage limit window (5-hour or weekly) from Claude's rate_limits feed. */
 interface UsageWindow {
   pct: number;
@@ -108,10 +126,20 @@ export class ConsolePanel implements MiniDelegate {
   /** Branch name per room key, so the main building shows its real branch. */
   private branchByPath = new Map<string, string>();
   private lastWtSignature = "";
-  /** fs.watch handles on each tracked repo's .git dir, so staging/committing is
-   *  reflected at once instead of waiting for the poll. Keyed by repo top-level. */
+  /** VS Code git extension API, lazily resolved. The change source for tracked
+   *  repos: each repo's `state.onDidChange` → a scoped board refresh. */
+  private gitApi?: VscodeGitAPI;
+  /** canonical repo dir → its `state.onDidChange` subscription. */
+  private repoSubs = new Map<string, vscode.Disposable>();
+  /** canonical repo dir → an fs.watch on its `.git`, the FALLBACK for repos the
+   *  git API won't open (e.g. a worktree outside the workspace). Event-driven, not
+   *  a poll. */
   private gitWatchers = new Map<string, fs.FSWatcher>();
   private gitDebounce?: ReturnType<typeof setTimeout>;
+  /** Repo dirs whose change is pending a debounced refresh, and whether any change
+   *  had no known dir (→ a full refreshState instead of a scoped one). */
+  private pendingRepoDirs = new Set<string>();
+  private pendingFullRefresh = false;
   /** fs.watch on the PostToolUse(edit) marker dir: an agent's working-tree edit
    *  (which never touches .git) updates just that worktree's board, the job the
    *  old 6s git poll used to do. Needs the PostToolUse hook installed. */
@@ -122,7 +150,6 @@ export class ConsolePanel implements MiniDelegate {
   /** room key whose worktree is mounted in the Selected Directory view (set only
    *  by its "USE DIR" button). The scene marks it "SELECTED DIR". */
   private usedDirRoom?: string;
-  private fetchTimer?: ReturnType<typeof setInterval>;
   /** True once the webview has sent `ready` (its message listener is wired). A
    *  message posted before this is dropped by VS Code, so openSettings sent on a
    *  freshly created panel is deferred until ready instead of lost. */
@@ -189,18 +216,22 @@ export class ConsolePanel implements MiniDelegate {
       }
     }, null, this.disposables);
     this.startUsage();
-    // a saved file is a working-tree (unstaged) change → refresh promptly
-    vscode.workspace.onDidSaveTextDocument(() => this.onGitChange(), null, this.disposables);
-    // event-driven board updates (no 6s git poll): the .git watchers catch stage/
-    // commit/push, onDidSaveTextDocument catches in-editor saves, and this watches
-    // the PostToolUse(edit) marker dir to catch an agent's working-tree edits.
+    // a saved file is a working-tree change → refresh just that file's repo. (The
+    // git API's onDidChange already covers repos it tracks; this also catches the
+    // ones it won't open, e.g. a worktree outside the workspace.)
+    vscode.workspace.onDidSaveTextDocument(
+      (doc) => this.scheduleRepoRefresh(this.repoDirForFile(doc.uri.fsPath)),
+      null,
+      this.disposables
+    );
+    // event-driven board updates (no git poll): the git-API/.git watchers catch
+    // stage/commit/push, the save handler above catches in-editor saves, and this
+    // watches the PostToolUse(edit) marker dir to catch an agent's working-tree edits.
     this.watchEditMarkers();
-    // background fetch so "behind" (out-of-date) is meaningful; once shortly after
-    // open, then periodically while visible
+    // one-shot fetch so "behind" (out-of-date) is meaningful on open. No periodic
+    // re-fetch — the per-room COMMITS ↻ button fetches on demand, and VS Code's
+    // own git.autofetch (if enabled) keeps the remote refs fresh between.
     setTimeout(() => void this.fetchAll(), 5_000);
-    this.fetchTimer = setInterval(() => {
-      if (this.anyVisible()) void this.fetchAll();
-    }, 180_000);
     // populate rooms/boards + restore the mounted dir now, so the data feed is
     // ready whether the first view to open is the tower or a standalone mini (the
     // mini has no webview "ready" handshake to kick this off).
@@ -333,42 +364,103 @@ export class ConsolePanel implements MiniDelegate {
     await this.refreshState();
   }
 
-  /** Coalesce a flurry of git/file events into a single prompt refresh of the
-   *  board stats (unstaged/staged/commits) and the matched PR. */
-  private onGitChange(): void {
+  /** A tracked repo signalled a change (stage/commit/push/working-tree edit) via
+   *  the git API or its .git fallback watcher — refresh only that repo's room(s).
+   *  `dir` undefined (an in-editor save we couldn't map to a repo) → full refresh. */
+  private onRepoChange(dir?: string): void {
+    this.scheduleRepoRefresh(dir);
+  }
+
+  /** Coalesce a flurry of repo events into one refresh. Accumulates the changed
+   *  repo dirs so the fired refresh is SCOPED to them (not a fan-out across every
+   *  worktree); an unknown dir forces a full refreshState that round. */
+  private scheduleRepoRefresh(dir?: string): void {
+    if (dir) this.pendingRepoDirs.add(dir);
+    else this.pendingFullRefresh = true;
     if (this.gitDebounce) clearTimeout(this.gitDebounce);
     this.gitDebounce = setTimeout(() => {
-      void this.refreshState();
-      // NOTE: deliberately NOT refreshing PRs here — .git fires on every commit/
-      // ref write during a build, and a gh call per event blows the GitHub API
-      // rate limit. PR status comes from the adaptive poll in PrService instead.
+      const dirs = this.pendingRepoDirs;
+      const full = this.pendingFullRefresh;
+      this.pendingRepoDirs = new Set();
+      this.pendingFullRefresh = false;
+      // NOTE: deliberately NOT refreshing PRs here — a build fires a change on
+      // every commit/ref write, and a gh call per event blows the GitHub API rate
+      // limit. PR status comes from the adaptive poll in PrService instead.
+      if (full) void this.refreshState();
+      else void this.refreshWorktrees(dirs);
     }, 300);
   }
 
-  /** Watch each tracked repo's .git directory so manual stage/commit/push (or any
-   *  external git op) updates the boards immediately. Re-synced each refresh as
-   *  rooms/worktrees come and go; watchers for vanished repos are dropped. */
-  private async syncGitWatchers(repoDirs: Set<string>): Promise<void> {
-    for (const [dir, w] of this.gitWatchers) {
-      if (!repoDirs.has(dir)) { w.close(); this.gitWatchers.delete(dir); }
+  /** Resolve VS Code's built-in git extension API (lazily; it may activate after
+   *  us). Returns undefined when the extension is absent or fails to activate, in
+   *  which case repos fall back to an fs.watch on `.git`. */
+  private async ensureGitApi(): Promise<VscodeGitAPI | undefined> {
+    if (this.gitApi) return this.gitApi;
+    const ext = vscode.extensions.getExtension<VscodeGitExtension>("vscode.git");
+    if (!ext) return undefined;
+    try {
+      if (!ext.isActive) await ext.activate();
+      this.gitApi = ext.exports.getAPI(1);
+    } catch (e) {
+      dlog("gitApi.unavailable", { err: String(e) });
     }
-    for (const dir of repoDirs) {
-      if (this.gitWatchers.has(dir)) continue;
-      let gitDir: string;
-      try {
-        const out = (await runGit(dir, ["rev-parse", "--git-dir"])).trim();
-        gitDir = path.isAbsolute(out) ? out : path.join(dir, out);
-      } catch {
-        continue; // not a repo (yet)
+    return this.gitApi;
+  }
+
+  /** Subscribe to each tracked repo's change event so stage/commit/push (or any
+   *  external git op) updates its board with no poll. Primary source is the git
+   *  API's `state.onDidChange`; a repo the API won't open (e.g. an out-of-workspace
+   *  worktree) falls back to an fs.watch on its `.git`. Re-synced each refresh as
+   *  rooms/worktrees come and go; subscriptions for vanished repos are dropped. */
+  private async syncGitRepos(repoDirs: Set<string>): Promise<void> {
+    const byCanon = new Map<string, string>();
+    for (const d of repoDirs) byCanon.set(canonicalDir(d), d);
+    const wanted = new Set(byCanon.keys());
+    for (const [c, sub] of this.repoSubs) if (!wanted.has(c)) { sub.dispose(); this.repoSubs.delete(c); }
+    for (const [c, w] of this.gitWatchers) if (!wanted.has(c)) { w.close(); this.gitWatchers.delete(c); }
+    const api = await this.ensureGitApi();
+    for (const [c, dir] of byCanon) {
+      if (this.repoSubs.has(c) || this.gitWatchers.has(c)) continue; // already watched
+      let repo: VscodeGitRepository | null = null;
+      if (api) {
+        try {
+          repo = api.getRepository(vscode.Uri.file(dir)) ?? (await api.openRepository(vscode.Uri.file(dir)));
+        } catch {
+          repo = null;
+        }
       }
-      try {
-        // recursive so index (staging), HEAD/refs (commits), FETCH_HEAD (push) all fire
-        const w = fs.watch(gitDir, { recursive: true }, () => this.onGitChange());
-        this.gitWatchers.set(dir, w);
-      } catch {
-        /* platform without recursive watch / dir gone — manual Refresh still covers it */
-      }
+      if (repo) this.repoSubs.set(c, repo.state.onDidChange(() => this.onRepoChange(dir)));
+      else await this.watchGitDirFallback(dir, c);
     }
+  }
+
+  /** fs.watch on a repo's `.git` for repos the git API won't track. Event-driven
+   *  (not a poll): index (staging), HEAD/refs (commits), FETCH_HEAD (push) all fire. */
+  private async watchGitDirFallback(dir: string, canon: string): Promise<void> {
+    let gitDir: string;
+    try {
+      const out = (await runGit(dir, ["rev-parse", "--git-dir"])).trim();
+      gitDir = path.isAbsolute(out) ? out : path.join(dir, out);
+    } catch {
+      return; // not a repo (yet)
+    }
+    try {
+      const w = fs.watch(gitDir, { recursive: true }, () => this.onRepoChange(dir));
+      this.gitWatchers.set(canon, w);
+    } catch {
+      /* platform without recursive watch / dir gone — manual Refresh still covers it */
+    }
+  }
+
+  /** The tracked repo dir that owns a file (longest matching checkout prefix), so a
+   *  saved file refreshes only its repo. Undefined when no tracked repo owns it. */
+  private repoDirForFile(fsPath: string): string | undefined {
+    let best: string | undefined;
+    for (const d of this.roomGitPaths.values()) {
+      const root = d.endsWith(path.sep) ? d : d + path.sep;
+      if ((fsPath + path.sep).startsWith(root) && (!best || d.length > best.length)) best = d;
+    }
+    return best;
   }
 
   /** Watch the PostToolUse(edit) marker dir so an agent's working-tree edit (which
@@ -393,14 +485,15 @@ export class ConsolePanel implements MiniDelegate {
       const markers = await readEditMarkers();
       const cwds = new Set<string>();
       for (const m of markers.values()) if (m.cwd) cwds.add(m.cwd);
-      await this.refreshEditedWorktrees(cwds);
+      await this.refreshWorktrees(cwds);
     }, 300);
   }
 
-  /** Recompute boards for only the rooms whose checkout matches one of `cwds`
-   *  (the edited worktree roots), reusing buildBoard. Scoped so a single agent's
-   *  edit doesn't trigger a git-spawn storm across every tracked worktree. */
-  private async refreshEditedWorktrees(cwds: Set<string>): Promise<void> {
+  /** Recompute boards for only the rooms whose checkout matches one of `cwds` (an
+   *  edited worktree root, or a repo the git API reported changed), reusing
+   *  buildBoard. Scoped so a single repo's change doesn't trigger a branchSummary
+   *  git-spawn storm across every tracked worktree. */
+  private async refreshWorktrees(cwds: Set<string>): Promise<void> {
     if (!cwds.size) return;
     const canon = new Set([...cwds].map((c) => canonicalDir(c)));
     const targets = [...this.roomGitPaths].filter(([, gp]) => canon.has(canonicalDir(gp)));
@@ -1368,10 +1461,11 @@ export class ConsolePanel implements MiniDelegate {
     for (const a of this.store.list()) {
       if (a.worktree && a.worktree.trim()) pairs.set(a.worktree, resolveCwd(a) ?? a.worktree);
     }
-    // (re)watch each repo's .git so stage/commit/push reflects immediately
+    // (re)subscribe to each repo's change event so stage/commit/push reflects
+    // immediately, with no poll (git API onDidChange, .git fs-watch fallback)
     const repoDirs = new Set<string>();
     for (const p of pairs.values()) if (fs.existsSync(p)) repoDirs.add(p);
-    void this.syncGitWatchers(repoDirs);
+    void this.syncGitRepos(repoDirs);
     this.roomGitPaths = new Map(pairs); // room key → git path, for sync requests
     const prs = [...this.prs.getCrew(), ...this.prs.getReview()];
     const boards = new Map<string, BoardData>();
@@ -1748,9 +1842,10 @@ export class ConsolePanel implements MiniDelegate {
     this.mini?.close();
     this.mini = undefined;
     if (this.usageTimer) clearInterval(this.usageTimer);
-    if (this.fetchTimer) clearInterval(this.fetchTimer);
     if (this.gitDebounce) clearTimeout(this.gitDebounce);
     if (this.editDebounce) clearTimeout(this.editDebounce);
+    for (const sub of this.repoSubs.values()) sub.dispose();
+    this.repoSubs.clear();
     for (const w of this.gitWatchers.values()) w.close();
     this.gitWatchers.clear();
     this.editWatcher?.close();
