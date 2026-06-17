@@ -93,6 +93,10 @@ export class ClaudeDiscovery {
   // instead of a timer scanning `ps`/`lsof`/WMI + the transcript tree on a cadence.
   private markerWatchers: fs.FSWatcher[] = [];
   private markerDebounce?: ReturnType<typeof setTimeout>;
+  // While an Explore subagent is in flight, re-poll on a short timer so its
+  // completion is caught promptly instead of lingering until the next hook
+  // marker fires. Self-cancels the moment no session is exploring.
+  private exploreFollowup?: ReturnType<typeof setTimeout>;
   private visible = true; // is the DevTower tab currently visible?
   private started = false; // has start() run (discovery enabled)?
   private disposed = false;
@@ -365,6 +369,7 @@ export class ClaudeDiscovery {
   dispose(): void {
     this.disposed = true;
     if (this.markerDebounce) clearTimeout(this.markerDebounce);
+    if (this.exploreFollowup) clearTimeout(this.exploreFollowup);
     for (const w of this.markerWatchers) w.close();
     this.markerWatchers = [];
     this._onPrCreated.dispose();
@@ -1144,12 +1149,23 @@ export class ClaudeDiscovery {
       this.saveOwned(owned);
       this.saveRetired();
     }
+    // An in-flight Explore subagent's `exploring` flag only clears when discovery
+    // re-parses the transcript, but nothing guarantees a hook marker fires the
+    // instant the Explore returns — so the dev can linger at the bookshelf with a
+    // magnifier well after the search finished. While any session is exploring,
+    // arm a short follow-up poll that loops until the flag clears, bounding the
+    // detection lag to ~1s without any polling once everything has settled.
+    if (this.exploreFollowup) { clearTimeout(this.exploreFollowup); this.exploreFollowup = undefined; }
+    if (!this.disposed && this.visible && found.some((f) => f.exploring)) {
+      this.exploreFollowup = setTimeout(() => { this.exploreFollowup = undefined; void this.poll(); }, 900);
+    }
     dlog("discovery.refresh", {
       found: found.length,
       present: [...present],
       external: this.store.list().filter((a) => a.external).map((a) => a.id),
       placeholders: this.store.list().filter((a) => !a.transcriptPath).map((a) => a.id),
       bindings,
+      exploring: found.filter((f) => f.exploring).map((f) => f.sessionId),
     });
     return found.length;
   }
