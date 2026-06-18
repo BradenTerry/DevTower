@@ -999,6 +999,12 @@ export class ConsolePanel implements MiniDelegate {
     // the OUTGOING dir before we overwrite it; abort the whole switch if the user
     // cancels at the unsaved-changes prompt so nothing changes under them.
     const prevDir = this.store.getSelectedDir();
+    // The tower is a webview, so `restore()` cannot capture it as the prior-active
+    // editor (activeTextEditor is undefined for webviews). Note if it was the
+    // active tab so we can re-reveal it after the restored tabs reopen — otherwise
+    // a restored file surfaces in front of the tower and USE DIR flicks the user
+    // off the DevTower view they were looking at.
+    const towerWasActive = !!this.panel?.active;
     const proceed = await this.tabSessions.switchDir(prevDir, dir);
     if (!proceed) return;
     this.usedDirRoom = room;
@@ -1007,6 +1013,9 @@ export class ConsolePanel implements MiniDelegate {
     this.store.setFocusedWorktree(dir);
     mountWorktree(dir); // open the named DevTower workspace on this worktree
     this.postState(); // re-render so the room's button reads "SELECTED DIR"
+    // Bring the tower back to the front if it was the active tab: the restored
+    // tabs only get added in the background, never stealing focus from it.
+    if (towerWasActive) this.panel?.reveal(this.panel.viewColumn, false);
   }
 
   /* ---- MiniDelegate ---- */
