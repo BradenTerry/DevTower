@@ -35,7 +35,10 @@ process.stdin.on("end", () => {
     if (!/^[A-Za-z0-9._-]+$/.test(id)) return;
     const cwd = String(ev.cwd || "");
 
-    write("active", id, { cwd, ts: Date.now() });
+    // `source: "prompt"` distinguishes this from the resume hook's active marker:
+    // a submitted prompt ANSWERS whatever the dev was parked on, so discovery can
+    // drop a raised hand the instant you respond, before Claude writes its reply.
+    write("active", id, { cwd, ts: Date.now(), source: "prompt" });
   } catch {
     /* swallow: a broken hook must not disrupt Claude Code */
   }

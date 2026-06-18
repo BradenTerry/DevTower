@@ -325,11 +325,14 @@ export function clearResumeMarker(sessionId: string, dir = RESUME_DIR): void {
   fs.promises.unlink(path.join(dir, sessionId + ".json")).catch(() => {});
 }
 
-/** A SessionStart(resume) drops one of these, keyed by the resumed session's
- *  uuid: a "just came back" signal independent of transcript writes. */
+/** A SessionStart(resume) or UserPromptSubmit drops one of these, keyed by the
+ *  session's uuid: a "just came back / just got input" signal independent of
+ *  transcript writes. `source` is "prompt" when it was a submitted prompt (which
+ *  ANSWERS a parked question) vs. a bare resume, which does not. */
 export interface ActiveMarker {
   cwd: string;
   ts: number;
+  source?: string;
 }
 
 /** Read the resume-activity markers, keyed by session id, returning the ts so a
@@ -350,7 +353,7 @@ export async function readActiveMarkers(dir = ACTIVE_DIR): Promise<Map<string, A
         await fs.promises.unlink(full).catch(() => {});
         continue;
       }
-      out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts });
+      out.set(id, { cwd: String(m.cwd ?? ""), ts: m.ts, source: m.source ? String(m.source) : undefined });
     } catch {
       /* partial write or garbage — ignore this poll */
     }
