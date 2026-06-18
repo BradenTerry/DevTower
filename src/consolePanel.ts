@@ -12,6 +12,7 @@ import { listHooks, setHookEnabled, setAllHooksEnabled, EDITED_DIR, readEditMark
 import { ClaudeDiscovery } from "./claude";
 import { MiniPanel, MiniDelegate } from "./miniPanel";
 import { mountWorktree, unmountWorktree, homeRoot } from "./workspaceFolders";
+import { TabSessions } from "./tabSessions";
 import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir, execStatsSnapshot, resetExecStats } from "./debugLog";
 import * as fs from "fs";
 import * as os from "os";
@@ -156,6 +157,8 @@ export class ConsolePanel implements MiniDelegate {
   /** room key whose worktree is mounted in the Selected Directory view (set only
    *  by its "USE DIR" button). The scene marks it "SELECTED DIR". */
   private usedDirRoom?: string;
+  /** Remembers/swaps editor tabs per USE DIR directory (devtower.followTabsPerDir). */
+  private readonly tabSessions: TabSessions;
   /** True once the webview has sent `ready` (its message listener is wired). A
    *  message posted before this is dropped by VS Code, so openSettings sent on a
    *  freshly created panel is deferred until ready instead of lost. */
@@ -200,6 +203,7 @@ export class ConsolePanel implements MiniDelegate {
     private readonly prs: PrService,
     private readonly discovery?: ClaudeDiscovery
   ) {
+    this.tabSessions = new TabSessions(context);
     // DATA PIPELINE — lives as long as the instance, i.e. while EITHER the tower or
     // the mini popout is open. The tower webview is mounted/unmounted separately
     // (showTower / onTowerClosed) so closing the tower never kills this feed.
@@ -221,6 +225,8 @@ export class ConsolePanel implements MiniDelegate {
       }
       // a live graphics-quality change (Settings UI or settings.json) re-applies in the scene
       if (e.affectsConfiguration("devtower.graphicsQuality")) this.postConfig();
+      // a live per-dir tab-memory toggle echoes back so the General toggle reflects it
+      if (e.affectsConfiguration("devtower.followTabsPerDir")) this.postConfig();
       // an external edit to the project scope re-filters which buildings render
       if (e.affectsConfiguration("devtower.projectScope")) {
         this.postConfig();
@@ -618,6 +624,10 @@ export class ConsolePanel implements MiniDelegate {
         // cleared, if turned off) tally back to the table.
         await this.persistToggle("externalCallStats", !!m.on);
         break;
+      case "setFollowTabsPerDir":
+        // operator toggled per-directory tab memory (Settings > General)
+        await this.persistToggle("followTabsPerDir", !!m.on);
+        break;
       case "setDebug": {
         // operator toggled debug logging from the Settings > Debug tab. Persisting
         // it fires the devtower.debugLog config listener, which re-posts config so
@@ -720,7 +730,7 @@ export class ConsolePanel implements MiniDelegate {
         // the room's "USE DIR" button → mount this worktree in the Selected
         // Directory view (works even for an empty, agent-less worktree) and reveal
         // it. This is the ONLY action that changes the selected directory.
-        if (typeof m.room === "string") this.mountSelectedDir(m.room);
+        if (typeof m.room === "string") void this.mountSelectedDir(m.room);
         break;
       case "requestSession":
         if (id) this.postSession(id);
@@ -868,6 +878,7 @@ export class ConsolePanel implements MiniDelegate {
       debugLogArchives: debugLogArchiveCount(),
       perfHud: cfg.get<boolean>("perfHud", false),
       externalCallStats: cfg.get<boolean>("externalCallStats", false),
+      followTabsPerDir: cfg.get<boolean>("followTabsPerDir", true),
     });
   }
 
@@ -935,9 +946,15 @@ export class ConsolePanel implements MiniDelegate {
    *  it — USE DIR owns ONE folder at a time, swapping out the previous one.
    *  Append-only so the root folder is never touched and agents keep running
    *  (see workspaceFolders.ts). Also drives the Source Control mirror's cwd. */
-  private mountSelectedDir(room: string): void {
+  private async mountSelectedDir(room: string): Promise<void> {
     const dir = resolveDir(this.roomGitPaths.get(room) ?? room);
     if (!dir) return;
+    // Swap editor tabs to follow the directory (devtower.followTabsPerDir). Capture
+    // the OUTGOING dir before we overwrite it; abort the whole switch if the user
+    // cancels at the unsaved-changes prompt so nothing changes under them.
+    const prevDir = this.store.getSelectedDir();
+    const proceed = await this.tabSessions.switchDir(prevDir, dir);
+    if (!proceed) return;
     this.usedDirRoom = room;
     void this.saveSelectedDir(room); // remember it across restarts
     this.store.setSelectedDir(dir); // sticky cwd for the Source Control mirror
@@ -965,7 +982,7 @@ export class ConsolePanel implements MiniDelegate {
     if (sel && !sel.external) this.terminals.reveal(id);
   }
   useDir(room: string): void {
-    this.mountSelectedDir(room);
+    void this.mountSelectedDir(room);
   }
   openPr(url: string): void {
     void vscode.env.openExternal(vscode.Uri.parse(url));
@@ -1138,6 +1155,7 @@ export class ConsolePanel implements MiniDelegate {
     this.store.setSelectedDir(dir); // sticky mount for the directory view
     this.store.setFocusedWorktree(dir); // directory view lists it (no focus steal)
     mountWorktree(dir); // re-mount the named DevTower workspace for Cmd+P/search
+    void this.tabSessions.restoreOnly(dir); // reopen this dir's remembered tabs
     this.postState(); // scene marks the room "SELECTED DIR"
   }
 
