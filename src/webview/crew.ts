@@ -36,6 +36,7 @@ interface CrewAgent {
   reviewOf?: { prId: string; number: number; repo: string; url?: string }; // PR this agent reviews
   reviewVerdict?: "approved" | "changes" | "pending"; // derived from the PR's decision
   shirtColor?: string; // operator-chosen shirt colour (/color); overrides the persona shirt
+  aiTitle?: string; // AI-generated session summary; a change sends the dev to its whiteboard
 }
 
 interface ReservedRoom {
@@ -165,6 +166,17 @@ const BOOK_ACCENT = "#d9a441"; // physical-book bubble accent (warm amber)
 const SHRED_REACH = 21; // world x (from room left) a dev stands at to shred (just right of the bin)
 const SHRED_FEED = 1.6; // seconds spent feeding the stack into the shredder
 const SHELF_PLACE = 0.7; // seconds spent slotting returned books back onto the shelf
+// A wide whiteboard stands in front of every desk, anchored at the left leg. It
+// is short enough to clear the desktop (it sits in the under-desk band) so the
+// seated dev and the desk surface stay visible above it, and wide enough to show
+// the session's AI summary as readable text. When the summary changes the dev
+// steps over to the left leg and mimes writing the new note, then sits back down.
+const BOARD_W = 20; // whiteboard panel width (spans the desk front from the left leg)
+const BOARD_WRITE_SECS = 3.2; // seconds spent miming a note at the board
+// during a board trip the dev steps into a lane just IN FRONT of the desk (a small
+// negative lift = toward the viewer) so it rounds the desk to reach the board
+// rather than sliding through the furniture at desk depth.
+const BOARD_LANE = -3.5;
 // Room depth: the interior is a shallow one-point-perspective box. The far wall
 // is inset by DEPTH_X on each side and its floor line sits DEPTH_Y above the
 // near floor; the floor, ceiling and side walls are drawn as trapezoids between
@@ -462,6 +474,22 @@ interface Toon {
   // shelf ("shelf") and slots them back ("place") before walking to its seat
   // ("back"). `books` is how many it left the desk carrying, drawn in its arms.
   shred?: { phase: "out" | "feed" | "shelf" | "place" | "back"; t: number; books: number; names?: string[] };
+  // whiteboard trip: when the session's AI summary (aiTitle) changes, the dev
+  // steps from its seat to the left leg of its desk ("out"), stands behind the
+  // wide whiteboard miming a note ("write") for a beat, then sits back ("back").
+  // `rounded` tracks whether the dev has cleared the desk's right end and stepped
+  // into the front lane: out walks RIGHT past the end (still behind the desk),
+  // rounds to the front, then LEFT to the board; back reverses. So it walks around
+  // the desk rather than sliding through it.
+  board?: { phase: "out" | "write" | "back"; t: number; rounded?: boolean };
+  // a fresh summary arrived but the dev wasn't free to walk yet (entering, on
+  // another trip, or mid-stride); the tick starts the board trip once it settles.
+  boardPending?: boolean;
+  // the summary currently written on the whiteboard. Set only once the dev has
+  // actually walked over and finished writing (so the text never appears before
+  // the dev is at the board); seeded on first sight so a pre-existing summary
+  // shows without replaying the walk.
+  boardText?: string;
   // a short chat bubble above the dev (ebook mode): a title ("Borrowed a skill" /
   // "Borrowed 3 skills" on pickup, "Returned a skill" / "Returned 3 skills" on
   // a /clear) with the affected skill names listed below it. `t` counts down in
@@ -1069,6 +1097,9 @@ class PixelCrew {
           // it appeared isn't replayed as a shred trip on first sight — only a
           // change while the toon is on screen animates.
           clearedSession: a.clearedSession,
+          // a summary the dev already had on first sight shows on its board at
+          // once (no walk replayed); a later change animates the write
+          boardText: a.aiTitle?.trim() || undefined,
           tvShow: 0,
           taskDone: a.tasks?.done,
           ph: (hash(a.id) % 628) / 100,
@@ -1155,6 +1186,16 @@ class PixelCrew {
         const base = persona(a.id);
         tn.p.shirt = a.shirtColor || base.shirt;
         tn.p.shirtDark = a.shirtColor ? darkenColor(a.shirtColor) : base.shirtDark;
+      }
+      // the AI summary just populated/changed: send the settled dev to jot it on
+      // its whiteboard. Seeded on first sight (tn.agent === a here for a fresh
+      // toon, so prev === next) so a pre-existing summary never replays on load.
+      const prevTitle = tn.agent.aiTitle?.trim() || "";
+      const nextTitle = a.aiTitle?.trim() || "";
+      if (nextTitle && nextTitle !== prevTitle && !tn.entering && !tn.leaving && !tn.transfer) {
+        tn.boardPending = true;
+        this.dbg("board.summary", { id: a.id, title: nextTitle });
+        this.invalidate(); // wake the loop so the walk plays now, not at the next event
       }
       tn.agent = a;
       // accumulate newly-used skills; the tick walks the dev to the shelf to
@@ -1255,6 +1296,17 @@ class PixelCrew {
     return r.x0 + WB_W + col * pitch + row * (pitch / 2);
   }
 
+  /** The desk's whiteboard: a wide board standing in front of the desk, its left
+   *  edge anchored at the desk's left leg (always the same side, regardless of
+   *  the desk's position in the room). `boardX` is the panel's left edge; `standX`
+   *  is where the dev stands to write — at the left leg, behind the board. */
+  private boardSpot(r: Room, col: number, row: number) {
+    const dx = this.seatX(r, col, row); // desk spans dx..dx+22; legs at dx+3 and dx+19.5
+    const boardX = dx + 1; // left edge at the left leg; the board spans the desk front
+    const standX = dx + 7; // the dev stands IN FRONT of the board (drawn over it) to write
+    return { dx, boardX, standX };
+  }
+
   /** An island's ordered rooms: ONLY the ones the operator added — the required
    *  main checkout plus each assigned worktree. Live agents attach by checkout
    *  path; agents in unassigned dirs aren't shown. Main leads. */
@@ -1310,14 +1362,16 @@ class PixelCrew {
     const base = r.baseY;
     const dx = this.seatX(r, seat.col, seat.row);
     const db = base - seat.row * ROW_DY;
-    const cx = dx + 8; // behind the monitor
-    const C = { x: cx, y: db - 12 };
-    const F = { x: cx, y: db + 0.5 }; // drop to the floor at the desk
+    const cx = dx + 8; // jack behind the monitor
+    const ex = dx + 23; // run OFF the desk's right end (clear of the front whiteboard)
+    const C = { x: cx, y: db - 12 }; // jack at the computer
+    const E = { x: ex, y: db - 9 }; // along the desk to its right end
+    const F = { x: ex, y: db + 0.5 }; // drop off the end to the floor
     const J = { x: r.x0 + ROOM_W / 2, y: base - 3 }; // central floor bus
     const P = this.cablePlug(r); // port below the screen
-    const cFJ = { x: (cx + J.x) / 2, y: Math.max(F.y, J.y) + 5 }; // bow along the floor to centre
+    const cFJ = { x: (ex + J.x) / 2, y: Math.max(F.y, J.y) + 5 }; // bow along the floor to centre
     const cJP = { x: J.x, y: (J.y + P.y) / 2 }; // sweep up the middle to the port
-    return [C, F, ...sampleQuad(F, cFJ, J, 8), ...sampleQuad(J, cJP, P, 10)];
+    return [C, E, F, ...sampleQuad(F, cFJ, J, 8), ...sampleQuad(J, cJP, P, 10)];
   }
 
   /** Fire a glowing light-ball from a working dev's computer along its network
@@ -2697,6 +2751,24 @@ class PixelCrew {
         if (tn.shred.phase === "out" || tn.shred.phase === "feed") tn.targetX = room.x0 + SHRED_REACH;
         else if (tn.shred.phase === "shelf" || tn.shred.phase === "place") tn.targetX = room.x0 + SHELF_REACH;
       }
+      // a fresh summary: once the dev is settled and not on another trip, walk to
+      // its desk whiteboard, mime a note, then back. Holds at the board through
+      // out/write; the desk aim above carries it home on "back".
+      if (tn.boardPending && !tn.board && !tn.shred && !tn.errand && !tn.explore && Math.abs(tn.targetX - tn.x) <= 1) {
+        tn.board = { phase: "out", t: 0 };
+        tn.boardPending = false;
+      }
+      if (tn.board) {
+        // walk AROUND the desk: out heads right past the desk's end (still behind
+        // it), rounds to the front lane, then left to the board; back reverses.
+        const dxk = this.seatX(room, tn.seatCol, tn.row);
+        const roundX = dxk + 24; // just past the desk's right end (dx+22)
+        if (tn.board.phase === "back") {
+          tn.targetX = tn.board.rounded ? roundX : dxk + 13; // front to the end, then behind to the seat
+        } else {
+          tn.targetX = tn.board.rounded ? this.boardSpot(room, tn.seatCol, tn.row).standX : roundX;
+        }
+      }
     }
 
     // upper-floor arrivals ride the elevator up the shaft to their door
@@ -2729,7 +2801,7 @@ class PixelCrew {
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
       const seatable = tn.agent.state === "active" || tn.agent.state === "idle" || tn.agent.state === "complete";
-      tn.sitting = seatable && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.explore && !tn.transfer && Math.abs(dx) <= 1;
+      tn.sitting = seatable && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.explore && !tn.transfer && !tn.board && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
       // (lift -> 0) whenever walking, entering, or leaving. A dev AT the bookshelf
       // (fetching a book, or returning one on /clear) steps back to SHELF_LIFT so it
@@ -2743,7 +2815,7 @@ class PixelCrew {
       // in to the destination desk ("in" phase); through every other phase it
       // stays down in the aisle.
       const transferSeating = !!tn.transfer && tn.transfer.phase === "in";
-      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.explore &&
+      const atDesk = Math.abs(dx) <= 1 && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.explore && !tn.board &&
         (!tn.transfer || transferSeating);
       // a dev walking through the lift door steps back to the door's depth so it
       // lines up with the raised sill instead of clipping the wall below it. The
@@ -2754,7 +2826,11 @@ class PixelCrew {
           (tn.entering && tn.enterPhase === "walk") ||
           (tn.transfer && (tn.transfer.phase === "out" || tn.transfer.phase === "in"))) && !tn.riding;
       const atExploreShelf = !!tn.explore && tn.explore.phase !== "back";
-      let targetLift = atDesk ? tn.row * ROW_DY : atExploreShelf ? EXPLORE_LIFT : atShelf ? SHELF_LIFT : 0;
+      // a board-trip dev rides the front lane (BOARD_LANE) only once it has rounded
+      // the desk's end; before that it stays at its seat depth, behind the desk
+      let targetLift = tn.board ? (tn.board.rounded ? BOARD_LANE : tn.row * ROW_DY)
+        : atDesk ? tn.row * ROW_DY
+        : atExploreShelf ? EXPLORE_LIFT : atShelf ? SHELF_LIFT : 0;
       if (thruDoor) {
         const dist = tn.x0 + ROOM_W - tn.x; // px left of the near corner
         targetLift = Math.max(targetLift, clamp(1 - dist / DOOR_APPROACH, 0, 1) * DOOR_LIFT);
@@ -2799,6 +2875,29 @@ class PixelCrew {
         if (arrived) ex.phase = "look";
       } else if (ex.phase === "back" && arrived) {
         tn.explore = undefined;
+      }
+    }
+    // advance the whiteboard trip: walk to the board ("out") → mime a note for a
+    // beat ("write") → walk back to the seat ("back") and clear the trip.
+    for (const tn of this.toons.values()) {
+      const bd = tn.board;
+      if (!bd) continue;
+      const room = tn.bkey ? this.rooms.get(tn.bkey) : undefined;
+      const dxk = room ? this.seatX(room, tn.seatCol, tn.row) : tn.x;
+      const standX = room ? this.boardSpot(room, tn.seatCol, tn.row).standX : tn.x;
+      const roundX = dxk + 24;
+      if (bd.phase === "out") {
+        // walk right past the desk end, round to the front, then to the board
+        if (!bd.rounded) { if (tn.x >= roundX - 1) bd.rounded = true; }
+        else if (Math.abs(tn.x - standX) <= 1) { bd.phase = "write"; bd.t = BOARD_WRITE_SECS; }
+      } else if (bd.phase === "write") {
+        bd.t -= dt;
+        // the note is now fully written: commit it so it stays on the board
+        if (bd.t <= 0) { bd.phase = "back"; tn.boardText = tn.agent.aiTitle?.trim() || undefined; }
+      } else {
+        // back: front-lane to the desk end, step behind, then to the seat
+        if (bd.rounded) { if (tn.x >= roundX - 1) bd.rounded = false; }
+        else if (Math.abs(tn.x - (dxk + 13)) <= 1) tn.board = undefined;
       }
     }
     // advance the /clear trip: arrive at the shredder → feed the papers in → carry
@@ -3440,10 +3539,14 @@ class PixelCrew {
       const rowToons = seated.filter((t) => displayRow(t) === row);
       for (const tn of this.leaving) if (displayRow(tn) === row) rowToons.push(tn);
       rowToons.sort((a, b) => a.x - b.x);
+      // a dev on a whiteboard trip is drawn AFTER this row's desks so it reads as
+      // standing in front of the desk + board, not behind them
+      const frontToons: Toon[] = [];
       for (const tn of rowToons) {
         // cull devs whose sprite is off-screen (riding devs in a visible shaft are
         // drawn above; this skips seated/walking devs in culled rooms)
         if (!this.onScreen(tn.x - 18, tn.x + 18, tn.base - tn.lift - 42, tn.base + 8, vw)) continue;
+        if (tn.board?.rounded) { frontToons.push(tn); continue; }
         this.toonsDrawn++;
         // a session running OUTSIDE DevTower is rendered ghosted — grayed and
         // semi-transparent — so it reads as "not one of ours" at a glance
@@ -3479,6 +3582,8 @@ class PixelCrew {
         if (ghost || thru) ctx.restore();
       }
       for (const r of this.rooms.values()) if (this.visRooms.has(r.name)) this.drawDesks(ctx, r, row);
+      // board-trip devs, painted over this row's desks so they stand in front
+      for (const tn of frontToons) this.drawToon(ctx, tn);
     }
     // re-draw an open door's leaf + jamb ON TOP of the crew so a dev passing
     // through reads as behind it — the wall stands in front, not the dev.
@@ -4885,8 +4990,104 @@ class PixelCrew {
       }
       // the task TV the dev raises on the floor at the desk's left leg to track its checklist
       if (tn && tn.tvShow > 0.02) this.drawDeskTV(ctx, tn, dx, db);
+      // the desk's whiteboard (angled toward room center). Drawn after the desk so
+      // a dev standing at it to write reads as behind the board (its writing hand
+      // is painted on the board face here).
+      this.drawWhiteboard(ctx, r, tn, seat.col, row, db);
     }
     ctx.globalAlpha = 1;
+  }
+
+  /** The wide whiteboard standing in front of a desk, anchored at the left leg.
+   *  It spawns with the desk and shows the session's AI summary as readable
+   *  text once one exists; it is kept short (it sits in the under-desk band) so
+   *  the desktop and the seated dev stay visible above it. While the dev is at it
+   *  ("write" phase of the board trip) a hand mimes a marker across the surface. */
+  private drawWhiteboard(ctx: CanvasRenderingContext2D, r: Room, tn: Toon | undefined, col: number, row: number, db: number) {
+    const { boardX } = this.boardSpot(r, col, row);
+    const w = BOARD_W;
+    const top = db - 10; // just below the desktop (db-11) so the desk top stays clear
+    const bot = db; // stands on the floor in front of the desk (kept short)
+    const h = bot - top;
+    // contact shadow so the board sits in front of the desk, not floating
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
+    ctx.fillRect(boardX - 0.5, bot - 0.3, w + 1, 1.1);
+    // aluminium frame + white writing surface
+    ctx.fillStyle = "#cdd1d6";
+    ctx.fillRect(boardX, top, w, h);
+    ctx.fillStyle = "#eceae3";
+    ctx.fillRect(boardX, top, w, 0.6); // top rail catches the light
+    const sx = boardX + 1, sy = top + 1, sw = w - 2, sh = h - 2;
+    ctx.fillStyle = "#f6f5f0";
+    ctx.fillRect(sx, sy, sw, sh);
+    // a thin marker tray along the bottom rail (with a marker resting on it)
+    ctx.fillStyle = "#9aa0a6";
+    ctx.fillRect(sx, bot - 1.4, sw, 0.7);
+    ctx.fillStyle = "#e8478f";
+    ctx.fillRect(sx + 1.5, bot - 1.5, 2.2, 0.6);
+    // the summary as readable text. It only appears once the dev is actually at
+    // the board: while writing it reveals progressively under the marker, and
+    // otherwise we show the last fully-written note (boardText). The dev itself
+    // is drawn AFTER this (in front of the board), so its hand/marker land on top.
+    let shown = tn?.boardText;
+    let reveal = 1;
+    if (tn?.board?.phase === "write") {
+      shown = tn.agent.aiTitle?.trim() || "";
+      reveal = clamp(1 - tn.board.t / BOARD_WRITE_SECS, 0, 1);
+    }
+    if (shown) this.drawBoardText(ctx, shown, sx + 0.7, sy + 0.5, sw - 1.4, sh - 1.8, reveal);
+  }
+
+  /** Lay out a session summary across the whiteboard surface: wrap on word
+   *  boundaries to the widest font that gives a couple of legible lines, and
+   *  ellipsize if it still overflows the available rows. */
+  private drawBoardText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, w: number, h: number, reveal = 1) {
+    ctx.save();
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#2b3036";
+    const words = text.split(/\s+/).filter(Boolean);
+    // wrap the text at a given font size; returns the lines and whether the whole
+    // summary fit in the available rows
+    const layout = (size: number) => {
+      ctx.font = `${size}px 'IBM Plex Mono', monospace`;
+      const lineH = size + 0.3;
+      const maxLines = Math.max(1, Math.floor((h + 0.4) / lineH));
+      const lines: string[] = [];
+      let cur = "";
+      let overflow = false;
+      for (const word of words) {
+        const next = cur ? cur + " " + word : word;
+        if (ctx.measureText(next).width <= w || !cur) cur = next;
+        else { lines.push(cur); cur = word; if (lines.length >= maxLines) { overflow = true; break; } }
+      }
+      if (!overflow && cur) { if (lines.length < maxLines) lines.push(cur); else overflow = true; }
+      return { lines, overflow, lineH };
+    };
+    // use the largest font at which the whole note fits; shrink before truncating
+    // so short summaries read big and long ones still fit instead of getting cut
+    let chosen = layout(3.6);
+    for (const size of [3.2, 2.8, 2.4, 2.1, 1.8]) {
+      if (!chosen.overflow) break;
+      chosen = layout(size); // ctx.font now matches `chosen`
+    }
+    const lines = chosen.lines;
+    if (chosen.overflow && lines.length) {
+      let last = lines[lines.length - 1];
+      while (last.length && ctx.measureText(last + "…").width > w) last = last.slice(0, -1);
+      lines[lines.length - 1] = last + "…";
+    }
+    // reveal progressively while the dev writes (sized on the full text above so
+    // the font/wrap stay stable as characters appear)
+    let budget = reveal >= 1 ? Infinity : Math.ceil(reveal * lines.reduce((n, l) => n + l.length, 0));
+    let yy = y;
+    for (const ln of lines) {
+      if (budget <= 0) break;
+      ctx.fillText(budget >= ln.length ? ln : ln.slice(0, budget), x, yy);
+      budget -= ln.length;
+      yy += chosen.lineH;
+    }
+    ctx.restore();
   }
 
   /** Ebook mode's stand-in for the desk book stack: a tiny e-reader propped on the
@@ -5011,7 +5212,10 @@ class PixelCrew {
     // standing at the bookshelf inspecting the spines with a magnifying glass
     // while an Explore subagent searches (the shelf is on the left wall)
     const inspecting = !!tn.explore && tn.explore.phase === "look" && !walking;
-    const facingLeft = sitting || inspecting; // seated/inspecting devs face left
+    // standing behind the wide board in front of the desk, miming a note while a
+    // fresh summary lands; the dev peers down at the surface and reaches down to it
+    const writingBoard = !!tn.board && tn.board.phase === "write" && !walking;
+    const facingLeft = sitting || inspecting; // these devs face left
     // reading a fetched skill book at the desk: the dev looks DOWN at an open book
     // held in front of it, so the pages (and their text) face up toward its gaze.
     // A dev only reads while it's actually working a task — once idle/complete it
@@ -5074,7 +5278,24 @@ class PixelCrew {
 
     ctx.fillStyle = p.shirt;
     const handC = p.skin;
-    if (inspecting) {
+    if (writingBoard) {
+      // standing IN FRONT of the wide board (drawn over it), reaching to the right
+      // to write: the forearm extends to the surface with the hand + marker miming
+      // a stroke; the other arm rests at the side.
+      const scrib = Math.sin(f * 0.5 + tn.ph) * 0.8;
+      const hx = x + 3.6, hy = ty + 4 + scrib; // hand on the board, to the dev's right
+      ctx.fillStyle = p.shirt; // forearm reaching out to the surface
+      ctx.fillRect(x + 1.8, ty + 2, 1.6, 2.4);
+      ctx.fillRect(x + 2.6, ty + 3.4, 2, 1.4);
+      ctx.fillStyle = "rgba(42,47,53,0.5)"; // a fresh marker stroke on the surface
+      ctx.fillRect(hx - 2.4, hy + 1.4, 3.2, 0.6);
+      ctx.fillStyle = "#e8478f"; // marker barrel
+      ctx.fillRect(hx, hy + 0.2, 0.9, 1.5);
+      ctx.fillStyle = handC; // hand gripping it
+      ctx.fillRect(hx - 0.7, hy - 1, 1.8, 1.6);
+      ctx.fillStyle = p.shirt; // other arm at the side
+      ctx.fillRect(x - 3.6, ty + 1.4, 1.4, 3.8);
+    } else if (inspecting) {
       // standing at the bookshelf with a magnifying glass held up toward the
       // spines on the left wall, sweeping it slowly across and up/down the shelf
       // as if hunting for the right title while an Explore subagent searches.
@@ -5211,8 +5432,9 @@ class PixelCrew {
     if (!blink) {
       ctx.fillStyle = "#14181b";
       const ey = hy + 2.4 + slump * 0.5;
-      if (reading) {
-        // both eyes lowered and centered, peering down at the open book below
+      if (reading || writingBoard) {
+        // both eyes lowered and centered, peering down (at the open book, or at
+        // the whiteboard surface in front while writing)
         ctx.fillRect(hx - 1.5, ey + 0.8, 1.1, 1.1);
         ctx.fillRect(hx + 0.4, ey + 0.8, 1.1, 1.1);
       } else if (relaxed) {
