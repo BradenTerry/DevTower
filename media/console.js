@@ -1149,6 +1149,12 @@
       openSettings();
     } else if (m.type === "focusAgent" && m.id) {
       selectAgent(m.id, true); // host (or harness) asks to open an agent's panel
+    } else if (m.type === "agentLeaving" && m.id) {
+      // host is about to retire this dev (Send Home / Dismiss). If we're looking at
+      // it, pull the camera back to its room (from the still-live toon) and tear the
+      // panel down NOW, before the toon/room vanish — otherwise the panel lingers
+      // with stale stats and closing it later snaps out to the whole tower.
+      if (selectedId === m.id) closePanelToRoom();
     } else if (m.type === "focusRoom" && m.room) {
       // host asks the camera to glide to a building (worktree path = building key):
       // a freshly created worktree room, or the room an agent just left after being

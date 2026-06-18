@@ -1713,12 +1713,15 @@ export class ConsolePanel implements MiniDelegate {
           : `Send ${agent.name} home? This closes its Claude terminal and removes it from the tower.`;
         const confirm = await vscode.window.showWarningMessage(prompt, { modal: true }, verb);
         if (confirm !== verb) break;
+        // The camera was locked onto this dev (the stats panel zooms in on select).
+        // Tell the scene to glide to the dev's room and close its (now stale) panel
+        // BEFORE we retire it — while its toon is still on the board, so the camera
+        // can frame the room from the live toon. Resolving the room by worktree key
+        // AFTER retiring raced the toon's removal and snapped the camera out to the
+        // whole tower, and left the panel showing the departed dev's summary/model.
+        if (this.panel) this.panel.webview.postMessage({ type: "agentLeaving", id });
         if (!agent.external) this.terminals.disposeAgent(id);
         this.discovery?.retireOwned(id);
-        // The camera was locked onto this dev (the stats panel zooms in on select);
-        // with the dev now gone it would stay pinned at that tight zoom. Glide to its
-        // room instead — releases the lock and lands somewhere sensible.
-        this.focusRoomInScene(agent.worktree);
         break;
       }
       case "diff":
