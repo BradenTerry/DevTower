@@ -1620,7 +1620,7 @@ class PixelCrew {
       const tn = this.toons.get(this.focusAgentId);
       if (tn) {
         this.focus.x = tn.targetX;
-        this.focus.y = tn.base - ROOM_H / 2 + 40;
+        this.focus.y = tn.base - ROOM_H / 2 + 6;
       }
       // toon momentarily gone during a re-layout → leave the camera put
     } else if (this.focusRoom_) {
@@ -1708,9 +1708,9 @@ class PixelCrew {
     this.focusIsland_ = null;
     this.focusRoom_ = room?.name ?? null;
     this.focus.x = tn.targetX;
-    this.focus.y = tn.base - ROOM_H / 2 + 40;
-    this.focus.spanW = 38;
-    this.focus.spanH = FLOOR_STEP - 46;
+    this.focus.y = tn.base - ROOM_H / 2 + 6;
+    this.focus.spanW = 62;
+    this.focus.spanH = FLOOR_STEP - 16;
     if (resetZoom) {
       this.panX = 0;
       this.panY = 0;

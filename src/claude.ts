@@ -1447,8 +1447,17 @@ export class ClaudeDiscovery {
         // marker message so a completed run shows a green check, not a wave.
         const hookIdlePing = waitingByHook && /waiting for (your )?input/i.test(marker!.message);
         const hookNeedsAnswer = waitingByHook && !hookIdlePing;
+        // the user just answered: a UserPromptSubmit marker (source "prompt") that
+        // postdates the transcript's last write means a prompt was submitted AFTER
+        // the assistant's question landed. Claude can think for a beat before it
+        // writes its reply, so the transcript still shows lastRole=assistant with a
+        // "?"; without this the hand stays up across that gap. (A bare resume marker
+        // has no "prompt" source, so reopening a session with a real pending
+        // question keeps the hand up.)
+        const activeMark = active.get(sessionId);
+        const answered = activeMark?.source === "prompt" && activeMark.ts > st.mtimeMs;
         // a question the assistant actually asked needs an answer even with no hook
-        const askedQuestion = meta.lastRole === "assistant" && !!meta.question;
+        const askedQuestion = !answered && meta.lastRole === "assistant" && !!meta.question;
         // otherwise: a session mid-turn (a tool in flight, or an owed reply) is
         // WORKING even if the transcript has been silent past the freshness window
         // — a long build/test or a long model turn must not read as idle. A turn

@@ -72,12 +72,13 @@ describe("ClaudeDiscovery binding", () => {
       JSON.stringify({ cwd, reason, ts: Date.now(), ...(launchId ? { launchId } : {}) })
     );
 
-  /** Drop a SessionStart(resume) activity marker: a just-reopened session that
-   *  hasn't written to its transcript yet. `tsOffsetSec` relative to now. */
-  const writeActive = (uuid: string, cwd = wt, tsOffsetSec = 0) =>
+  /** Drop an activity marker. A bare one models SessionStart(resume): a session
+   *  reopened but silent. `source: "prompt"` models UserPromptSubmit: the user
+   *  just answered, which a resume does not. `tsOffsetSec` relative to now. */
+  const writeActive = (uuid: string, cwd = wt, tsOffsetSec = 0, source?: string) =>
     fs.writeFileSync(
       path.join(activeDir, `${uuid}.json`),
-      JSON.stringify({ cwd, ts: Date.now() + tsOffsetSec * 1000 })
+      JSON.stringify({ cwd, ts: Date.now() + tsOffsetSec * 1000, ...(source ? { source } : {}) })
     );
 
   /** Drop a Notification-hook marker for a session, `tsOffsetSec` relative to now. */
@@ -588,6 +589,50 @@ describe("ClaudeDiscovery binding", () => {
     const a = store.get("cc-" + uuid.slice(0, 8))!;
     expect(a.state).toBe("waiting");
     expect(a.question).toBe("Want me to do option 1?");
+  });
+
+  it("drops the hand the instant the user answers a question, before Claude writes its reply", async () => {
+    // The bug: the assistant asked a question (lastRole=assistant + "?"), the user
+    // responded, but Claude thinks for a beat before writing its next turn — so the
+    // transcript still ends on the question and the hand stayed up. The UserPromptSubmit
+    // hook drops a "prompt" activity marker the instant you submit; a prompt marker
+    // newer than the transcript means the question is already answered.
+    const uuid = randomUUID();
+    const file = path.join(proj, `${uuid}.jsonl`);
+    fs.writeFileSync(file,
+      JSON.stringify({ type: "user", cwd: wt, message: { role: "user", content: "fix it" } }) + "\n" +
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Which file should I edit?" } }) + "\n");
+    const id = "cc-" + uuid.slice(0, 8);
+
+    // baseline: the question stands, no answer yet → hand up
+    const store1 = newStore();
+    await discovery(store1, { [wt]: 1 }, [uuid]).refresh();
+    expect(store1.get(id)?.state).toBe("waiting");
+
+    // user submits a prompt (postdating the transcript) → hand drops, dev is working
+    writeActive(uuid, wt, 5, "prompt");
+    const store2 = newStore();
+    await discovery(store2, { [wt]: 1 }, [uuid]).refresh();
+    expect(store2.get(id)?.state).toBe("active");
+    expect(store2.get(id)?.question).toBeUndefined();
+  });
+
+  it("a bare resume marker does NOT drop a genuinely pending question", async () => {
+    // The guard against over-correcting: reopening a session that asked a question
+    // (resume drops an active marker with NO source) must keep the hand up — only a
+    // submitted prompt answers it.
+    const uuid = randomUUID();
+    const file = path.join(proj, `${uuid}.jsonl`);
+    fs.writeFileSync(file,
+      JSON.stringify({ type: "user", cwd: wt, message: { role: "user", content: "fix it" } }) + "\n" +
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: "Which file should I edit?" } }) + "\n");
+    writeActive(uuid, wt, 5); // resume marker, no source — reopened, not answered
+
+    const store = newStore();
+    await discovery(store, { [wt]: 1 }, [uuid]).refresh();
+    const a = store.get("cc-" + uuid.slice(0, 8))!;
+    expect(a.state).toBe("waiting");
+    expect(a.question).toBe("Which file should I edit?");
   });
 
   it("a just-resumed session reads active even before it writes to its transcript", async () => {
