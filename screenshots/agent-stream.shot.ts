@@ -23,7 +23,7 @@ const FRAMES = path.join(OUT, "agentstream");
 const HTML = path.join(__dirname, ".harness.html");
 
 const room = { name: "ATLAS-WEB", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "feat/diff-viewer" }] };
-const agent = { id: "a1", name: "Nova", state: "active", repo: "ATLAS-WEB", model: "opus-4.8", worktree: "/repo", branch: "feat/diff-viewer", skills: ["code-review"], contextTokens: 96_000, elapsed: "18m" };
+const agent = { id: "a1", name: "Nova", state: "active", repo: "ATLAS-WEB", model: "opus-4.8", worktree: "/repo", branch: "feat/diff-viewer", skills: ["code-review"], contextTokens: 96_000, elapsed: "18m", aiTitle: "Render diff hunks in the viewer panel" };
 // One worktree walking the full git turn. Each constant below is the board as it
 // looks after the labelled step; the harness posts them in order and the canvas
 // beams the delta up the cable.

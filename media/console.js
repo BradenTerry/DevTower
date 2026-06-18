@@ -606,6 +606,13 @@
               <span class="s-seg-name">${b.name}</span><span class="s-seg-fps">${b.sub}</span>
             </button>`).join("")}
         </div>
+      </div>
+      <div class="s-row">
+        <div class="s-row-t">
+          <div class="s-row-name">Tabs follow the directory</div>
+          <div class="s-row-sub">Remember which editor tabs are open per USE DIR directory. Switching the working directory closes the current dir's tabs and reopens the new dir's. Unsaved tabs prompt before switching.</div>
+        </div>
+        <button class="s-toggle ${followTabsPerDir ? "on" : ""}" id="s-followtabs" role="switch" aria-checked="${followTabsPerDir}"><span class="knob"></span></button>
       </div>`;
   }
 
@@ -802,6 +809,13 @@
         renderSettings();
       };
     });
+    // General-tab wiring: toggle whether editor tabs follow the USE DIR directory
+    const followTabsT = $("#s-followtabs", s);
+    if (followTabsT) followTabsT.onclick = () => {
+      followTabsPerDir = !followTabsPerDir;
+      setToggleBtn(followTabsT, followTabsPerDir);
+      vscode.postMessage({ type: "setFollowTabsPerDir", on: followTabsPerDir });
+    };
 
     // Debug-tab wiring: flip locally for an instant response, mirror into the
     // scene, and persist to devtower.debugLog (the host echoes it back via config).
@@ -1002,6 +1016,7 @@
   let dbgArchives = 0; // number of rotated archive files on disk (config message)
   let perfHud = false; // devtower.perfHud; on-canvas FPS/frame-cost overlay (config message)
   let execTrack = false; // devtower.externalCallStats; opt-in for the External calls tally (config message)
+  let followTabsPerDir = true; // devtower.followTabsPerDir; per-dir tab memory (config message), default on
   let execStats = null; // external-call tally for the Debug tab (arrives via the "execStats" message)
   function applyQuality(mode) {
     quality = QUALITY_MODES.some((p) => p.id === mode) ? mode : "balanced";
@@ -1082,6 +1097,7 @@
       dbgLogExists = !!m.debugLogExists; // a captured log is on disk
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk
       execTrack = !!m.externalCallStats; // saved devtower.externalCallStats opt-in
+      followTabsPerDir = m.followTabsPerDir !== false; // devtower.followTabsPerDir, default on
       // Only push a toggle into the scene when ITS value actually changed. postConfig
       // is a firehose — every setting change (e.g. debugLog) re-sends ALL of config —
       // so re-asserting perfHud/debug on every message let an unrelated toggle (like
