@@ -116,6 +116,18 @@ export class ClaudeDiscovery {
   // placeholder that started it — even when several placeholders share one
   // worktree (where the worktree/time heuristic below can't tell them apart).
   private expecting = new Map<string, string>();
+  // agent id → { pinned session uuid (lc), when restored } for a dev recreated by
+  // restore() after a window reload. It shows "Reconnecting after reload…" until its
+  // launched session rebinds (case 1). Such a placeholder is NOT in `this.mine` until
+  // it binds, so the leave sweep never reaps it — if its session is GONE (the window
+  // was fully closed and the claude process never came back) it would hang on that
+  // message forever. We reap it once liveness proves the session dead.
+  private restored = new Map<string, { session: string; at: number }>();
+  // how long a restored placeholder may wait for its session to prove alive when we
+  // CANNOT enumerate live session ids (Windows "total" / failed detection). With
+  // perCwd liveness a pinned uuid's absence is conclusive and it's reaped at once;
+  // here we can only fall back to a grace window before giving up.
+  private static readonly RESTORE_GRACE_MS = 30_000;
   // agent id → the transcript mtime we last KEPT it at. A tracked session whose
   // transcript has advanced past this is provably alive right now, so a momentary
   // dip in the per-cwd live-process count must not evict it (anti-flap, PASS 3).
@@ -251,6 +263,9 @@ export class ClaudeDiscovery {
       // pin the launched uuid to this placeholder so the deterministic bind
       // (case 1) re-adopts the lingering transcript as owned, not external.
       this.expecting.set(uuid, o.agentId);
+      // remember it as restored so a refresh can reap it if its session never
+      // comes back (process died while the window was closed).
+      this.restored.set(o.agentId, { session: uuid.toLowerCase(), at: Date.now() });
       restored++;
     }
     if (restored || this.retiredSessions.size) {
@@ -1171,6 +1186,28 @@ export class ClaudeDiscovery {
         this.mine.delete(id);
         this.store.remove(id);
       }
+    }
+    // Reap a restored "Reconnecting after reload…" placeholder whose session is
+    // dead. The deterministic bind above flips a still-live session's placeholder
+    // to a real transcript (so it drops out of `restored` as bound); what's left is
+    // a dev whose launched claude process is gone. It isn't in `this.mine`, so the
+    // sweep above can't reap it — do it here. With perCwd liveness an absent uuid is
+    // conclusive (reap now); where we can't enumerate live ids, give it a grace
+    // window before giving up so a momentarily-missing process isn't culled.
+    const canEnumerate = liveCounts !== null && liveCounts.mode === "perCwd";
+    for (const [id, r] of [...this.restored]) {
+      const a = this.store.get(id);
+      if (!a || a.transcriptPath) { this.restored.delete(id); continue; } // bound, or already gone
+      const live = livePins.has(r.session) || argvIds.has(r.session);
+      if (live) continue; // its process is alive; keep waiting for the transcript
+      if (!canEnumerate && Date.now() - r.at <= ClaudeDiscovery.RESTORE_GRACE_MS) continue;
+      // dead: forget the pin (so the persist sync below drops its owned entry and a
+      // later reload can't restore it again) and remove the stuck placeholder.
+      this.restored.delete(id);
+      this.expecting.delete(r.session);
+      this.mine.delete(id);
+      this.store.remove(id);
+      dlog("discovery.restore.reap", { agent: id, session: r.session, canEnumerate });
     }
     // Apply the built-in /rename and /color from history.jsonl AFTER binding, so
     // each command's session resolves to its now-current agent. Done inside the

@@ -1084,6 +1084,34 @@ describe("ClaudeDiscovery binding", () => {
     expect(store2.list()).toHaveLength(1);
   });
 
+  it("reaps a restored dev whose session is DEAD instead of hanging on 'Reconnecting…'", async () => {
+    const persist = fakePersist();
+    const uuid = randomUUID();
+
+    // session 1: launch + bind a dev owned, with its claude process alive
+    const store1 = newStore();
+    const disc1 = discoveryP(store1, { [wt]: 1 }, persist);
+    placeholder(store1, "isle-a1", wt);
+    disc1.expectSession("isle-a1", uuid);
+    writeSession(wt, 0, uuid);
+    await disc1.refresh();
+    expect(store1.get("isle-a1")!.external).toBeFalsy();
+
+    // RELOAD with the process GONE (window was fully closed; no live claude in the
+    // worktree). restore() recreates the "Reconnecting after reload…" placeholder,
+    // but its session never comes back — it must be reaped, not left hanging.
+    const store2 = newStore();
+    const disc2 = discoveryP(store2, {}, persist); // perCwd, zero live processes
+    disc2.restore();
+    expect(store2.get("isle-a1")!.task).toBe("Reconnecting after reload…"); // pre-refresh
+    await disc2.refresh();
+
+    expect(store2.get("isle-a1")).toBeUndefined(); // reaped
+    expect(store2.list()).toHaveLength(0);
+    // its ownership is dropped, so a second reload can't resurrect the dead dev
+    expect(persist.get("devtower.ownedLaunches", {})).toEqual({});
+  });
+
   it("retiring an owned dev (terminal closed) suppresses its transcript — no ghost, even across a reload", async () => {
     const persist = fakePersist();
     const uuid = randomUUID();
