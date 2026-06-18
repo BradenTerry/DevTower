@@ -613,6 +613,13 @@
           <div class="s-row-sub">Remember which editor tabs are open per USE DIR directory. Switching the working directory closes the current dir's tabs and reopens the new dir's. Unsaved tabs prompt before switching.</div>
         </div>
         <button class="s-toggle ${followTabsPerDir ? "on" : ""}" id="s-followtabs" role="switch" aria-checked="${followTabsPerDir}"><span class="knob"></span></button>
+      </div>
+      <div class="s-row">
+        <div class="s-row-t">
+          <div class="s-row-name">Celebrate on PR merge</div>
+          <div class="s-row-sub">Throw a disco party in a room when its pull request is merged: a mirror ball drops from the ceiling, the lights dim, colored beams sweep the room and the devs dance.</div>
+        </div>
+        <button class="s-toggle ${celebrateOnMerge ? "on" : ""}" id="s-celebrate" role="switch" aria-checked="${celebrateOnMerge}"><span class="knob"></span></button>
       </div>`;
   }
 
@@ -816,6 +823,15 @@
       setToggleBtn(followTabsT, followTabsPerDir);
       vscode.postMessage({ type: "setFollowTabsPerDir", on: followTabsPerDir });
     };
+    // General-tab wiring: toggle the merged-PR disco party. Mirror into the scene
+    // immediately so it takes effect without waiting for the config echo.
+    const celebrateT = $("#s-celebrate", s);
+    if (celebrateT) celebrateT.onclick = () => {
+      celebrateOnMerge = !celebrateOnMerge;
+      setToggleBtn(celebrateT, celebrateOnMerge);
+      if (window.DevTowerCrew && DevTowerCrew.setCelebrateOnMerge) DevTowerCrew.setCelebrateOnMerge(celebrateOnMerge);
+      vscode.postMessage({ type: "setCelebrateOnMerge", on: celebrateOnMerge });
+    };
 
     // Debug-tab wiring: flip locally for an instant response, mirror into the
     // scene, and persist to devtower.debugLog (the host echoes it back via config).
@@ -1017,6 +1033,7 @@
   let perfHud = false; // devtower.perfHud; on-canvas FPS/frame-cost overlay (config message)
   let execTrack = false; // devtower.externalCallStats; opt-in for the External calls tally (config message)
   let followTabsPerDir = true; // devtower.followTabsPerDir; per-dir tab memory (config message), default on
+  let celebrateOnMerge = true; // devtower.celebrateOnMerge; merged-PR disco party (config message), default on
   let execStats = null; // external-call tally for the Debug tab (arrives via the "execStats" message)
   function applyQuality(mode) {
     quality = QUALITY_MODES.some((p) => p.id === mode) ? mode : "balanced";
@@ -1098,6 +1115,8 @@
       dbgArchives = m.debugLogArchives | 0; // rotated archive files on disk
       execTrack = !!m.externalCallStats; // saved devtower.externalCallStats opt-in
       followTabsPerDir = m.followTabsPerDir !== false; // devtower.followTabsPerDir, default on
+      celebrateOnMerge = m.celebrateOnMerge !== false; // devtower.celebrateOnMerge, default on
+      if (window.DevTowerCrew && DevTowerCrew.setCelebrateOnMerge) DevTowerCrew.setCelebrateOnMerge(celebrateOnMerge); // mirror into the scene (cheap, no redraw)
       // Only push a toggle into the scene when ITS value actually changed. postConfig
       // is a firehose — every setting change (e.g. debugLog) re-sends ALL of config —
       // so re-asserting perfHud/debug on every message let an unrelated toggle (like

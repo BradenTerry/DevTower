@@ -227,6 +227,8 @@ export class ConsolePanel implements MiniDelegate {
       if (e.affectsConfiguration("devtower.graphicsQuality")) this.postConfig();
       // a live per-dir tab-memory toggle echoes back so the General toggle reflects it
       if (e.affectsConfiguration("devtower.followTabsPerDir")) this.postConfig();
+      // a live merged-PR-celebration toggle echoes back so the General toggle reflects it
+      if (e.affectsConfiguration("devtower.celebrateOnMerge")) this.postConfig();
       // an external edit to the project scope re-filters which buildings render
       if (e.affectsConfiguration("devtower.projectScope")) {
         this.postConfig();
@@ -628,6 +630,10 @@ export class ConsolePanel implements MiniDelegate {
         // operator toggled per-directory tab memory (Settings > General)
         await this.persistToggle("followTabsPerDir", !!m.on);
         break;
+      case "setCelebrateOnMerge":
+        // operator toggled the merged-PR disco party (Settings > General)
+        await this.persistToggle("celebrateOnMerge", !!m.on);
+        break;
       case "setDebug": {
         // operator toggled debug logging from the Settings > Debug tab. Persisting
         // it fires the devtower.debugLog config listener, which re-posts config so
@@ -879,6 +885,7 @@ export class ConsolePanel implements MiniDelegate {
       perfHud: cfg.get<boolean>("perfHud", false),
       externalCallStats: cfg.get<boolean>("externalCallStats", false),
       followTabsPerDir: cfg.get<boolean>("followTabsPerDir", true),
+      celebrateOnMerge: cfg.get<boolean>("celebrateOnMerge", true),
     });
   }
 

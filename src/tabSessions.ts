@@ -177,7 +177,10 @@ export class TabSessions {
   }
 
   /** Reopen the tabs saved for a directory. Skips any already-open URI so an
-   *  unsaved tab that was intentionally left open is not duplicated. */
+   *  unsaved tab that was intentionally left open is not duplicated. Every tab is
+   *  reopened in the background (`preserveFocus`) and the editor that was active
+   *  before the switch is re-revealed at the end, so USE DIR never yanks the user
+   *  onto a restored tab — they stay on whatever they were already looking at. */
   private async restore(dirCanon: string): Promise<void> {
     const saved = this.all()[dirCanon];
     if (!saved?.length) return;
@@ -189,12 +192,14 @@ export class TabSessions {
         if (uri) open.add(uri.toString());
       }
 
-    // Open the active tab last so it ends up focused.
-    const ordered = [...saved].sort((a, b) => Number(a.active) - Number(b.active));
-    for (const t of ordered) {
+    // The editor the user is currently looking at (undefined when a webview such
+    // as the tower has focus). We restore focus to it once the tabs are back so
+    // opening them in the background does not move the active editor.
+    const priorActive = vscode.window.activeTextEditor;
+
+    for (const t of saved) {
       if (open.has(t.uri)) continue;
       const column = t.viewColumn > 0 ? t.viewColumn : vscode.ViewColumn.Active;
-      const preserveFocus = !t.active && !t.pinned;
       try {
         if (t.kind === "diff" && t.original) {
           await vscode.commands.executeCommand(
@@ -202,20 +207,32 @@ export class TabSessions {
             vscode.Uri.parse(t.original),
             vscode.Uri.parse(t.uri),
             t.label,
-            { viewColumn: column, preview: t.preview, preserveFocus },
+            { viewColumn: column, preview: t.preview, preserveFocus: true },
           );
         } else if (t.kind === "notebook") {
           await vscode.commands.executeCommand("vscode.openWith", vscode.Uri.parse(t.uri), t.notebookType ?? "default", {
             viewColumn: column,
             preview: t.preview,
-            preserveFocus,
+            preserveFocus: true,
           });
         } else {
           const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse(t.uri));
-          await vscode.window.showTextDocument(doc, { viewColumn: column, preview: t.preview, preserveFocus });
+          await vscode.window.showTextDocument(doc, { viewColumn: column, preview: t.preview, preserveFocus: true });
         }
         if (t.pinned) await vscode.commands.executeCommand("workbench.action.pinEditor");
       } catch { /* file moved/deleted since it was saved; skip it */ }
+    }
+
+    // Return to the tab the user had open before the switch (if it survived), so
+    // the background reopens above did not leave a restored tab as the active
+    // editor in their group.
+    if (priorActive) {
+      try {
+        await vscode.window.showTextDocument(priorActive.document, {
+          viewColumn: priorActive.viewColumn,
+          preserveFocus: false,
+        });
+      } catch { /* its tab was closed during the switch; nothing to return to */ }
     }
   }
 }
