@@ -202,6 +202,12 @@ const ROW_DY = DEPTH_Y; // back row stands on the far-wall floor line
 // (see PixelCrew.seatX); the pitch is per-room so it scales with desk count
 const ROOM_W = 260; // room interior width (door to door); the board is on the back wall
 const SCROLL_PAD_PX = 280; // constant on-screen px of empty space you can pan past the content (kept zoom-independent)
+// How far to nudge a zoomed-in dev off the open band's centre when the agent panel
+// is open. Positive = LEFT of centre, negative = RIGHT (0 = dead centre, ±0.5 =
+// hard against an edge). The band is narrow in a real sidebar-width editor, so a
+// small bias goes a long way; this keeps the dev clear of the panel without
+// jamming it to an edge.
+const FOCUS_LEFT_FRAC = -0.14;
 // Desks are laid out per worktree by seatPlan(): each worktree block fills
 // columns left to right, two rows (front + back) per column, so every agent
 // gets a seat and the blocks span the floor between the left inset and the door.
@@ -720,6 +726,13 @@ class PixelCrew {
   private insetR = 0;
   private curInsetL = 0;
   private curInsetR = 0;
+  // When zoomed onto a single dev with the agent panel open, the dev is offset
+  // off the centre of the open (un-panelled) band so it frames clear of the panel
+  // (direction/amount = FOCUS_LEFT_FRAC). focusLeftFrac is the TARGET;
+  // curFocusLeftFrac is the animated value the projection uses so the shift glides
+  // in step with the panel slide instead of snapping.
+  private focusLeftFrac = 0;
+  private curFocusLeftFrac = 0;
 
   private selectedId?: string;
   /** building key whose "USE DIR" the user pressed: that room is the one the
@@ -2409,6 +2422,15 @@ class PixelCrew {
         this.curInsetL = this.insetL;
         this.curInsetR = this.insetR;
       }
+      // Bias the focused dev toward the left of the open band (clear of the agent
+      // panel) only while a dev is zoomed AND the panel is open; glide it like the
+      // inset so the shift rides in with the panel rather than snapping.
+      this.focusLeftFrac = this.focusAgentId && this.insetR > 1 ? FOCUS_LEFT_FRAC : 0;
+      if (Math.abs(this.curFocusLeftFrac - this.focusLeftFrac) > 0.001) {
+        this.curFocusLeftFrac += (this.focusLeftFrac - this.curFocusLeftFrac) * Math.min(1, (dt / 1000) * 5);
+      } else {
+        this.curFocusLeftFrac = this.focusLeftFrac;
+      }
       // Keep the camera locked onto the selected dev every frame, so the view
       // follows it as it walks to the shelf/whiteboard or rides between floors
       // (re-layout tracking alone only catches up on store updates, not the walk).
@@ -2430,6 +2452,7 @@ class PixelCrew {
       if (fsig !== this.lastFocusSig) { this.lastFocusSig = fsig; this.camTweening = true; }
       const moving =
         insetMoving ||
+        Math.abs(this.curFocusLeftFrac - this.focusLeftFrac) > 0.001 ||
         Math.abs(this.cam.x - tx) > 0.05 ||
         Math.abs(this.cam.y - ty) > 0.05 ||
         Math.abs(this.cam.z - tz) > 0.01;
@@ -2482,6 +2505,8 @@ class PixelCrew {
   private snapCamera() {
     this.curInsetL = this.insetL;
     this.curInsetR = this.insetR;
+    this.focusLeftFrac = this.focusAgentId && this.insetR > 1 ? FOCUS_LEFT_FRAC : 0;
+    this.curFocusLeftFrac = this.focusLeftFrac;
     this.cam.x = this.focus.x + this.panX;
     this.cam.y = this.focus.y + this.panY;
     this.cam.z = this.targetZoom();
@@ -3131,9 +3156,19 @@ class PixelCrew {
 
   /* ============ PICKING ============ */
 
+  /** Horizontal screen anchor the camera centres on. Normally the middle of the
+   *  open band between the insets; when zoomed onto a dev the anchor is biased
+   *  left (curFocusLeftFrac) so the dev frames clear of the agent panel. Shared by
+   *  screenOf / visibleWorld / the draw transform so projection and hit-tests
+   *  never diverge. */
+  private centerX(cw: number): number {
+    const openW = cw - this.curInsetL - this.curInsetR;
+    return this.curInsetL + openW * (0.5 - this.curFocusLeftFrac);
+  }
+
   private screenOf(wx: number, wy: number) {
     const cw = this.container.clientWidth, ch = this.container.clientHeight;
-    const cx = this.curInsetL + (cw - this.curInsetL - this.curInsetR) / 2;
+    const cx = this.centerX(cw);
     return {
       x: cx + (wx - this.cam.x) * this.cam.z,
       y: ch / 2 + (wy - this.cam.y) * this.cam.z,
@@ -3148,7 +3183,7 @@ class PixelCrew {
   private visibleWorld(): VisRect {
     if (!this.cullOn) return { x0: -1e9, x1: 1e9, y0: -1e9, y1: 1e9 }; // cull off → keep everything
     const cw = this.container.clientWidth, ch = this.container.clientHeight;
-    const cx = this.curInsetL + (cw - this.curInsetL - this.curInsetR) / 2;
+    const cx = this.centerX(cw);
     const z = this.cam.z || 1;
     const m = 56; // world-unit slack around the viewport
     return {
@@ -3359,7 +3394,7 @@ class PixelCrew {
     }
 
     const z = this.cam.z;
-    const cx = this.curInsetL + (cw - this.curInsetL - this.curInsetR) / 2;
+    const cx = this.centerX(cw);
     const ox = cx - this.cam.x * z;
     const oy = ch / 2 - this.cam.y * z;
     ctx.setTransform(dpr * z, 0, 0, dpr * z, Math.round(dpr * ox), Math.round(dpr * oy));
