@@ -3,6 +3,7 @@ import * as path from "path";
 import {
   mountWorktree,
   unmountWorktree,
+  detachWorktree,
   toggleRoot,
   isManaged,
   homeRoot,
@@ -154,6 +155,37 @@ describe("workspaceFolders", () => {
     const s = makeFake({ home: "/repo", folders: [ANCHOR, "/repo/wt/a"], file: "/gs/workspaces/x/DevTower.code-workspace" });
     unmountWorktree();
     expect(s.opens).toEqual(["/repo"]);
+  });
+
+  it("detach swaps the worktree for the home root WITHOUT reopening (no reload)", () => {
+    // Deleting a still-mounted worktree dir reloads the window; detaching first
+    // splices it off, keeping the anchor at folder[0] and home mounted, no reopen.
+    const s = makeFake({ home: "/repo", folders: [ANCHOR, "/repo/wt/a"], file: "/gs/workspaces/x/DevTower.code-workspace" });
+    detachWorktree();
+    expect(s.opens).toHaveLength(0); // never reopens the window
+    expect(s.updates).toHaveLength(1);
+    expect(s.updates[0].start).toBe(1); // anchor at folder[0] untouched → VS Code won't reload
+    expect(s.folders).toEqual([ANCHOR, "/repo"]);
+    // file kept in sync so a later open matches the live folders
+    const lastWrite = JSON.parse(s.writes[s.writes.length - 1].content);
+    expect(lastWrite.folders.map((f: any) => f.path)).toEqual([ANCHOR, "/repo"]);
+  });
+
+  it("detach off a root-shown workspace drops only the worktree slot", () => {
+    const s = makeFake({ home: "/repo", folders: [ANCHOR, "/repo", "/repo/wt/a"], file: "/gs/workspaces/x/DevTower.code-workspace" });
+    s.modes.set("/repo", true);
+    detachWorktree();
+    expect(s.opens).toHaveLength(0);
+    expect(s.updates[s.updates.length - 1].start).toBe(2); // anchor + root kept, only worktree spliced
+    expect(s.folders).toEqual([ANCHOR, "/repo"]);
+  });
+
+  it("detach is a no-op outside a managed workspace (plain folder window)", () => {
+    const s = makeFake({ home: "/repo", folders: ["/repo"], file: undefined });
+    detachWorktree();
+    expect(s.opens).toHaveLength(0);
+    expect(s.updates).toHaveLength(0);
+    expect(s.writes).toHaveLength(0);
   });
 
   it("does nothing when there is no project root to anchor (bare window)", () => {
