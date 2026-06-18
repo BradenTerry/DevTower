@@ -230,7 +230,7 @@ export const SCENARIOS: Scenario[] = [
     usage: { fiveHour: { pct: 62 }, sevenDay: { pct: 41 } },
     state: {
       agents: [
-        { id: "a1", name: "Boris", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "feat/diff-viewer", skills: ["code-review"], contextTokens: 96_000, elapsed: "18m" },
+        { id: "a1", name: "Boris", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "feat/diff-viewer", skills: ["code-review"], contextTokens: 96_000, elapsed: "18m", aiTitle: "Render diff hunks in the viewer panel" },
       ],
       rooms: [
         { name: "DevTower", path: "/repo", floor: 0, col: 0, worktrees: [{ path: "/repo", branch: "feat/diff-viewer" }] },
