@@ -6,7 +6,7 @@ Capability map, independent of the current visual theme. The **data contracts** 
 
 | Layer | Files | Re-theme impact |
 |---|---|---|
-| Data core: store, state feed, git, PRs, terminals, sessions, diff provider, native SCM, file viewer | `src/store.ts`, `src/git.ts`, `src/prs.ts`, `src/terminals.ts`, `src/session.ts`, `src/diffProvider.ts`, `src/scmView.ts`, `src/directoryView.ts` | none |
+| Data core: store, state feed, git, PRs, terminals, sessions, diff provider, native SCM, workspace folders | `src/store.ts`, `src/git.ts`, `src/prs.ts`, `src/terminals.ts`, `src/session.ts`, `src/diffProvider.ts`, `src/scmView.ts`, `src/workspaceFolders.ts` | none |
 | Bridge: webview messages (`state`, `session`, `changes`, `prs` / `select`, `send`, `action`, `request*`) | `src/consolePanel.ts` | none (contract is theme-agnostic) |
 | Presentation: 3D scene + HUD | `src/webview/crew.ts`, `media/console.{js,css}` | replaced/reskinned |
 
@@ -40,7 +40,7 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | Agent panel: chat view (full conversation) | ✅ | Operator/Agent/Tool/Result message kinds |
 | Continue session: composer + state-aware quick actions | ✅ | Waiting → inline question callout with Approve / Request changes |
 | Live "now" strip (what the agent is doing/asking) | ✅ | From task/question fields |
-| Native Source Control view: per-worktree file list with +/− counts | ✅ | `vscode.scm.createSourceControl` in `src/scmView.ts`; real `git status --porcelain` + numstat; follows the focused worktree, agent-worktree hide toggle |
+| Native Source Control view: per-worktree file list with +/− counts | ✅ | `vscode.scm.createSourceControl` in `src/scmView.ts`; real `git status --porcelain` + numstat; follows the selected worktree (set by USE DIR) |
 | Stage / unstage / discard per file + stage-all / unstage-all / discard-all | ✅ | Native Source Control resource actions; folder-level stage/unstage/discard in tree mode; `discard-all` behind a modal confirm |
 | Commit from the Source Control input box | ✅ | `devtower.scmCommit` via the accept-input title-bar check; per-room push/pull/fetch on the board |
 | Native diff editor (HEAD ↔ working tree), opens beside console | ✅ | Virtual content provider; worktree-scoped, never workspace cwd |
@@ -48,7 +48,7 @@ Capability map, independent of the current visual theme. The **data contracts** 
 | PR board: worktree PRs (checks + review status) | ✅ | `gh pr list --head <branch>` per worktree; 2-min poll |
 | PR board: PRs requesting my review | ✅ | `gh search prs --review-requested=@me`; badge count in HUD |
 | PR chip on agent panel + View PR link | ✅ | Opens the worktree's existing PR; no create-PR button (prompt the agent to open the PR how you want it) |
-| File viewer: drag-to-move + multi-select right-click delete | ✅ | *Selected Directory* tree (`src/directoryView.ts`): `TreeDragAndDropController` renames within the worktree; `devtower.deleteFile` removes a multi-selection (shift/cmd-click) to Trash in one action; each confirms once with a "don't ask again" opt-out (`devtower.confirmFileMove` / `devtower.confirmFileDelete` / `devtower.confirmFolderDelete` in globalState; reset via `devtower.resetFilePrompts`) |
+| File browsing in the native Explorer (every file, move / rename / delete) | ✅ | USE DIR mounts the selected worktree as a workspace folder in a managed `DevTower.code-workspace` (`src/workspaceFolders.ts`), so the built-in Explorer, quick-open and search cover it; move / rename / delete-to-Trash are native Explorer actions. A fixed empty anchor folder lets worktree swaps avoid a window reload; `devtower.workspaceShowRoot` / `devtower.workspaceHideRoot` toggle the project root in the Explorer title bar |
 | Mini view: compact DOM-table popout (Projects → Worktrees → Agents) | ✅ | `src/miniPanel.ts`; All-agents / All-PRs tabs, per-branch git stats, PR/CI status; same live feed as the scene, decoupled from the tower lifecycle (`DevTower: Open Mini View`) |
 | Review Dispatch modal: skills + instructions + effort + agent md, save defaults | ⛔ removed | Removed with the billboard (see CHANGELOG [1.0.0]); returns when the branch/PR board is rebuilt |
 | Review in an isolated worktree | ⚠️ no entry point | `worktreeForPr` (`src/git.ts`) and the verdict wiring still exist, but the only launcher (the Review Dispatch modal) was removed |
