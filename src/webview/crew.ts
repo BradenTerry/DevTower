@@ -173,6 +173,10 @@ const SHELF_PLACE = 0.7; // seconds spent slotting returned books back onto the 
 // steps over to the left leg and mimes writing the new note, then sits back down.
 const BOARD_W = 20; // whiteboard panel width (spans the desk front from the left leg)
 const BOARD_WRITE_SECS = 3.2; // seconds spent miming a note at the board
+// a merged PR throws a disco party in that room: a mirror ball drops from the
+// ceiling, the lights dim, colored beams sweep the walls and everyone dances.
+const DISCO_SECS = 11; // total party length
+const DISCO_DROP = 1.1; // ball descent (and retract) easing window, seconds
 // during a board trip the dev steps into a lane just IN FRONT of the desk (a small
 // negative lift = toward the viewer) so it rounds the desk to reach the board
 // rather than sliding through the furniture at desk depth.
@@ -341,6 +345,7 @@ interface Room {
   marqueeStart?: number; // frame the PR-title marquee (re)started, so it restarts on zoom-in
   swapPending?: boolean; // a beam is in flight; update the screen when it arrives
   swapClock?: number; // seconds since the beam was fired
+  disco?: { t: number }; // a merged-PR disco party is running; t = seconds elapsed
 }
 
 /** Board payload pushed from the extension (see consolePanel BoardData). */
@@ -500,6 +505,10 @@ interface Toon {
   // ebook mode /clear: seconds remaining for which the seated dev holds its phone
   // out (the "returned my Ebooks" beat). Counts down in tick; drives the phone pose.
   phone?: number;
+  // seconds remaining for which this dev dances on its feet (a merged PR threw a
+  // disco party in its room). Counts down in tick; drives the dance pose and keeps
+  // the dev standing (not seated) while it plays.
+  dance?: number;
   // last /clear session id this toon has reacted to. A change (the dev's session
   // was replaced in place, owned or external) kicks off a fresh shred trip; we
   // dedupe on it so a re-render with the same value doesn't replay the walk.
@@ -673,6 +682,7 @@ class PixelCrew {
   // All cheap and gated: the HUD only draws when toggled on, the samples only
   // emit when devtower.debugLog is on (dbg is a no-op otherwise). ----
   private perfHud = false;
+  private celebrateOnMerge = true; // devtower.celebrateOnMerge: disco party when a PR merges
   private drawBuf: number[] = []; // recent draw() self-times (ms)
   private gapBuf: number[] = []; // recent intervals between draws (ms) → render FPS
   private lastDrawAt = 0; // performance.now() of the previous painted frame
@@ -1842,6 +1852,12 @@ class PixelCrew {
     this.invalidate();
   }
 
+  /** devtower.celebrateOnMerge: when off, a merged PR no longer throws a disco
+   *  party. Any party already running is left to finish. */
+  setCelebrateOnMerge(on: boolean) {
+    this.celebrateOnMerge = on;
+  }
+
   /** Append a notification to the bottom-left log. `kind` picks the icon/color;
    *  `agentId` (when set) makes the row clickable → selects & flies to that dev. */
   pushNotification(n: { kind: string; name: string; repo?: string; agentId?: string }) {
@@ -2517,6 +2533,7 @@ class PixelCrew {
       if (r.boardShown?.pr && r.boardShown.pr.checksRunning > 0) return false; // CI dot pulsing
       // still sliding toward its packed cell (collapse animation)
       if (Math.abs(cellX0(r.col) - r.x0) > 0.5 || Math.abs(floorBase(r.floor) - r.baseY) > 0.5) return false;
+      if (r.disco) return false; // a merged-PR disco party is in full swing
     }
     for (const tn of this.toons.values()) {
       if (tn.entering || Math.abs(tn.targetX - tn.x) > 1) return false;
@@ -2529,6 +2546,7 @@ class PixelCrew {
       if (tn.explore) return false;
       if (tn.note && tn.note.t > 0) return false; // an ebook chat bubble is showing
       if ((tn.phone ?? 0) > 0) return false; // the ebook phone-out return pose is playing
+      if ((tn.dance ?? 0) > 0) return false; // dancing at a merged-PR disco party
       // the desk TV mid-deploy, or a just-pressed completion button, both animate
       if (tn.tvShow > 0.02 && tn.tvShow < 0.98) return false;
       if (tn.tapAt !== undefined && this.frame - tn.tapAt < 8) return false;
@@ -2623,6 +2641,10 @@ class PixelCrew {
       const sig = boardSig(b);
       if (r.statSig === "") { r.statSig = sig; r.boardShown = b; continue; } // first sync shows at once
       if (sig === r.statSig) continue;
+      // a PR just flipped to merged → throw a disco party in this room. Only fire on
+      // the open→merged transition (not on first sight of an already-merged PR, which
+      // takes the statSig === "" early-out above, nor while it lingers merged).
+      if (this.celebrateOnMerge && b?.pr?.merged && !o?.pr?.merged && r.built > 0.6) this.startDisco(r);
       r.statSig = sig;
       // did the AGENT change local state (working tree / staged / local commits /
       // unpushed)? "behind", base, PR and checks are external — they never beam.
@@ -2760,7 +2782,7 @@ class PixelCrew {
       if (Math.abs(dx) > 1) tn.x += Math.sign(dx) * Math.min(Math.abs(dx), WALK_SPEED * dt);
       else if (tn.entering) tn.entering = false;
       const seatable = tn.agent.state === "active" || tn.agent.state === "idle" || tn.agent.state === "complete";
-      tn.sitting = seatable && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.explore && !tn.transfer && !tn.board && Math.abs(dx) <= 1;
+      tn.sitting = seatable && !tn.entering && !tn.leaving && !tn.errand && !tn.shred && !tn.explore && !tn.transfer && !tn.board && !(tn.dance && tn.dance > 0) && Math.abs(dx) <= 1;
       // settle up into the back row once parked at the desk; drop to the aisle
       // (lift -> 0) whenever walking, entering, or leaving. A dev AT the bookshelf
       // (fetching a book, or returning one on /clear) steps back to SHELF_LIFT so it
@@ -2794,6 +2816,9 @@ class PixelCrew {
         const dist = tn.x0 + ROOM_W - tn.x; // px left of the near corner
         targetLift = Math.max(targetLift, clamp(1 - dist / DOOR_APPROACH, 0, 1) * DOOR_LIFT);
       }
+      // a dancer steps out into the front lane (in front of its desk) so the whole
+      // dance floor is visible, not hidden behind the desk fronts.
+      if ((tn.dance ?? 0) > 0 && !tn.entering && !tn.leaving) targetLift = BOARD_LANE;
       tn.lift += (targetLift - tn.lift) * Math.min(1, dt * 9);
     }
     // advance book errands now that this frame's walk has been applied: arrive at
@@ -2916,6 +2941,16 @@ class PixelCrew {
         tn.phone -= dt;
         if (tn.phone <= 0) tn.phone = undefined;
       }
+      if (tn.dance !== undefined) {
+        tn.dance -= dt;
+        if (tn.dance <= 0) tn.dance = undefined;
+      }
+    }
+    // advance any running disco party; clear it (and stop the music) once done
+    for (const r of this.rooms.values()) {
+      if (!r.disco) continue;
+      r.disco.t += dt;
+      if (r.disco.t >= DISCO_SECS) r.disco = undefined;
     }
     // raise/retract each dev's desk TV: it rises on its stand once the dev is
     // seated and the session has a 2+ task list, and folds back down when the
@@ -3505,7 +3540,7 @@ class PixelCrew {
         // cull devs whose sprite is off-screen (riding devs in a visible shaft are
         // drawn above; this skips seated/walking devs in culled rooms)
         if (!this.onScreen(tn.x - 18, tn.x + 18, tn.base - tn.lift - 42, tn.base + 8, vw)) continue;
-        if (tn.board?.rounded) { frontToons.push(tn); continue; }
+        if (tn.board?.rounded || (tn.dance ?? 0) > 0) { frontToons.push(tn); continue; }
         this.toonsDrawn++;
         // a session running OUTSIDE DevTower is rendered ghosted — grayed and
         // semi-transparent — so it reads as "not one of ours" at a glance
@@ -3548,6 +3583,11 @@ class PixelCrew {
     // through reads as behind it — the wall stands in front, not the dev.
     for (const r of this.rooms.values()) {
       if (r.built >= 1 && r.doorOpen > 0.01 && this.visRooms.has(r.name)) this.drawDoor(ctx, r, "overlay");
+    }
+    // merged-PR disco party: dim the room (over the crew, so the devs darken too),
+    // sweep colored beams off the spinning ball, then draw the ball itself on top.
+    for (const r of this.rooms.values()) {
+      if (r.disco && this.visRooms.has(r.name)) this.drawDisco(ctx, r);
     }
     // particles
     if (this.gfx.particles) {
@@ -3945,6 +3985,112 @@ class PixelCrew {
     }
     ctx.fillText(label, cx, cy);
     ctx.restore();
+  }
+
+  /** A PR in this room just merged: kick off the disco party. The mirror ball
+   *  drops from the ceiling, the lights dim, beams sweep the room (drawn in
+   *  drawDisco), and every dev currently in the room gets up to dance. */
+  private startDisco(r: Room) {
+    r.disco = { t: 0 };
+    for (const tn of this.toons.values()) {
+      if (tn.bkey !== r.name) continue;
+      // skip a dev that's mid-trip (errand/shred/explore/board/transfer) or on its
+      // way in/out — it keeps its own animation; everyone else hits the floor.
+      if (tn.errand || tn.shred || tn.explore || tn.board || tn.transfer || tn.leaving || tn.entering) continue;
+      tn.dance = DISCO_SECS;
+    }
+    this.dbg("disco.start", { room: r.name });
+    this.invalidate();
+  }
+
+  /** The merged-PR disco party for one room, drawn over the crew (world space):
+   *  a dim wash, colored beams fanning off the spinning mirror ball, sweeping
+   *  floor spots, and the ball itself dropping from the ceiling on a cord. */
+  private drawDisco(ctx: CanvasRenderingContext2D, r: Room) {
+    if (!r.disco) return;
+    const t = r.disco.t;
+    const x0 = r.x0, w = ROOM_W, H = ROOM_H;
+    const base = r.baseY;
+    const cx = x0 + w / 2;
+    const ceilY = base - H;
+    // ease the whole party in over the drop window and back out as it retracts, so
+    // the ball, the dimming and the beams all rise/fall together.
+    let drop: number;
+    if (t < DISCO_DROP) { const e = t / DISCO_DROP; drop = e * e * (3 - 2 * e); }
+    else if (t > DISCO_SECS - DISCO_DROP) { const e = (DISCO_SECS - t) / DISCO_DROP; drop = e * e * (3 - 2 * e); }
+    else drop = 1;
+    drop = clamp(drop, 0, 1);
+    // a small damped bounce as the ball lands
+    const since = t - DISCO_DROP;
+    const settle = since >= 0 && since < 0.7 ? Math.sin(since * 13) * Math.exp(-since * 5) * 2.2 : 0;
+    const ballR = 5;
+    const ballY = ceilY + 4 + 20 * drop + settle;
+    const palette = ["#ff4d6d", "#ffd23f", "#4dd2ff", "#9b5dff", "#4dff88", "#ff8a3d"];
+
+    // dim the room: a dark blue wash over the interior (and the crew beneath it)
+    ctx.fillStyle = "rgba(6,8,20,0.55)";
+    ctx.globalAlpha = drop;
+    ctx.fillRect(x0 + 1.5, ceilY, w - 3, H);
+    ctx.globalAlpha = 1;
+
+    // colored beams + floor spots, clipped to the room interior so they don't spill
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0 + 1.5, ceilY, w - 3, H);
+    ctx.clip();
+    if (this.gfx.glow) ctx.globalCompositeOperation = "lighter";
+    const rays = 7;
+    const spin = this.frame * 0.11;
+    const reach = w;
+    for (let i = 0; i < rays; i++) {
+      const ang = spin + (i * Math.PI * 2) / rays;
+      const half = 0.085;
+      const c = palette[(i + Math.floor(this.frame * 0.04)) % palette.length];
+      const x1 = cx + Math.cos(ang - half) * reach, y1 = ballY + Math.sin(ang - half) * reach;
+      const x2 = cx + Math.cos(ang + half) * reach, y2 = ballY + Math.sin(ang + half) * reach;
+      ctx.fillStyle = c;
+      ctx.globalAlpha = drop * 0.16 * (0.7 + 0.3 * Math.sin(this.frame * 0.3 + i));
+      ctx.beginPath();
+      ctx.moveTo(cx, ballY); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2); ctx.closePath(); ctx.fill();
+    }
+    // dappled spotlights gliding across the floor
+    for (let i = 0; i < 5; i++) {
+      const ph = this.frame * 0.07 + i * 1.3;
+      const sx = cx + Math.sin(ph) * (w * 0.42);
+      const sy = base - 5 - (i % 2) * 7;
+      ctx.fillStyle = palette[i % palette.length];
+      ctx.globalAlpha = drop * 0.3;
+      ctx.beginPath(); ctx.ellipse(sx, sy, 6.5, 2.4, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    ctx.restore();
+
+    // the mirror ball: cord + ceiling mount, silver body, twinkling facets
+    ctx.strokeStyle = "#2a2f35";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx, ceilY); ctx.lineTo(cx, ballY - ballR + 0.5); ctx.stroke();
+    ctx.fillStyle = "#3a4046";
+    ctx.fillRect(cx - 2, ceilY - 0.5, 4, 2);
+    ctx.fillStyle = "#8b939c";
+    ctx.beginPath(); ctx.arc(cx, ballY, ballR, 0, Math.PI * 2); ctx.fill();
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, ballY, ballR, 0, Math.PI * 2); ctx.clip();
+    const fs = 1.8;
+    for (let gy = -ballR; gy < ballR; gy += fs) {
+      for (let gx = -ballR; gx < ballR; gx += fs) {
+        const tw = Math.sin((gx + gy * 1.3) * 0.9 + this.frame * 0.4);
+        const litv = 0.35 + 0.45 * Math.max(0, tw);
+        if (tw > 0.9) ctx.fillStyle = "#ffffff";
+        else if (tw < -0.85) ctx.fillStyle = palette[(gx + gy + this.frame) % palette.length] ?? "#6f7780";
+        else { const v = Math.round(95 + 120 * litv); ctx.fillStyle = `rgb(${v},${v + 6},${v + 14})`; }
+        ctx.fillRect(cx + gx, ballY + gy, fs - 0.3, fs - 0.3);
+      }
+    }
+    ctx.restore();
+    ctx.fillStyle = "rgba(255,255,255,0.7)"; // top-left specular highlight
+    ctx.fillRect(cx - ballR + 1.4, ballY - ballR + 1.4, 1.6, 1.6);
+    ctx.globalAlpha = 1;
   }
 
   private drawRoomBack(ctx: CanvasRenderingContext2D, r: Room) {
@@ -5120,7 +5266,12 @@ class PixelCrew {
     const hop =
       st === "waiting" && !walking ? -Math.abs(Math.sin(f * 0.35 + tn.ph)) * 1 : 0;
     const slump = st === "error" && !walking ? 1.4 : 0;
-    const base = y0 + hop;
+    // dancing at a merged-PR disco party: a quick two-step bounce (the arms come
+    // up in the chain below). The bob propagates into ty/head, so the whole dev
+    // bobs to the beat. Desynced per-toon via tn.ph so the room isn't in lockstep.
+    const dancing = (tn.dance ?? 0) > 0 && !walking && !tn.leaving && !tn.entering;
+    const danceBob = dancing ? Math.abs(Math.sin(f * 0.5 + tn.ph)) * 2.4 : 0;
+    const base = y0 + hop - danceBob;
     // standing at the bookshelf inspecting the spines with a magnifying glass
     // while an Explore subagent searches (the shelf is on the left wall)
     const inspecting = !!tn.explore && tn.explore.phase === "look" && !walking;
@@ -5190,7 +5341,18 @@ class PixelCrew {
 
     ctx.fillStyle = p.shirt;
     const handC = p.skin;
-    if (writingBoard) {
+    if (dancing) {
+      // both arms thrown up and pumping in alternation — hands in the air, raising
+      // the roof to the beat (the body already bobs via danceBob above).
+      const beat = Math.sin(f * 0.5 + tn.ph);
+      const la = beat * 1.8, ra = -beat * 1.8; // arms counter-pump
+      ctx.fillStyle = p.shirt; // forearms reaching up over the head
+      ctx.fillRect(x - 4.4, ty - 4 + la, 1.5, 5.4);
+      ctx.fillRect(x + 2.9, ty - 4 + ra, 1.5, 5.4);
+      ctx.fillStyle = handC; // hands up in the air
+      ctx.fillRect(x - 4.6, ty - 5.8 + la, 1.9, 1.9);
+      ctx.fillRect(x + 2.7, ty - 5.8 + ra, 1.9, 1.9);
+    } else if (writingBoard) {
       // standing IN FRONT of the wide board (drawn over it), reaching to the right
       // to write: the forearm extends to the surface with the hand + marker miming
       // a stroke; the other arm rests at the side.
@@ -5583,6 +5745,9 @@ class PixelCrew {
   },
   setPerfHud(on: boolean) {
     this._instance?.setPerfHud(on);
+  },
+  setCelebrateOnMerge(on: boolean) {
+    this._instance?.setCelebrateOnMerge(on);
   },
   pushNotification(n: { kind: string; name: string; repo?: string; agentId?: string }) {
     this._instance?.pushNotification(n);
