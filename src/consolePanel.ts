@@ -1478,7 +1478,8 @@ export class ConsolePanel implements MiniDelegate {
       const rows = this.getWorktreeRooms().filter((w) => !(w.island === island && w.path === row.path));
       rows.push(row);
       await this.saveWorktreeRooms(rows);
-      this.postState(); // show the room right away (don't move the camera)
+      this.postState(); // show the room right away
+      this.focusRoomInScene(row.path); // then zoom into the freshly created room
       void this.refreshState(); // fill in its branch + stats
     } finally {
       this.addingRooms.delete(key);
@@ -1656,6 +1657,10 @@ export class ConsolePanel implements MiniDelegate {
         if (confirm !== verb) break;
         if (!agent.external) this.terminals.disposeAgent(id);
         this.discovery?.retireOwned(id);
+        // The camera was locked onto this dev (the stats panel zooms in on select);
+        // with the dev now gone it would stay pinned at that tight zoom. Glide to its
+        // room instead — releases the lock and lands somewhere sensible.
+        this.focusRoomInScene(agent.worktree);
         break;
       }
       case "diff":
@@ -1750,6 +1755,15 @@ export class ConsolePanel implements MiniDelegate {
     if (!agent) return;
     agent.session = [...(agent.session ?? []), msg];
     this.postSession(id);
+  }
+
+  /** Ask the tower scene to glide to (zoom into) a building by its key — the
+   *  worktree path. No-op when the room can't be resolved (scene-side) or the
+   *  tower isn't on screen. Used when a worktree room is created and when an
+   *  agent is sent home (so the camera leaves the now-departed dev). */
+  private focusRoomInScene(room: string | undefined): void {
+    if (!room) return;
+    if (this.panel?.visible) this.panel.webview.postMessage({ type: "focusRoom", room });
   }
 
   private postState(): void {

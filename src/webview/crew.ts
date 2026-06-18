@@ -5550,6 +5550,9 @@ class PixelCrew {
   focusIsland(repo: string) {
     this._instance?.focusOn(repo);
   },
+  focusRoom(room: string) {
+    this._instance?.focusOn(room);
+  },
   clearFocus() {
     this._instance?.clearFocus();
   },

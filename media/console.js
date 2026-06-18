@@ -1130,6 +1130,12 @@
       openSettings();
     } else if (m.type === "focusAgent" && m.id) {
       selectAgent(m.id, true); // host (or harness) asks to open an agent's panel
+    } else if (m.type === "focusRoom" && m.room) {
+      // host asks the camera to glide to a building (worktree path = building key):
+      // a freshly created worktree room, or the room an agent just left after being
+      // sent home. focusOn also releases any tight dev zoom, so this clears a camera
+      // that was locked onto the now-departed agent.
+      if (window.DevTowerCrew && DevTowerCrew.focusRoom) DevTowerCrew.focusRoom(m.room);
     }
   });
 
