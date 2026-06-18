@@ -130,6 +130,22 @@ describe("readMeta", () => {
     expect(meta.skills).toContain("code-review");
   });
 
+  it("still detects a skill after >32KB of later output scrolls it past the tail window", async () => {
+    // regression: skills were parsed from the 32KB tail only, so an active
+    // session (a big `git pull`, file reads, a `gh run watch` dump) pushed the
+    // skill signal out of the window within seconds and the borrow trip slipped
+    // to the next incidental marker. Read over `full` instead, like sub-agents.
+    const filler = "x".repeat(40 * 1024); // > the 32KB tail chunk
+    const { file, size } = write([
+      { type: "user", cwd: dir, message: { role: "user", content: "release please" } },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name: "Skill", input: { skill: "release" } }] } },
+      { type: "user", message: { role: "user", content: [{ type: "tool_result", content: filler }] } },
+      { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } },
+    ]);
+    const meta = await readMeta(file, size);
+    expect(meta.skills).toContain("release");
+  });
+
   it("counts in-flight sub-agents (Task tool calls with no result yet)", async () => {
     const { file, size } = write([
       { type: "user", cwd: dir, message: { role: "user", content: "fan out" } },
