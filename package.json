@@ -343,6 +343,11 @@
           "default": true,
           "description": "Remember which editor tabs are open per USE DIR directory. When you switch the working directory, the current dir's tabs are closed and the new dir's tabs are reopened, so editors follow the directory. Dirty (unsaved) tabs prompt to Save / Don't Save / Cancel before switching."
         },
+        "devtower.celebrateOnMerge": {
+          "type": "boolean",
+          "default": true,
+          "description": "Throw a disco party in a room when its pull request is merged: a mirror ball drops from the ceiling, the lights dim, colored beams sweep the room and the devs dance. On by default."
+        },
         "devtower.discoverClaudeSessions": {
           "type": "boolean",
           "default": true,
