@@ -11,7 +11,7 @@ import { capabilities, setGithubToken, clearGithubToken, SCOPE_HELP } from "./gi
 import { listHooks, setHookEnabled, setAllHooksEnabled, EDITED_DIR, readEditMarkers } from "./hooks";
 import { ClaudeDiscovery } from "./claude";
 import { MiniPanel, MiniDelegate } from "./miniPanel";
-import { mountWorktree, unmountWorktree, homeRoot } from "./workspaceFolders";
+import { mountWorktree, unmountWorktree, detachWorktree, homeRoot } from "./workspaceFolders";
 import { TabSessions } from "./tabSessions";
 import { dlog, elog, showDebugChannel, clearDebugLog, debugLogExists, debugLogPath, debugLogArchiveCount, debugLogDir, execStatsSnapshot, resetExecStats } from "./debugLog";
 import * as fs from "fs";
@@ -1293,6 +1293,15 @@ export class ConsolePanel implements MiniDelegate {
       this.store.remove(a.id);
     }
     if (pick === "Unregister + delete worktrees" && dir) {
+      // If the active USE DIR is one of the worktrees about to be deleted, detach
+      // it from the VS Code workspace first so deleting a still-mounted folder
+      // doesn't reload the window (reload-free; see removeWorktreeRoom).
+      if (this.usedDirRoom && wtBranch.has(this.usedDirRoom)) {
+        this.usedDirRoom = undefined;
+        this.store.setSelectedDir(undefined);
+        await this.saveSelectedDir(undefined);
+        detachWorktree();
+      }
       for (const [p, branch] of wtBranch) {
         try {
           // resolve the branch from git when the room/agent didn't carry one, so
@@ -1350,6 +1359,16 @@ export class ConsolePanel implements MiniDelegate {
       this.terminals.disposeAgent(a.id);
       this.store.remove(a.id);
     }
+    // If this worktree is the active USE DIR, detach it from the VS Code workspace
+    // BEFORE git deletes it from disk. Deleting a directory that is still a mounted
+    // workspace folder makes VS Code reload the whole window; detaching first is
+    // reload-free (the anchor stays at folder[0]).
+    if (this.usedDirRoom === worktree) {
+      this.usedDirRoom = undefined;
+      this.store.setSelectedDir(undefined);
+      await this.saveSelectedDir(undefined);
+      detachWorktree();
+    }
     if (pick === "Remove room + delete worktree") {
       const dir = this.dirForRepo(island);
       if (!dir || dir === worktree) {
@@ -1370,13 +1389,6 @@ export class ConsolePanel implements MiniDelegate {
     }
     // unassign this worktree room
     await this.saveWorktreeRooms(this.getWorktreeRooms().filter((w) => w.path !== worktree));
-    // drop the persisted "USE DIR" selection if it pointed at this worktree
-    if (this.usedDirRoom === worktree) {
-      this.usedDirRoom = undefined;
-      this.store.setSelectedDir(undefined);
-      await this.saveSelectedDir(undefined);
-      unmountWorktree(); // leave the DevTower workspace, reopen the project root
-    }
     this.postState();
     void this.refreshState();
   }

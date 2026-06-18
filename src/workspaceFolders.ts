@@ -176,6 +176,41 @@ export function unmountWorktree(): void {
   host.openWorkspace(vscode.Uri.file(home));
 }
 
+/** Reload-free unmount, used when the mounted worktree's directory is about to be
+ *  DELETED (e.g. "Remove room + delete worktree"). Deleting a directory that is
+ *  still a live workspace folder makes VS Code reload the whole window, so the
+ *  caller must invoke this BEFORE removing the directory on disk. It splices the
+ *  worktree off the live folder set while keeping the pinned anchor at folder[0]
+ *  (so no reload) and re-mounts the home root so the Explorer is not left empty.
+ *  Unlike `unmountWorktree`, it never reopens the window. No-op outside a managed
+ *  workspace. */
+export function detachWorktree(): void {
+  selectedWorktree = undefined;
+  if (!host || !isManaged()) return;
+  const home = host.homeRoot();
+  const anchor = anchorPath();
+  host.ensureDir(anchor); // VS Code errors on a missing folder, so create it first
+  // Home stays mounted so the Explorer is not just the empty anchor; with no home
+  // (a bare window) fall back to the anchor alone.
+  const desired = home ? [anchor, home] : [anchor];
+  if (home) host.writeFile(wsFilePath(home), wsFileContent(desired, home)); // keep the file in sync for a later open
+  const current = host.currentFolders();
+  if (foldersEqual(current, desired)) {
+    syncContext();
+    dlog("workspace.detach.noop", { home, desired });
+    return;
+  }
+  // anchor pinned at folder[0] ⇒ prefix ≥ 1 ⇒ the splice never touches folder[0] ⇒ no reload
+  const prefix = commonPrefixLen(current, desired);
+  host.updateFolders(
+    prefix,
+    current.length - prefix,
+    desired.slice(prefix).map((p) => ({ uri: vscode.Uri.file(p), name: folderName(p) }))
+  );
+  syncContext();
+  dlog("workspace.detach", { home, from: current, to: desired, prefix });
+}
+
 /** Flip the Explorer between "worktree only" and "root + worktree" and reapply.
  *  Bound to the title-bar toggle. */
 export function toggleRoot(): void {
