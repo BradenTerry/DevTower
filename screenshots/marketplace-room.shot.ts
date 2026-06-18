@@ -18,7 +18,7 @@ const board = {
   unstagedAdd: 0, unstagedDel: 0, stagedAdd: 0, stagedDel: 0, committedAdd: 0,
   committedDel: 0, base: "main", ahead: 0, unpushed: 0, behind: 0, commits: [], prReady: true,
 };
-const lead = { id: "cc-lead0001", name: "DevTower-1", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: [], contextTokens: 90_000, elapsed: "4m", subagents: 1 };
+const lead = { id: "cc-lead0001", name: "DevTower-1", state: "active", repo: "DevTower", model: "opus-4.8", worktree: "/repo", branch: "main", skills: [], contextTokens: 90_000, elapsed: "4m", subagents: 1, aiTitle: "Wire up the agent side-panel" };
 
 test("capture: marketplace-room", async ({ page }) => {
   fs.mkdirSync(OUT, { recursive: true });
