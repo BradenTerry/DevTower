@@ -638,9 +638,6 @@ class PixelCrew {
   private panX = 0;
   private panY = 0;
   private drag = { active: false, moved: false, lastX: 0, lastY: 0 };
-  // dragging a toon onto a room (or a ghost cell) issues a /cd for that agent
-  private toonDrag: { id: string; active: boolean; mx: number; my: number; blocked: boolean } | null = null;
-  private dropTarget: { room?: string; ghost?: { floor: number; col: number } } | null = null;
 
   private running = false;
   // set while the panel is hidden (stopped, or seen 0-size in the loop). On the
@@ -738,8 +735,6 @@ class PixelCrew {
   /** room key → time a push/pull was requested, so the board change it causes
    *  flashes without firing a beam (the agent didn't do that work). */
   private syncSuppress = new Map<string, number>();
-  private onCdCb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void =
-    () => {};
   private onOpenPrCb: (url: string) => void = () => {};
   // debug event sink (forwarded to the extension's debug log when enabled)
   private onDebugCb: (event: string, data?: unknown) => void = () => {};
@@ -771,57 +766,18 @@ class PixelCrew {
       return { mx: e.clientX - rect.left, my: e.clientY - rect.top };
     };
     canvas.addEventListener("pointerdown", (e) => {
-      // the scene owns this gesture (pan / drag-to-relocate); stop the browser
-      // from starting a native selection that would highlight the page instead.
+      // the scene owns this gesture (camera pan); stop the browser from starting
+      // a native selection that would highlight the page instead. A press on a
+      // toon is a plain (no-move) drag so the tap routes to onClick and selects
+      // it — agents relocate by running /cd themselves, not by dragging.
       e.preventDefault();
       canvas.setPointerCapture(e.pointerId);
-      // grabbing a toon begins a drag-to-relocate gesture, not a camera pan.
-      // An active agent can't be relocated (its session is mid-task), so the
-      // drag is blocked — a tap still selects it.
-      const { mx, my } = canvasXY(e);
-      // a press inside the notification box must not grab a toon behind it; fall
-      // through to a plain (no-move) drag so the tap routes to onClick.
-      if (!this.notifHit(mx, my)) {
-        const hit = this.pick(e);
-        if (hit.agent) {
-          const blocked = this.toons.get(hit.agent)?.agent.state === "active";
-          this.toonDrag = { id: hit.agent, active: false, mx, my, blocked };
-          return;
-        }
-      }
       this.drag.active = true;
       this.drag.moved = false;
       this.drag.lastX = e.clientX;
       this.drag.lastY = e.clientY;
     });
     canvas.addEventListener("pointermove", (e) => {
-      if (this.toonDrag) {
-        const { mx, my } = canvasXY(e);
-        if (!this.toonDrag.active && Math.abs(mx - this.toonDrag.mx) + Math.abs(my - this.toonDrag.my) > 4) {
-          this.toonDrag.active = true;
-        }
-        this.toonDrag.mx = mx;
-        this.toonDrag.my = my;
-        if (this.toonDrag.active) {
-          if (this.toonDrag.blocked) {
-            // active agent: no relocation target, show it's not allowed
-            this.dropTarget = null;
-            this.container.style.cursor = "not-allowed";
-            this.invalidate();
-            return;
-          }
-          const hit = this.pick(e);
-          // dropping on a building (or a +building ghost) moves the agent into
-          // that island's directory; a +island ghost picks a new directory.
-          if (hit.island && !hit.ghost) this.dropTarget = { room: hit.island };
-          else if (hit.ghost?.kind === "building" && hit.ghost.island) this.dropTarget = { room: hit.ghost.island };
-          else if (hit.ghost?.kind === "island") this.dropTarget = { ghost: { floor: hit.ghost.floor, col: hit.ghost.col } };
-          else this.dropTarget = null;
-          this.container.style.cursor = this.dropTarget ? "copy" : "grabbing";
-          this.invalidate();
-        }
-        return;
-      }
       if (!this.drag.active) {
         // notification box (screen-space, drawn on top) wins the hover first
         const { mx, my } = canvasXY(e);
@@ -863,19 +819,6 @@ class PixelCrew {
       }
     });
     const endDrag = (e: PointerEvent) => {
-      if (this.toonDrag) {
-        const td = this.toonDrag;
-        this.toonDrag = null;
-        this.container.style.cursor = "default";
-        if (!td.active) {
-          this.onClick(e); // a tap, not a drag → select the agent
-        } else if (this.dropTarget) {
-          this.onCdCb(td.id, this.dropTarget);
-        }
-        this.dropTarget = null;
-        this.invalidate();
-        return;
-      }
       if (!this.drag.active) return;
       const wasDrag = this.drag.moved;
       this.drag.active = false;
@@ -887,8 +830,6 @@ class PixelCrew {
     canvas.addEventListener("pointercancel", () => {
       this.drag.active = false;
       this.drag.moved = false;
-      this.toonDrag = null;
-      this.dropTarget = null;
       this.invalidate();
     });
     canvas.addEventListener("pointerleave", () => {
@@ -919,9 +860,6 @@ class PixelCrew {
   onPush(cb: (room: string) => void) { this.onPushCb = cb; }
   onPull(cb: (room: string) => void) { this.onPullCb = cb; }
   onFetch(cb: (room: string) => void) { this.onFetchCb = cb; }
-  onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
-    this.onCdCb = cb;
-  }
   onOpenPr(cb: (url: string) => void) { this.onOpenPrCb = cb; }
   onDebug(cb: (event: string, data?: unknown) => void) { this.onDebugCb = cb; }
   setDebug(on: boolean) { this.debugOn = on; }
@@ -1186,6 +1124,7 @@ class PixelCrew {
         const base = persona(a.id);
         tn.p.shirt = a.shirtColor || base.shirt;
         tn.p.shirtDark = a.shirtColor ? darkenColor(a.shirtColor) : base.shirtDark;
+        this.invalidate(); // wake the loop so a sitting dev's shirt repaints now
       }
       // the AI summary just populated/changed: send the settled dev to jot it on
       // its whiteboard. Seeded on first sight (tn.agent === a here for a fresh
@@ -1681,7 +1620,7 @@ class PixelCrew {
       const tn = this.toons.get(this.focusAgentId);
       if (tn) {
         this.focus.x = tn.targetX;
-        this.focus.y = tn.base - ROOM_H / 2 + 6;
+        this.focus.y = tn.base - ROOM_H / 2 + 40;
       }
       // toon momentarily gone during a re-layout → leave the camera put
     } else if (this.focusRoom_) {
@@ -1769,9 +1708,9 @@ class PixelCrew {
     this.focusIsland_ = null;
     this.focusRoom_ = room?.name ?? null;
     this.focus.x = tn.targetX;
-    this.focus.y = tn.base - ROOM_H / 2 + 22;
-    this.focus.spanW = 50;
-    this.focus.spanH = FLOOR_STEP - 30;
+    this.focus.y = tn.base - ROOM_H / 2 + 40;
+    this.focus.spanW = 38;
+    this.focus.spanH = FLOOR_STEP - 46;
     if (resetZoom) {
       this.panX = 0;
       this.panY = 0;
@@ -2443,6 +2382,16 @@ class PixelCrew {
       } else {
         this.curInsetL = this.insetL;
         this.curInsetR = this.insetR;
+      }
+      // Keep the camera locked onto the selected dev every frame, so the view
+      // follows it as it walks to the shelf/whiteboard or rides between floors
+      // (re-layout tracking alone only catches up on store updates, not the walk).
+      if (this.focusAgentId) {
+        const ftn = this.toons.get(this.focusAgentId);
+        if (ftn && ftn.x) {
+          this.focus.x = ftn.x;
+          this.focus.y = ftn.base - ROOM_H / 2 + 40;
+        }
       }
       const tz = this.targetZoom();
       const tx = this.focus.x + this.panX;
@@ -3880,8 +3829,6 @@ class PixelCrew {
         ctx.fillText("▾", s.x, s.y - 18 + Math.sin(this.frame * 0.5) * 2);
       }
     }
-
-    if (this.toonDrag?.active) this.paintDropHint();
   }
 
   /** A small pixel "bot head" + count, drawn left of an agent's name to show how
@@ -3907,51 +3854,6 @@ class PixelCrew {
     ctx.fillStyle = "rgba(12,17,20,0.9)"; // punch two dark eyes into the head
     ctx.fillRect(ix + 2, iy + 5, 1, 2);
     ctx.fillRect(ix + 5, iy + 5, 1, 2);
-    ctx.restore();
-  }
-
-  /** Overlay drawn while a toon is being dragged: highlight the drop target
-   *  room/ghost and show the agent name floating at the cursor. */
-  private paintDropHint() {
-    const ctx = this.ctx;
-    const dpr = this.dpr();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const t = this.dropTarget;
-    if (t?.room) {
-      // t.room is an island name → highlight the whole island footprint
-      const isl = this.islands.get(t.room);
-      if (isl) {
-        const x0 = cellX0(isl.laneStart);
-        const x1 = cellX0(isl.laneStart + isl.cols - 1) + ROOM_W;
-        let top = floorBase(0);
-        for (const b of this.rooms.values()) if (b.island === isl.name) top = Math.min(top, b.baseY - ROOM_H);
-        this.strokeWorldRect(x0, top, x1 - x0, floorBase(0) + SLAB - top, "#7fd1ff");
-      }
-    } else if (t?.ghost) {
-      const g = this.ghosts.find((g) => g.floor === t.ghost!.floor && g.col === t.ghost!.col);
-      if (g) this.strokeWorldRect(g.x0, g.base - ROOM_H, ROOM_W, ROOM_H, "#9be38b");
-    }
-    const d = this.toonDrag!;
-    const name = this.toons.get(d.id)?.agent.name ?? "agent";
-    const label = d.blocked ? `${name} · active, can't move` : name;
-    ctx.font = "11px 'IBM Plex Mono', monospace";
-    const w = ctx.measureText(label).width + 14;
-    ctx.fillStyle = "rgba(12,16,20,0.92)";
-    ctx.fillRect(d.mx + 12, d.my - 9, w, 18);
-    ctx.fillStyle = d.blocked ? "#ff9a93" : t ? "#cfe8ff" : "#9aa3ab";
-    ctx.fillText(label, d.mx + 19, d.my + 3.5);
-  }
-
-  /** Stroke a world-space rectangle in screen space (dashed highlight). */
-  private strokeWorldRect(wx: number, wy: number, ww: number, wh: number, color: string) {
-    const ctx = this.ctx;
-    const a = this.screenOf(wx, wy);
-    const b = this.screenOf(wx + ww, wy + wh);
-    ctx.save();
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 4]);
-    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
     ctx.restore();
   }
 
@@ -5632,9 +5534,6 @@ class PixelCrew {
   },
   onFetch(cb: (room: string) => void) {
     this._instance?.onFetch(cb);
-  },
-  onCd(cb: (id: string, target: { room?: string; ghost?: { floor: number; col: number } }) => void) {
-    this._instance?.onCd(cb);
   },
   onOpenPr(cb: (url: string) => void) {
     this._instance?.onOpenPr(cb);

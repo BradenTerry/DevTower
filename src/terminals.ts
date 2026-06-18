@@ -177,21 +177,6 @@ export class TerminalManager {
     term.sendText(text, true);
   }
 
-  /**
-   * Submit a slash command (e.g. `/cd <dir>`) to the agent's Claude session.
-   * Typed key-by-key, `/cd ` opens the TUI's path autocomplete, which captures
-   * the trailing path and mangles the argument. Wrapping the text in a
-   * bracketed-paste sequence makes the TUI ingest it as one literal block
-   * (no autocomplete), then a separate Enter submits it.
-   */
-  command(agentId: string, text: string): void {
-    const term = this.ensure(agentId);
-    if (!term) return;
-    term.show(true);
-    term.sendText(`\x1b[200~${text}\x1b[201~`, false); // bracketed paste, no newline
-    term.sendText("", true); // Enter → submit
-  }
-
   /** Re-title every open console whose computed title changed (a fresh AI summary
    *  or a `/rename`). Cheap when nothing moved — only a changed title triggers the
    *  focus-stealing rename below. */

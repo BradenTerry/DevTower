@@ -752,9 +752,6 @@ export class ConsolePanel implements MiniDelegate {
       case "removeWorktree":
         if (typeof m.worktree === "string") await this.removeWorktreeRoom(m.worktree, typeof m.island === "string" ? m.island : "");
         break;
-      case "cdAgent":
-        if (id) await this.cdAgent(id, m.room, m.ghost);
-        break;
       case "getSettings":
         await this.postSettings();
         break;
@@ -1600,78 +1597,6 @@ export class ConsolePanel implements MiniDelegate {
       if (cwd) return cwd;
     }
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  }
-
-  /** Drag a toon onto a room (or an empty ghost cell) → /cd that agent there.
-   *  Existing room: use its directory. Empty cell: pick + reserve a new room. */
-  private async cdAgent(
-    id: string,
-    room?: string,
-    ghost?: { floor: number; col: number }
-  ): Promise<void> {
-    const agent = this.store.get(id);
-    if (!agent) return;
-    // never relocate an agent mid-task — its /cd would land in the middle of a
-    // running turn. Wait until it's idle/waiting/done.
-    if (agent.state === "active") {
-      vscode.window.showInformationMessage(
-        `DevTower: ${agent.name} is active — wait until it finishes before moving it.`
-      );
-      return;
-    }
-
-    let dir: string | undefined;
-    let roomName: string | undefined;
-    if (typeof room === "string") {
-      const reserved = this.getRooms().find((r) => r.name === room);
-      dir = reserved?.path;
-      if (!dir) {
-        const peer = this.store.list().find((a) => a.repo === room && a.id !== id);
-        dir = peer ? resolveCwd(peer) : undefined;
-      }
-      roomName = room;
-    } else if (ghost) {
-      const picked = await vscode.window.showOpenDialog({
-        canSelectFiles: false,
-        canSelectFolders: true,
-        canSelectMany: false,
-        openLabel: `Move ${agent.name} here`,
-        title: `DevTower: pick a directory for ${agent.name}`,
-      });
-      if (!picked?.[0]) return;
-      dir = picked[0].fsPath;
-      const rooms = this.getRooms();
-      const existing = rooms.find((r) => r.path === dir);
-      if (existing) {
-        roomName = existing.name;
-      } else {
-        let name = path.basename(dir) || path.basename(path.dirname(dir)) || "room";
-        const base = name;
-        let n = 2;
-        while (rooms.some((r) => r.name === name)) name = `${base}-${n++}`;
-        rooms.push({ name, path: dir, floor: ghost.floor, col: ghost.col });
-        await this.saveRooms(rooms);
-        roomName = name;
-      }
-    }
-
-    if (!dir) {
-      vscode.window.showWarningMessage(`DevTower: no directory known for room "${room ?? ""}".`);
-      return;
-    }
-    const cur = resolveCwd(agent);
-    if (cur && canonicalDir(cur) === canonicalDir(dir)) return; // already there (canonical compare)
-
-    // tell the live Claude session to change directory; the terminal hosts the
-    // real session (auto-resumed on first open). Use command() so the path is
-    // pasted as a literal block — typing it would trip Claude's /cd autocomplete
-    this.terminals.command(id, `/cd ${dir}`);
-    // do NOT move the toon yet — only show it's in transit. Discovery relocates
-    // it (repo/worktree) once the transcript actually reports the new cwd, so a
-    // declined or failed /cd leaves the agent exactly where it was.
-    this.store.apply({ id, task: `Moving to ${path.basename(dir)}…` });
-    this.discovery?.expectCd(id, dir, roomName);
-    this.postState();
   }
 
   private handleSend(id: string, text: string): void {

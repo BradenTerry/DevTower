@@ -86,12 +86,6 @@ export class ClaudeDiscovery {
   // left a just-opened PR off the board until the slow poller caught up).
   private branchCache = new Map<string, { branch: string; at: number }>();
   private static readonly BRANCH_TTL_MS = 5_000;
-  // agent id → directory it was just told to /cd into (+ when), held until the
-  // transcript reports the new cwd so the toon doesn't snap back meanwhile. The
-  // timestamp bounds the hold: a /cd that fails or is declined never reports the
-  // new cwd, so we give up after CD_HOLD_MS and revert to the real location.
-  private cdPending = new Map<string, { dir: string; room?: string; at: number }>();
-  private static readonly CD_HOLD_MS = 120_000;
   // session id → the panel-created placeholder agent it was adopted into, so a
   // launched Claude session flows into that agent rather than spawning a dup.
   private adopted = new Map<string, string>();
@@ -302,20 +296,10 @@ export class ClaudeDiscovery {
     this.mine.delete(agentId);
     this.keptMtime.delete(agentId);
     this.launchPending.delete(agentId);
-    this.cdPending.delete(agentId);
     for (const [k, v] of [...this.expecting]) if (v === agentId) this.expecting.delete(k);
     for (const [k, v] of [...this.adopted]) if (v === agentId) this.adopted.delete(k);
     dlog("discovery.terminalClose.retire", { agent: agentId, sessions: [...uuids] });
     this.store.remove(agentId);
-  }
-
-  /** Record that an agent was sent `/cd <dir>`. The move is NOT applied until a
-   *  scan sees the transcript report `dir` as the live cwd — only then is the
-   *  agent relocated (to `room`). A declined/failed /cd never confirms, so the
-   *  agent stays put; the pending entry expires after CD_HOLD_MS. */
-  expectCd(agentId: string, dir: string, room?: string): void {
-    this.cdPending.set(agentId, { dir, room, at: Date.now() });
-    void this.refresh();
   }
 
   /** Record that DevTower just launched a Claude session into the placeholder
@@ -1046,26 +1030,26 @@ export class ClaudeDiscovery {
       present.add(id);
       this.mine.add(id);
 
-      // a pending /cd only takes effect once the transcript actually reports the
-      // target dir as the live cwd (the move "worked"); until then the agent is
-      // shown wherever it really is. The hold expires so a failed /cd is dropped.
+      // an agent relocates by running `/cd` in its own session. An adopted
+      // (DevTower-owned) dev defaults to showing its launch worktree (the
+      // placeholder-identity branch below), so a /cd it runs itself wouldn't move
+      // it. Detect that: once the dev has settled and its live cwd no longer
+      // matches its stored worktree, route it through the relocate branch so the
+      // scene walks it to the matching room (or out of the building when no room
+      // exists). Compare through canonicalization, not raw `===`: the stored path
+      // and the transcript's cwd (Claude's realpath) routinely differ by symlink
+      // (/Users vs /private), case or trailing slash, which a raw compare would
+      // read as a spurious move. External (non-adopted) devs already place at
+      // their live cwd every scan, so they relocate without this.
       const cwd = f.cwd;
-      const pend = this.cdPending.get(id);
-      // match through canonicalization, not raw `===`: the reserved room's stored
-      // path (picker/migrated form) and the transcript's cwd (Claude's canonical
-      // realpath) routinely differ by symlink (/Users vs /private), trailing slash
-      // or case — a raw compare never confirms a /cd into the main checkout.
-      const cdArrived = pend !== undefined && canonicalDir(cwd) === canonicalDir(pend.dir);
-      let cdRoom: string | undefined;
-      if (pend) {
-        if (cdArrived) {
-          cdRoom = pend.room; // confirmed — relocate to the requested room
-          this.cdPending.delete(id);
-        } else if (Date.now() - pend.at > ClaudeDiscovery.CD_HOLD_MS) {
-          this.cdPending.delete(id);
-        }
-      }
-      const cdConfirmed = cdRoom !== undefined || cdArrived;
+      const stored = this.store.get(id);
+      const cdMoved =
+        isAdopted &&
+        !!stored?.transcriptPath &&
+        !!stored.worktree &&
+        !!cwd &&
+        canonicalDir(cwd) !== canonicalDir(stored.worktree);
+      const cdConfirmed = cdMoved;
       const cachedBranch = this.branchCache.get(cwd);
       let branch: string;
       if (cachedBranch && Date.now() - cachedBranch.at < ClaudeDiscovery.BRANCH_TTL_MS) {
@@ -1106,15 +1090,16 @@ export class ClaudeDiscovery {
           clearedSession: cleared,
         });
       } else {
-        // a discovered agent (or a just-confirmed /cd) is placed at its real cwd.
-        // On a confirmed move, honor the requested room name; keep an adopted
-        // agent's own name rather than renaming it.
+        // a discovered agent (or an owned dev that just /cd'd) is placed at its
+        // real cwd. The scene attaches it to a room by path, so the repo label is
+        // just the dir name; keep an adopted agent's own name rather than
+        // renaming it.
         this.store.apply({
           id,
           name: isAdopted ? undefined : `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
           model: f.model,
           aiTitle: f.aiTitle,
-          repo: cdRoom ?? path.basename(cwd),
+          repo: path.basename(cwd),
           worktree: cwd,
           branch: branch || "—",
           state: f.state,
@@ -1136,8 +1121,6 @@ export class ClaudeDiscovery {
         });
       }
     }
-    // drop pending /cd for agents that are no longer present
-    for (const id of [...this.cdPending.keys()]) if (!present.has(id)) this.cdPending.delete(id);
     // drop launch waits once the placeholder is gone (removed) or has adopted a
     // session (present with a transcript → no longer an unbound placeholder)
     for (const id of [...this.launchPending.keys()]) {
