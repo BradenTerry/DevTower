@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
-import { ClaudeDiscovery, parseLiveSessionIds } from "../src/claude";
+import { ClaudeDiscovery } from "../src/claude";
 import { DevTowerStore, resolveShirtColor } from "../src/store";
 
 /**
@@ -1084,6 +1084,34 @@ describe("ClaudeDiscovery binding", () => {
     expect(store2.list()).toHaveLength(1);
   });
 
+  it("reaps a restored dev whose session is DEAD instead of hanging on 'Reconnecting…'", async () => {
+    const persist = fakePersist();
+    const uuid = randomUUID();
+
+    // session 1: launch + bind a dev owned, with its claude process alive
+    const store1 = newStore();
+    const disc1 = discoveryP(store1, { [wt]: 1 }, persist);
+    placeholder(store1, "isle-a1", wt);
+    disc1.expectSession("isle-a1", uuid);
+    writeSession(wt, 0, uuid);
+    await disc1.refresh();
+    expect(store1.get("isle-a1")!.external).toBeFalsy();
+
+    // RELOAD with the process GONE (window was fully closed; no live claude in the
+    // worktree). restore() recreates the "Reconnecting after reload…" placeholder,
+    // but its session never comes back — it must be reaped, not left hanging.
+    const store2 = newStore();
+    const disc2 = discoveryP(store2, {}, persist); // perCwd, zero live processes
+    disc2.restore();
+    expect(store2.get("isle-a1")!.task).toBe("Reconnecting after reload…"); // pre-refresh
+    await disc2.refresh();
+
+    expect(store2.get("isle-a1")).toBeUndefined(); // reaped
+    expect(store2.list()).toHaveLength(0);
+    // its ownership is dropped, so a second reload can't resurrect the dead dev
+    expect(persist.get("devtower.ownedLaunches", {})).toEqual({});
+  });
+
   it("retiring an owned dev (terminal closed) suppresses its transcript — no ghost, even across a reload", async () => {
     const persist = fakePersist();
     const uuid = randomUUID();
@@ -1160,35 +1188,179 @@ describe("ClaudeDiscovery binding", () => {
   });
 });
 
-describe("parseLiveSessionIds (live-process argv → bound session uuids)", () => {
-  const A = "6d52d2fc-2811-4121-bbe1-867e3a6ad469";
-  const B = "56a0d565-9af6-453a-8f89-70a0614e180b";
+/**
+ * The hook-driven liveness source (the production default `hookLiveCounts`, used
+ * when no `liveCounts` is injected). DevTower no longer scans running processes:
+ * the `started` marker dir IS the registry of live sessions, a `SessionStart`
+ * drops one and a `SessionEnd` removes it. These tests exercise that path
+ * directly (no liveCounts stub) so the marker → liveness wiring is covered.
+ */
+describe("ClaudeDiscovery hook-driven liveness (no process scan)", () => {
+  let root: string, proj: string, wt: string, startedDir: string, endedDir: string;
 
-  it("captures a fresh launch's --session-id", () => {
-    expect([...parseLiveSessionIds(`claude --session-id ${B}`)]).toEqual([B]);
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-hl-"));
+    proj = path.join(root, "-fake-project");
+    fs.mkdirSync(proj);
+    wt = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-hlwt-"));
+    startedDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-started-"));
+    endedDir = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-hlended-"));
+  });
+  afterEach(() => {
+    for (const d of [root, wt, startedDir, endedDir]) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  it("captures a RESUMED session's --resume uuid (the phantom-ghost fix)", () => {
-    // A resumed process was previously invisible to the pin set, so its live slot
-    // got spent on a stale sibling transcript and it stayed wrongly retired.
-    expect([...parseLiveSessionIds(`claude --resume ${A}`)]).toEqual([A]);
+  const newStore = () => new DevTowerStore({ subscriptions: [] } as any);
+  const sid = (u: string) => "cc-" + u.slice(0, 8);
+
+  /** Write a transcript <uuid>.jsonl reporting `cwd`, mtime `agoSec` ago. */
+  const writeSession = (cwd: string, uuid = randomUUID(), agoSec = 0): string => {
+    const file = path.join(proj, `${uuid}.jsonl`);
+    fs.writeFileSync(file, JSON.stringify({ type: "user", cwd, message: { role: "user", content: "go" } }) + "\n");
+    if (agoSec) {
+      const t = Date.now() / 1000 - agoSec;
+      fs.utimesSync(file, t, t);
+    }
+    return uuid;
+  };
+  /** Drop a SessionStart `started` (liveness) marker for `uuid`. */
+  const writeStarted = (uuid: string, cwd = wt, source = "startup", launchId?: string) =>
+    fs.writeFileSync(
+      path.join(startedDir, `${uuid}.json`),
+      JSON.stringify({ cwd, source, ts: Date.now(), ...(launchId ? { launchId } : {}) })
+    );
+  /** Drop a SessionEnd `ended` marker AND remove the `started` marker (what the
+   *  SessionEnd hook does on a genuine exit). */
+  const writeEnded = (uuid: string, cwd = wt) => {
+    fs.writeFileSync(path.join(endedDir, `${uuid}.json`), JSON.stringify({ cwd, reason: "prompt_input_exit", ts: Date.now() }));
+    fs.rmSync(path.join(startedDir, `${uuid}.json`), { force: true });
+  };
+
+  /** Discovery wired to the fake tree but NO liveCounts → uses hookLiveCounts. */
+  const disc = (store: DevTowerStore) =>
+    new ClaudeDiscovery(store, { projectsRoot: root, startedDir, endedDir });
+
+  it("surfaces a session only once its SessionStart marker exists", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u = writeSession(wt);
+
+    // a transcript with NO started marker is not a live session → not surfaced
+    await d.refresh();
+    expect(store.list()).toHaveLength(0);
+
+    // the SessionStart hook fires → marker drops → it surfaces (external)
+    writeStarted(u);
+    await d.refresh();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+    expect(store.get(sid(u))!.external).toBe(true);
   });
 
-  it("captures the short -r resume form", () => {
-    expect([...parseLiveSessionIds(`claude -r ${A}`)]).toEqual([A]);
+  it("retires the session when its SessionEnd marker fires (started marker removed)", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u = writeSession(wt);
+    writeStarted(u);
+    await d.refresh();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+
+    // genuine exit: the transcript lingers (freshest by mtime) but the session is
+    // gone — the SessionEnd marker removes its liveness, so the dev leaves.
+    writeEnded(u);
+    await d.refresh();
+    expect(store.list()).toHaveLength(0);
   });
 
-  it("accepts --flag=uuid as well as space-separated", () => {
-    expect([...parseLiveSessionIds(`claude --session-id=${B}`)]).toEqual([B]);
+  it("keeps two co-located sessions live independently by their markers", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u1 = writeSession(wt), u2 = writeSession(wt);
+    writeStarted(u1);
+    writeStarted(u2);
+    await d.refresh();
+    expect(new Set(store.list().map((a) => a.id))).toEqual(new Set([sid(u1), sid(u2)]));
+
+    // exit only u1 → u2 stays, even though u1's transcript is equally fresh
+    writeEnded(u1);
+    await d.refresh();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u2)]);
   });
 
-  it("collects every live process's uuid across the ps dump, lowercased", () => {
-    const dump = `claude --resume ${A.toUpperCase()}\nnode foo\nclaude --session-id ${B}`;
-    expect(parseLiveSessionIds(dump)).toEqual(new Set([A, B]));
+  it("supersedes a /clear predecessor by launch id (only the successor stays live)", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const launch = randomUUID();
+    // launch session: started marker's launchId == its own uuid (DevTower-launched)
+    writeSession(wt, launch);
+    writeStarted(launch, wt, "startup", launch);
+    await d.refresh();
+    expect(store.list().map((a) => a.id)).toEqual([sid(launch)]);
+
+    // /clear mints a successor under the SAME launch id; SessionEnd(reason=clear)
+    // does NOT fire, so the predecessor's started marker lingers — the newest
+    // marker per launch id must win, dropping the dead launch transcript.
+    const succ = writeSession(wt);
+    writeStarted(succ, wt, "clear", launch);
+    await d.refresh();
+
+    const ids = new Set(store.list().map((a) => a.id));
+    expect(ids.has(sid(succ))).toBe(true); // successor is live
+    expect(ids.has(sid(launch))).toBe(false); // dead launch transcript gone
+    // the superseded predecessor marker was swept from the registry
+    await new Promise((r) => setTimeout(r, 10)); // clearStartMarker is fire-and-forget
+    expect(fs.existsSync(path.join(startedDir, `${launch}.json`))).toBe(false);
   });
 
-  it("yields nothing for a bare claude or --continue (no uuid to pin)", () => {
-    expect(parseLiveSessionIds("claude").size).toBe(0);
-    expect(parseLiveSessionIds("claude --continue").size).toBe(0);
+  // ---- searchActive: the HUD ⟳ button / startup transcript sweep -------------
+
+  it("searchActive surfaces a recently-active session with no SessionStart marker", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u = writeSession(wt, randomUUID(), 30); // active 30s ago, NO started marker
+
+    // a plain refresh ignores it (no hook said it's live)
+    await d.refresh();
+    expect(store.list()).toHaveLength(0);
+
+    // the ⟳ button / startup search sweeps it up as a live (external) agent
+    await d.searchActive();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+    expect(store.get(sid(u))!.external).toBe(true);
+  });
+
+  it("searchActive ignores a session whose transcript is past the active window", async () => {
+    const store = newStore();
+    const d = disc(store);
+    writeSession(wt, randomUUID(), 30 * 60); // 30 min stale → not active
+
+    await d.searchActive();
+    expect(store.list()).toHaveLength(0);
+  });
+
+  it("a searchActive-discovered session persists across a later plain refresh", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u = writeSession(wt, randomUUID(), 5);
+    await d.searchActive();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+
+    // a subsequent hook-driven refresh (e.g. a marker elsewhere woke it) keeps the
+    // discovered session — scanLive is unioned into liveness on every refresh.
+    await d.refresh();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+  });
+
+  it("searchActive forgets a discovered session once it goes idle past the window", async () => {
+    const store = newStore();
+    const d = disc(store);
+    const u = writeSession(wt, randomUUID(), 5);
+    await d.searchActive();
+    expect(store.list().map((a) => a.id)).toEqual([sid(u)]);
+
+    // its transcript goes quiet (now older than the window); a fresh search drops it
+    const stale = Date.now() / 1000 - 30 * 60;
+    fs.utimesSync(path.join(proj, `${u}.jsonl`), stale, stale);
+    await d.searchActive();
+    expect(store.list()).toHaveLength(0);
   });
 });

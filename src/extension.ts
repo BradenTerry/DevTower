@@ -58,7 +58,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // re-seed owned/retired launches from the last session BEFORE the first scan,
     // so a launched dev rebinds as owned instead of surfacing as an external ghost
     discovery.restore();
-    await discovery.refresh().catch((e) => { elog("discovery.activate", { message: String(e), stack: (e as any)?.stack }); return 0; });
+    // on startup, SEARCH for active agents (sweep the transcripts for live
+    // sessions) so any already-running session surfaces immediately — even ones
+    // that started before the hooks were watching. Subsequent updates are
+    // event-driven via the hook markers.
+    await discovery.searchActive().catch((e) => { elog("discovery.activate", { message: String(e), stack: (e as any)?.stack }); return 0; });
     // event-driven: watch the hook marker dirs instead of polling on a timer
     discovery.start();
     // a window reload revives DevTower's terminals (claude still running) but the
