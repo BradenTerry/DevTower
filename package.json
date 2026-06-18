@@ -338,6 +338,11 @@
           "scope": "window",
           "description": "Internal — set by DevTower in the generated DevTower.code-workspace to remember the project root while USE DIR hides it from the Explorer. Not meant to be edited by hand."
         },
+        "devtower.followTabsPerDir": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remember which editor tabs are open per USE DIR directory. When you switch the working directory, the current dir's tabs are closed and the new dir's tabs are reopened, so editors follow the directory. Dirty (unsaved) tabs prompt to Save / Don't Save / Cancel before switching."
+        },
         "devtower.discoverClaudeSessions": {
           "type": "boolean",
           "default": true,
