@@ -1420,6 +1420,7 @@ export class ClaudeDiscovery {
     const skillPings = await readSkillMarkers(this.deps.skillDir);
     // the Task tool's per-session store lives beside `projects/` under `tasks/`
     const tasksRoot = this.deps.tasksRoot ?? path.join(root, "..", "tasks");
+    const dirGone = (p: string) => fs.promises.access(p).then(() => false).catch(() => true);
 
     const projDirs = await fs.promises.readdir(root, { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
     for (const d of projDirs) {
@@ -1434,6 +1435,19 @@ export class ClaudeDiscovery {
         const meta = await readMeta(file, st.size);
         if (!meta.cwd) continue;
         const sessionId = fn.slice(0, -6); // strip ".jsonl"
+        // A removed git worktree leaves its transcript behind under
+        // ~/.claude/projects, so the session keeps looking live: the bound dev is
+        // re-adopted on every scan (a "send home" sticks for a beat, then the
+        // ghost rejoins) and lingers in the token leaderboard though it has no
+        // room to render in the scene. If the session's working directory is gone
+        // from disk the checkout was deleted — skip it so it surfaces nowhere (no
+        // scanLive seed, no keep pass, no store entry); an already-adopted ghost
+        // then falls out of `found` and is swept by the leave pass this scan.
+        const launchCwd = meta.launchCwd ?? meta.cwd;
+        if ((await dirGone(meta.cwd)) && (await dirGone(launchCwd))) {
+          dlog("discovery.skip.goneWorktree", { sessionId, cwd: meta.cwd, launchCwd });
+          continue;
+        }
         // A foreground sub-agent BLOCKS the parent's main thread, so the parent
         // transcript falls silent for the whole spawn while the sub-agent writes
         // its OWN file under <sessionId>/subagents/. Fold that activity in as the
@@ -1496,7 +1510,7 @@ export class ClaudeDiscovery {
           sessionId,
           file,
           cwd: meta.cwd,
-          launchCwd: meta.launchCwd ?? meta.cwd,
+          launchCwd,
           mtime: st.mtimeMs,
           state,
           task: meta.task || "Claude session",

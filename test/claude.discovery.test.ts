@@ -216,6 +216,34 @@ describe("ClaudeDiscovery binding", () => {
     expect(store.list()).toHaveLength(2); // placeholder (now owned) + the stranger
   });
 
+  it("reaps a discovered dev whose worktree was removed, and never re-adopts it", async () => {
+    // The reported bug: removing a git worktree deletes its checkout dir but
+    // leaves the session transcript under ~/.claude/projects. The transcript keeps
+    // looking live, so the bound dev was re-adopted on every scan — a "send home"
+    // reported "left" then the ghost "rejoined" at once, and it lingered in the
+    // token leaderboard though it had no room to render in the scene. A session
+    // whose working directory is gone from disk must surface nowhere.
+    const store = newStore();
+    const gone = fs.mkdtempSync(path.join(os.tmpdir(), "devtower-gonewt-"));
+    const disc = discovery(store, { [gone]: 1 });
+    const uuid = writeSession(gone, 0);
+    const sid = "cc-" + uuid.slice(0, 8);
+
+    await disc.refresh();
+    expect(store.get(sid)).toBeTruthy(); // discovered while the checkout exists
+    expect(store.get(sid)!.external).toBe(true);
+
+    // the user removes the worktree: its directory vanishes (the transcript and a
+    // stale liveCounts both still claim it is live).
+    fs.rmSync(gone, { recursive: true, force: true });
+
+    await disc.refresh();
+    expect(store.get(sid)).toBeUndefined(); // swept, not lingering for the leaderboard
+
+    await disc.refresh(); // a later scan must not resurrect it ("left then rejoined")
+    expect(store.list()).toHaveLength(0);
+  });
+
   it("merges a stranded resumed/cleared session into its empty placeholder once the launch ages out (duplicate-toon dedupe)", async () => {
     // The reported bug: a dev spawned `claude --session-id <launch>` then resumed
     // or /cleared to a DIFFERENT uuid before its first prompt, WITHOUT a succession
