@@ -1699,18 +1699,19 @@ export class ConsolePanel implements MiniDelegate {
         this.terminals.reveal(id);
         break;
       case "sendHome": {
-        // confirm, then close the dev's Claude terminal (kills its process) and
-        // retire it from the tower. retireOwned also suppresses its transcript so
-        // it can't resurface as an external ghost on the next poll or a reload.
+        // For owned devs: confirm, then close the dev's Claude terminal (kills its
+        // process) and retire it. For external devs there's no terminal to close —
+        // "Dismiss" just evicts the (likely dead) ghost. retireOwned suppresses the
+        // transcript either way so it can't resurface on the next poll or a reload.
         const agent = this.store.get(id);
-        if (!agent || agent.external) break;
-        const confirm = await vscode.window.showWarningMessage(
-          `Send ${agent.name} home? This closes its Claude terminal and removes it from the tower.`,
-          { modal: true },
-          "Send Home"
-        );
-        if (confirm !== "Send Home") break;
-        this.terminals.disposeAgent(id);
+        if (!agent) break;
+        const verb = agent.external ? "Dismiss" : "Send Home";
+        const prompt = agent.external
+          ? `Dismiss ${agent.name}? It runs in its own terminal outside DevTower; this removes it from the tower.`
+          : `Send ${agent.name} home? This closes its Claude terminal and removes it from the tower.`;
+        const confirm = await vscode.window.showWarningMessage(prompt, { modal: true }, verb);
+        if (confirm !== verb) break;
+        if (!agent.external) this.terminals.disposeAgent(id);
         this.discovery?.retireOwned(id);
         break;
       }

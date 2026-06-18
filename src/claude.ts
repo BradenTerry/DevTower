@@ -281,7 +281,11 @@ export class ClaudeDiscovery {
    *  own terminal, so closing DevTower's shell doesn't end them — left alone. */
   retireOwned(agentId: string): void {
     const a = this.store.get(agentId);
-    if (!a || a.external) return;
+    if (!a) return;
+    // External devs have no owned terminal/launch records, but we still suppress
+    // their transcript + drop them from the store so a dead ghost can't resurface.
+    // If the session is genuinely live its uuid re-appears in argvIds/livePins and
+    // the suppression is lifted on the next poll, so this only sticks for ghosts.
     const uuids = new Set<string>();
     if (a.transcriptPath) uuids.add(path.basename(a.transcriptPath, ".jsonl").toLowerCase());
     if (a.launchId) uuids.add(a.launchId.toLowerCase());
