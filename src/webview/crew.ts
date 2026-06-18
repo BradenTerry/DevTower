@@ -1131,10 +1131,20 @@ class PixelCrew {
       // toon, so prev === next) so a pre-existing summary never replays on load.
       const prevTitle = tn.agent.aiTitle?.trim() || "";
       const nextTitle = a.aiTitle?.trim() || "";
-      if (nextTitle && nextTitle !== prevTitle && !tn.entering && !tn.leaving && !tn.transfer) {
-        tn.boardPending = true;
-        this.dbg("board.summary", { id: a.id, title: nextTitle });
-        this.invalidate(); // wake the loop so the walk plays now, not at the next event
+      if (nextTitle && nextTitle !== prevTitle) {
+        if (!tn.entering && !tn.leaving && !tn.transfer) {
+          tn.boardPending = true;
+          this.dbg("board.summary", { id: a.id, title: nextTitle });
+          this.invalidate(); // wake the loop so the walk plays now, not at the next event
+        } else {
+          // the dev isn't free to walk (e.g. it just re-entered on a resume, or is
+          // mid-transfer). The baseline advances at `tn.agent = a` below, so this
+          // transition would never be re-detected — don't drop it. Seed the board
+          // directly (like a first-sight pre-existing summary) so the whiteboard
+          // matches the stat view instead of sitting blank until the next change.
+          tn.boardText = nextTitle;
+          this.dbg("board.summary.seed", { id: a.id, title: nextTitle });
+        }
       }
       tn.agent = a;
       // accumulate newly-used skills; the tick walks the dev to the shelf to

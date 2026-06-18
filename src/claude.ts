@@ -173,6 +173,13 @@ export class ClaudeDiscovery {
   private knownSessions = new Set<string>();
   private prCreatedSeen = new Map<string, number>();
   private prClosedSeen = new Map<string, number>();
+  // last non-empty AI session summary (whiteboard title) seen per worktree,
+  // keyed by canonical dir. A resume forks the transcript — new session id, and
+  // a fresh tail that hasn't re-emitted "aiTitle" yet — so the rebound agent can
+  // land as a new record with a blank board. Falling back to the last title for
+  // that worktree keeps the desk's whiteboard populated until the resumed
+  // session writes its own fresh summary.
+  private lastTitleByWorktree = new Map<string, string>();
 
   constructor(
     private store: DevTowerStore,
@@ -1068,13 +1075,24 @@ export class ClaudeDiscovery {
       const launchId = argvIds.has(f.sessionId.toLowerCase())
         ? f.sessionId.toLowerCase()
         : successorLaunch.get(f.sessionId.toLowerCase());
+      // carry the whiteboard title across a resume: cache each non-empty summary
+      // by worktree, and fall back to that cache when this poll's tail has none
+      // (a forked/resumed transcript that hasn't re-emitted "aiTitle" yet). The
+      // store still prefers a live value and keeps its own last-known otherwise.
+      const wtKey = cwd ? canonicalDir(cwd) : "";
+      let aiTitle = f.aiTitle;
+      if (aiTitle) {
+        if (wtKey) this.lastTitleByWorktree.set(wtKey, aiTitle);
+      } else if (wtKey) {
+        aiTitle = this.lastTitleByWorktree.get(wtKey);
+      }
       if (isAdopted && !cdConfirmed) {
         // keep the placeholder's identity (name/repo/worktree/branch/task);
         // only flow in the live session fields
         this.store.apply({
           id,
           model: f.model,
-          aiTitle: f.aiTitle,
+          aiTitle,
           state: f.state,
           elapsed: ago(f.mtime),
           transcriptPath: f.file,
@@ -1098,7 +1116,7 @@ export class ClaudeDiscovery {
           id,
           name: isAdopted ? undefined : `${path.basename(cwd)}·${f.id.slice(3, 7)}`,
           model: f.model,
-          aiTitle: f.aiTitle,
+          aiTitle,
           repo: path.basename(cwd),
           worktree: cwd,
           branch: branch || "—",
