@@ -52,12 +52,12 @@ Beside the canvas tower, DevTower can open a **mini view**: a dense, DOM-table p
 
 ![The DevTower mini view: a compact table that drills projects, worktrees, and agents, with All-agents and All-PRs tabs, per-branch git stats, and PR status.](media/shot-mini.png)
 
-## Files: browse, move, delete, diff
+## Files and Source Control: switch directories without leaving this window
 
-The two trees in the **◆ DevTower** activity-bar container turn the focused worktree into a place you can actually work, without opening a second window:
+The two trees in the **◆ DevTower** activity-bar container turn the focused worktree into a place you can actually work - **no second window, no changing your workspace folder**. Press a room's **USE DIR** button (or switch the selected directory from the mini view) and both trees retarget at that worktree at once, so hopping between repos and worktrees is one click instead of an Open-Folder / new-window dance. The native diffs and each agent's integrated terminal follow the same selected directory, so the file you browse, the changes you stage, the diff you open, and the terminal you type in all stay pointed at the same place.
 
-- **Selected Directory** is a full file viewer for the worktree (every file, not just changed ones). Open a file to edit it inline; **drag** a file or folder onto a folder to move it; multi-select (shift-click a range, cmd/ctrl-click to toggle) and **right-click -> Delete** to send them to Trash in one go. Both moving and deleting confirm once, with a **"don't ask again"** option (folder deletes use a separate confirmation key from file deletes).
-- **Source Control** is the native VS Code SCM split of staged / unstaged changes for the same worktree, with inline stage / unstage / discard (and stage-all / unstage-all / discard-all, plus folder-level actions in tree mode), commit from the input box, and click-to-diff into the native VS Code diff editor.
+- **Selected Directory** is a full file viewer for the *currently selected* worktree (every file, not just changed ones) - browsable and editable in place, without adding it to your workspace folders. Open a file to edit it inline; **drag** a file or folder onto a folder to move it; multi-select (shift-click a range, cmd/ctrl-click to toggle) and **right-click -> Delete** to send them to Trash in one go. Both moving and deleting confirm once, with a **"don't ask again"** option (folder deletes use a separate confirmation key from file deletes).
+- **Source Control** is the native VS Code SCM split of staged / unstaged changes for that **same selected worktree**, with inline stage / unstage / discard (and stage-all / unstage-all / discard-all, plus folder-level actions in tree mode), commit from the input box, and click-to-diff into the native VS Code diff editor. Switch the selected directory and the SCM view follows - you review and commit one worktree, then another, all in this window.
 
 ## Real git, real terminals, real PRs
 
