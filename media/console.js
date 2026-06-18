@@ -46,9 +46,6 @@
     window.DevTowerCrew.onPush((room) => vscode.postMessage({ type: "pushBranch", room }));
     window.DevTowerCrew.onPull((room) => vscode.postMessage({ type: "pullBranch", room }));
     window.DevTowerCrew.onFetch((room) => vscode.postMessage({ type: "fetchBranch", room }));
-    window.DevTowerCrew.onCd((id, target) =>
-      vscode.postMessage({ type: "cdAgent", id, room: target.room, ghost: target.ghost })
-    );
     window.DevTowerCrew.onOpenPr((url) => vscode.postMessage({ type: "action", act: "openPr", url }));
     if (DevTowerCrew.onDebug) DevTowerCrew.onDebug((event, data) => vscode.postMessage({ type: "debug", event, data }));
     window.DevTowerCrew.start();
@@ -962,7 +959,9 @@
         ${a.external
           ? `<div class="pa ext-note" title="This session runs outside DevTower — manage it in its own terminal">⌗ Runs in its own session</div>`
           : `<button class="pa primary" data-tool="terminal">⌗ Chat</button>`}
-        ${a.external ? "" : `<button class="pa danger" data-tool="sendHome">⌂ Send Home</button>`}
+        ${a.external
+          ? `<button class="pa danger" data-tool="sendHome" title="Remove this ghost session from the tower">⌂ Dismiss</button>`
+          : `<button class="pa danger" data-tool="sendHome">⌂ Send Home</button>`}
       </div>`;
 
     // wiring

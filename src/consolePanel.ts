@@ -752,9 +752,6 @@ export class ConsolePanel implements MiniDelegate {
       case "removeWorktree":
         if (typeof m.worktree === "string") await this.removeWorktreeRoom(m.worktree, typeof m.island === "string" ? m.island : "");
         break;
-      case "cdAgent":
-        if (id) await this.cdAgent(id, m.room, m.ghost);
-        break;
       case "getSettings":
         await this.postSettings();
         break;
@@ -1602,78 +1599,6 @@ export class ConsolePanel implements MiniDelegate {
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   }
 
-  /** Drag a toon onto a room (or an empty ghost cell) → /cd that agent there.
-   *  Existing room: use its directory. Empty cell: pick + reserve a new room. */
-  private async cdAgent(
-    id: string,
-    room?: string,
-    ghost?: { floor: number; col: number }
-  ): Promise<void> {
-    const agent = this.store.get(id);
-    if (!agent) return;
-    // never relocate an agent mid-task — its /cd would land in the middle of a
-    // running turn. Wait until it's idle/waiting/done.
-    if (agent.state === "active") {
-      vscode.window.showInformationMessage(
-        `DevTower: ${agent.name} is active — wait until it finishes before moving it.`
-      );
-      return;
-    }
-
-    let dir: string | undefined;
-    let roomName: string | undefined;
-    if (typeof room === "string") {
-      const reserved = this.getRooms().find((r) => r.name === room);
-      dir = reserved?.path;
-      if (!dir) {
-        const peer = this.store.list().find((a) => a.repo === room && a.id !== id);
-        dir = peer ? resolveCwd(peer) : undefined;
-      }
-      roomName = room;
-    } else if (ghost) {
-      const picked = await vscode.window.showOpenDialog({
-        canSelectFiles: false,
-        canSelectFolders: true,
-        canSelectMany: false,
-        openLabel: `Move ${agent.name} here`,
-        title: `DevTower: pick a directory for ${agent.name}`,
-      });
-      if (!picked?.[0]) return;
-      dir = picked[0].fsPath;
-      const rooms = this.getRooms();
-      const existing = rooms.find((r) => r.path === dir);
-      if (existing) {
-        roomName = existing.name;
-      } else {
-        let name = path.basename(dir) || path.basename(path.dirname(dir)) || "room";
-        const base = name;
-        let n = 2;
-        while (rooms.some((r) => r.name === name)) name = `${base}-${n++}`;
-        rooms.push({ name, path: dir, floor: ghost.floor, col: ghost.col });
-        await this.saveRooms(rooms);
-        roomName = name;
-      }
-    }
-
-    if (!dir) {
-      vscode.window.showWarningMessage(`DevTower: no directory known for room "${room ?? ""}".`);
-      return;
-    }
-    const cur = resolveCwd(agent);
-    if (cur && canonicalDir(cur) === canonicalDir(dir)) return; // already there (canonical compare)
-
-    // tell the live Claude session to change directory; the terminal hosts the
-    // real session (auto-resumed on first open). Use command() so the path is
-    // pasted as a literal block — typing it would trip Claude's /cd autocomplete
-    this.terminals.command(id, `/cd ${dir}`);
-    // do NOT move the toon yet — only show it's in transit. Discovery relocates
-    // it (repo/worktree) once the transcript actually reports the new cwd, so a
-    // declined or failed /cd leaves the agent exactly where it was.
-    this.store.apply({ id, task: `Moving to ${path.basename(dir)}…` });
-    this.discovery?.expectCd(id, dir, roomName);
-    this.postState();
-  }
-
   private handleSend(id: string, text: string): void {
     const t = (text || "").trim();
     if (!t) return;
@@ -1699,18 +1624,19 @@ export class ConsolePanel implements MiniDelegate {
         this.terminals.reveal(id);
         break;
       case "sendHome": {
-        // confirm, then close the dev's Claude terminal (kills its process) and
-        // retire it from the tower. retireOwned also suppresses its transcript so
-        // it can't resurface as an external ghost on the next poll or a reload.
+        // For owned devs: confirm, then close the dev's Claude terminal (kills its
+        // process) and retire it. For external devs there's no terminal to close —
+        // "Dismiss" just evicts the (likely dead) ghost. retireOwned suppresses the
+        // transcript either way so it can't resurface on the next poll or a reload.
         const agent = this.store.get(id);
-        if (!agent || agent.external) break;
-        const confirm = await vscode.window.showWarningMessage(
-          `Send ${agent.name} home? This closes its Claude terminal and removes it from the tower.`,
-          { modal: true },
-          "Send Home"
-        );
-        if (confirm !== "Send Home") break;
-        this.terminals.disposeAgent(id);
+        if (!agent) break;
+        const verb = agent.external ? "Dismiss" : "Send Home";
+        const prompt = agent.external
+          ? `Dismiss ${agent.name}? It runs in its own terminal outside DevTower; this removes it from the tower.`
+          : `Send ${agent.name} home? This closes its Claude terminal and removes it from the tower.`;
+        const confirm = await vscode.window.showWarningMessage(prompt, { modal: true }, verb);
+        if (confirm !== verb) break;
+        if (!agent.external) this.terminals.disposeAgent(id);
         this.discovery?.retireOwned(id);
         break;
       }
