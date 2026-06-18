@@ -142,6 +142,12 @@ export class ConsolePanel implements MiniDelegate {
    *  git API won't open (e.g. a worktree outside the workspace). Event-driven, not
    *  a poll. */
   private gitWatchers = new Map<string, fs.FSWatcher>();
+  /** canonical repo dir → an fs.watch on its `.git/HEAD`, installed ALONGSIDE the
+   *  git API subscription. The git API's `state.onDidChange` lags a terminal
+   *  checkout (it refreshes largely on window focus), so this catches a branch
+   *  switch instantly. Watching only HEAD (not the whole `.git`) is safe from the
+   *  status-read self-feed loop: read-only git never rewrites HEAD. */
+  private headWatchers = new Map<string, fs.FSWatcher>();
   private gitDebounce?: ReturnType<typeof setTimeout>;
   /** Repo dirs whose change is pending a debounced refresh, and whether any change
    *  had no known dir (→ a full refreshState instead of a scoped one). */
@@ -387,7 +393,8 @@ export class ConsolePanel implements MiniDelegate {
   /** A tracked repo signalled a change (stage/commit/push/working-tree edit) via
    *  the git API or its .git fallback watcher — refresh only that repo's room(s).
    *  `dir` undefined (an in-editor save we couldn't map to a repo) → full refresh. */
-  private onRepoChange(dir?: string): void {
+  private onRepoChange(dir?: string, src?: string): void {
+    dlog("repo.change", { dir, src });
     this.scheduleRepoRefresh(dir);
   }
 
@@ -438,6 +445,7 @@ export class ConsolePanel implements MiniDelegate {
     const wanted = new Set(byCanon.keys());
     for (const [c, sub] of this.repoSubs) if (!wanted.has(c)) { sub.dispose(); this.repoSubs.delete(c); }
     for (const [c, w] of this.gitWatchers) if (!wanted.has(c)) { w.close(); this.gitWatchers.delete(c); }
+    for (const [c, w] of this.headWatchers) if (!wanted.has(c)) { w.close(); this.headWatchers.delete(c); }
     const api = await this.ensureGitApi();
     for (const [c, dir] of byCanon) {
       if (this.repoSubs.has(c) || this.gitWatchers.has(c)) continue; // already watched
@@ -449,8 +457,13 @@ export class ConsolePanel implements MiniDelegate {
           repo = null;
         }
       }
-      if (repo) this.repoSubs.set(c, repo.state.onDidChange(() => this.onRepoChange(dir)));
-      else await this.watchGitDirFallback(dir, c);
+      dlog("repo.watch", { dir, source: repo ? "gitApi" : "fsFallback" });
+      if (repo) {
+        this.repoSubs.set(c, repo.state.onDidChange(() => this.onRepoChange(dir, "gitApi")));
+        await this.watchHead(dir, c); // git API lags terminal checkouts; HEAD watch is instant
+      } else {
+        await this.watchGitDirFallback(dir, c);
+      }
     }
   }
 
@@ -465,10 +478,36 @@ export class ConsolePanel implements MiniDelegate {
       return; // not a repo (yet)
     }
     try {
-      const w = fs.watch(gitDir, { recursive: true }, () => this.onRepoChange(dir));
+      const w = fs.watch(gitDir, { recursive: true }, () => this.onRepoChange(dir, "fsFallback"));
       this.gitWatchers.set(canon, w);
     } catch {
       /* platform without recursive watch / dir gone — manual Refresh still covers it */
+    }
+  }
+
+  /** Watch ONLY `.git/HEAD` for an API-tracked repo. `git rev-parse --git-dir`
+   *  resolves the per-worktree git dir (HEAD lives there even for worktrees). A
+   *  branch switch rewrites HEAD; read-only git never does, so no self-feed loop.
+   *  Best-effort: a missing HEAD/dir just leaves the git API as the only source. */
+  private async watchHead(dir: string, canon: string): Promise<void> {
+    let gitDir: string;
+    try {
+      const out = (await runGit(dir, ["rev-parse", "--git-dir"])).trim();
+      gitDir = path.isAbsolute(out) ? out : path.join(dir, out);
+    } catch {
+      return; // not a repo (yet)
+    }
+    try {
+      // Watch the git dir (NOT the HEAD file directly): git rewrites HEAD via a
+      // HEAD.lock + rename, which orphans an fs.watch bound to the file's inode.
+      // Watching the dir survives that; filtering to "HEAD" keeps the self-feed
+      // loop closed (a status read touches index, never HEAD).
+      const w = fs.watch(gitDir, (_e, name) => {
+        if (name === "HEAD") this.onRepoChange(dir, "head");
+      });
+      this.headWatchers.set(canon, w);
+    } catch {
+      /* dir gone or platform quirk — git API still covers it (just slower) */
     }
   }
 
@@ -1889,6 +1928,8 @@ export class ConsolePanel implements MiniDelegate {
     this.repoSubs.clear();
     for (const w of this.gitWatchers.values()) w.close();
     this.gitWatchers.clear();
+    for (const w of this.headWatchers.values()) w.close();
+    this.headWatchers.clear();
     this.editWatcher?.close();
     this.usageWatcher?.close();
     this.towerDisposables.forEach((d) => d.dispose());
