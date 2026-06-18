@@ -1614,16 +1614,25 @@ export async function readMeta(
     const model = lastMatch(tail, /"model"\s*:\s*"([^"]+)"/g, (v) => v !== "<synthetic>");
     const aiTitle = lastMatch(tail, /"aiTitle"\s*:\s*"([^"]+)"/g);
 
-    // skills the agent used, visible in the tail. Two ways a skill shows up:
+    // skills the agent used. Two ways a skill shows up:
     //   1. the model called the Skill tool ("name":"Skill", input.skill), and
     //   2. the user typed it as a slash command (/foo) — Claude Code records that
     //      as a <command-name> turn, NOT a Skill tool_use, so #1 misses it.
     // Both load the skill body, which carries a "Base directory for this skill:
     // <abs path>/<name>" line (built-in slashes like /clear do NOT), so that line
     // is the reliable unified signal. Names are normalised to the bare skill name
-    // so the tool form (plugin:foo) and the path form (.../foo) dedupe to one. The
-    // store unions these across polls so a session's full set survives calls
-    // scrolling out of the window.
+    // so the tool form (plugin:foo) and the path form (.../foo) dedupe to one.
+    // Scanned over `full`, NOT the 32 KB tail: the signal lands once, at load
+    // time, then an active session's later output (a big `git pull`, file reads,
+    // a `gh run watch` dump) pushes it out of a fixed tail window within seconds.
+    // The PreToolUse(Skill) marker wakes a poll the instant the skill loads, but
+    // the skill body is written by the tool RESULT (after the hook fires), so the
+    // first poll can race the flush; if every in-window poll misses, detection
+    // slips to the next incidental marker — typically the user's own next prompt
+    // (so the borrow trip appears to fire "on the next message"). `full` already
+    // reads the whole transcript for sub-agent accounting (same reason: a fixed
+    // window misses signals that scrolled away), so this is free and reliable. The
+    // store still unions across polls; `full` just means no single poll loses it.
     const skills: string[] = [];
     const addSkill = (raw: string) => {
       const n = raw.split(/[/:\\]/).filter(Boolean).pop();
@@ -1634,7 +1643,7 @@ export async function readMeta(
       /Base directory for this skill:\s*(\/[^\s"\\]+)/g, // slash-invoked + tool-loaded skills
     ]) {
       let m: RegExpExecArray | null;
-      while ((m = re.exec(tail))) addSkill(m[1]);
+      while ((m = re.exec(full))) addSkill(m[1]);
     }
 
     // in-flight sub-agents: Task/Agent tool calls the session spawned that have
